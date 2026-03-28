@@ -1,0 +1,21 @@
+# macOS
+.DS_Store
+
+# Node
+node_modules/
+dist/
+build/
+
+# logs
+*.log
+
+# env files
+.env
+.env.*
+
+# Tauri
+src-tauri/target/
+
+# IDE
+.vscode/
+.idea/
