@@ -32,6 +32,9 @@ struct InnerState {
     // send_input will prepend \x01\x0b (Ctrl+A + Ctrl+K) to clear the readline
     // buffer before the user's text — no prompt redraw, clears any pre-fill length.
     shell_wizard_input: bool,
+    // Set by send_input after emitting Ctrl+A+Ctrl+K so the output processor
+    // can suppress the one-shot readline prompt redraw that follows.
+    shell_suppress_redraw: bool,
 }
 
 struct AppState {
@@ -314,7 +317,20 @@ fn connect_controller(ip: String, state: State<'_, AppState>) -> Result<(), Stri
                             .unwrap_or(false);
                         let has_partial = !partial.trim().is_empty();
 
-                        if has_partial || pending_is_wizard {
+                        // If send_input cleared a pre-fill with Ctrl+A+Ctrl+K, readline
+                        // redraws the prompt line as a bare partial (no newline). Suppress
+                        // that one-shot redraw so it doesn't appear as a duplicate prompt.
+                        let suppress = if has_partial && !pending_is_wizard {
+                            if let Ok(mut inner) = arc2.lock() {
+                                if inner.shell_suppress_redraw {
+                                    inner.shell_suppress_redraw = false;
+                                    partial.clear();
+                                    true
+                                } else { false }
+                            } else { false }
+                        } else { false };
+
+                        if !suppress && (has_partial || pending_is_wizard) {
                             let fragment = partial.trim_end_matches('\n').to_string();
                             partial.clear();
 
@@ -426,14 +442,18 @@ fn send_input(text: String, state: State<'_, AppState>) -> Result<(), String> {
     let mut inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
     // Read and clear the wizard flag before borrowing stdin.
     let is_wizard = std::mem::replace(&mut inner.shell_wizard_input, false);
+    // Set suppress flag before taking the stdin borrow (borrow-checker constraint).
+    if is_wizard && !text.is_empty() {
+        // Flag the output processor to suppress the one-shot readline prompt
+        // redraw that Ctrl+K triggers — prevents a duplicate "> prompt" line.
+        inner.shell_suppress_redraw = true;
+    }
     let Some(stdin) = inner.shell_stdin.as_mut() else {
         return Err("No active controller shell".into());
     };
     if is_wizard && !text.is_empty() {
         // Send Ctrl+A (beginning-of-line) + Ctrl+K (kill-to-end) to clear the
         // readline pre-fill BEFORE typing the new value.
-        // Unlike Ctrl+U, this does NOT trigger a full prompt redraw — readline
-        // just emits an ANSI erase sequence which our normalize_chunk strips out.
         // Empty submission (accept default) skips this so the default is kept.
         stdin.write_all(b"\x01\x0b").map_err(|e| format!("Failed to clear prefill: {e}"))?;
     }
@@ -920,12 +940,17 @@ fn normalize_chunk(raw: &str) -> String {
 
 /// For wizard prompts like "    Name [Default]: Default text",
 /// strip the pre-filled default after the last "]: " so only the prompt label remains.
+/// Also handles choice prompts like "...(A-Add, R-Replace, U-Use) [U]? U"
+/// where the pre-fill follows a "? " ending.
 fn strip_wizard_prefill(s: &str) -> &str {
     if let Some(idx) = s.rfind("]: ") {
-        &s[..idx + 3]
-    } else {
-        s
+        return &s[..idx + 3];
     }
+    // Choice prompts: e.g. "Add, Replace, Use) [U]? U" → strip after last "? "
+    if let Some(idx) = s.rfind("? ") {
+        return &s[..idx + 2];
+    }
+    s
 }
 
 fn kill_shell(inner: &mut InnerState) {
