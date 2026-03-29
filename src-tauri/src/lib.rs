@@ -272,6 +272,10 @@ fn connect_controller(ip: String, state: State<'_, AppState>) -> Result<(), Stri
                                     if suppress_next_merge {
                                         // stty echo — discard silently, consume pending_prompt
                                         suppress_next_merge = false;
+                                    } else if inner.shell_suppress_redraw && after_timeout_flush {
+                                        // Ctrl+K redraw merged with the user's echo line.
+                                        // Discard — local echo already showed the input.
+                                        inner.shell_suppress_redraw = false;
                                     } else {
                                         // Shell prompt + command echo → one input line
                                         inner.shell_logs.push(format!("\x01{}{}", p, line));
@@ -317,20 +321,7 @@ fn connect_controller(ip: String, state: State<'_, AppState>) -> Result<(), Stri
                             .unwrap_or(false);
                         let has_partial = !partial.trim().is_empty();
 
-                        // If send_input cleared a pre-fill with Ctrl+A+Ctrl+K, readline
-                        // redraws the prompt line as a bare partial (no newline). Suppress
-                        // that one-shot redraw so it doesn't appear as a duplicate prompt.
-                        let suppress = if has_partial && !pending_is_wizard {
-                            if let Ok(mut inner) = arc2.lock() {
-                                if inner.shell_suppress_redraw {
-                                    inner.shell_suppress_redraw = false;
-                                    partial.clear();
-                                    true
-                                } else { false }
-                            } else { false }
-                        } else { false };
-
-                        if !suppress && (has_partial || pending_is_wizard) {
+                        if has_partial || pending_is_wizard {
                             let fragment = partial.trim_end_matches('\n').to_string();
                             partial.clear();
 
@@ -345,13 +336,24 @@ fn connect_controller(ip: String, state: State<'_, AppState>) -> Result<(), Stri
 
                             if !raw_full.trim().is_empty() {
                                 let display = strip_wizard_prefill(&raw_full).to_string();
+                                let mut suppressed = false;
                                 if let Ok(mut inner) = arc2.lock() {
-                                    detect_shell_connected(&mut inner, &display);
-                                    // \x02 prefix → "wizard" type in frontend
-                                    inner.shell_logs.push(format!("\x02{}", display));
-                                    inner.shell_wizard_input = true;
+                                    // Ctrl+K redraw arrives as a wizard-looking partial after
+                                    // send_input clears a pre-fill. Suppress it — local echo
+                                    // already showed the user's input.
+                                    if inner.shell_suppress_redraw {
+                                        inner.shell_suppress_redraw = false;
+                                        suppressed = true;
+                                    } else {
+                                        detect_shell_connected(&mut inner, &display);
+                                        // \x02 prefix → "wizard" type in frontend
+                                        inner.shell_logs.push(format!("\x02{}", display));
+                                        inner.shell_wizard_input = true;
+                                    }
                                 }
-                                after_timeout_flush = true;
+                                if !suppressed {
+                                    after_timeout_flush = true;
+                                }
                             }
                         }
                         // If only a shell prompt is pending, leave it — user is slow.
