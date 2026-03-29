@@ -420,6 +420,108 @@
   margin-top: 12px;
 }
 
+.wizard-status-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.wizard-action-row {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.wizard-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 12px;
+}
+
+.wizard-step-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.wizard-step-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.wizard-command {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--accent);
+  background: var(--bg-0);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 6px 8px;
+}
+
+.wizard-field-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.wizard-field-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-0);
+  padding: 10px 12px;
+}
+
+.wizard-field-label {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+  margin-bottom: 4px;
+}
+
+.wizard-field-value {
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-primary);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.wizard-checklist {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.wizard-note {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+@media (max-width: 720px) {
+  .wizard-action-row,
+  .wizard-step-header,
+  .wizard-field-row {
+    flex-direction: column;
+  }
+
+  .wizard-step-actions {
+    justify-content: flex-start;
+  }
+}
+
 /* Logs Tab */
 .log-source-tabs {
   display: flex;

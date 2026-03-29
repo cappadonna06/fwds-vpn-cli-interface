@@ -60,7 +60,7 @@ export default function ConsoleTab() {
       }
       if (r.new_lines.length > 0) {
         setLog((prev) => {
-          const newEntries = r.new_lines.flatMap((raw) => {
+          const newEntries: LogLine[] = r.new_lines.flatMap<LogLine>((raw) => {
             if (raw.startsWith("\x01")) {
               const text = raw.slice(1);
               // Skip SSH echo if we already showed this input locally.
@@ -85,12 +85,18 @@ export default function ConsoleTab() {
   }
 
   async function sendCommand(cmd: string) {
-    if (!cmd.trim()) return;
+    const trimmed = cmd.trim();
+    const allowEmptyWizardSubmit = waitingForInput && cmd.length === 0;
+    if (!trimmed && !allowEmptyWizardSubmit) return;
     setInput("");
     // Immediately echo the command locally so the user sees it without waiting
     // for the SSH round-trip. The SSH echo (prefixed \x01) will be deduped.
-    addLine(cmd, "input");
-    pendingEchoRef.current = cmd;
+    if (trimmed) {
+      addLine(cmd, "input");
+      pendingEchoRef.current = cmd;
+    } else {
+      pendingEchoRef.current = null;
+    }
     try {
       await invoke("send_input", { text: cmd });
     } catch (e) {
@@ -230,7 +236,7 @@ export default function ConsoleTab() {
           </button>
           <button
             className="btn btn-primary"
-            disabled={!input.trim()}
+            disabled={!input.trim() && !waitingForInput}
             onClick={() => sendCommand(input)}
           >
             Send
