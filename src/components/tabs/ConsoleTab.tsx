@@ -18,7 +18,7 @@ interface LogLine {
   // wizard = interactive prompt waiting    (muted, slightly different visual)
   // error  = ssh/app errors               (red)
   // info   = app messages                 (muted italic)
-  type: "input" | "output" | "wizard" | "error" | "info";
+  type: "input" | "output" | "wizard" | "error" | "info" | "debug";
 }
 
 interface ControllerPoll { phase: string; detail: string; new_lines: string[]; }
@@ -30,6 +30,7 @@ export default function ConsoleTab() {
   ]);
   const [ctrlPhase, setCtrlPhase] = useState("disconnected");
   const ctrlPhaseRef = useRef("disconnected");
+  const [debugMode, setDebugMode] = useState(false);
   // Tracks an input we've already echoed locally so we can skip the SSH round-trip echo.
   const pendingEchoRef = useRef<string | null>(null);
   const [paletteTab, setPaletteTab] = useState<CommandPaletteTab>("favorites");
@@ -70,6 +71,7 @@ export default function ConsoleTab() {
               return [{ id: idRef.current++, text, type: "input" as const }];
             }
             if (raw.startsWith("\x02")) return [{ id: idRef.current++, text: raw.slice(1), type: "wizard" as const }];
+            if (raw.startsWith("\x03")) return [{ id: idRef.current++, text: raw.slice(1), type: "debug" as const }];
             return [{ id: idRef.current++, text: raw, type: "output" as const }];
           });
           return newEntries.length > 0 ? [...prev, ...newEntries] : prev;
@@ -101,6 +103,13 @@ export default function ConsoleTab() {
     try {
       await invoke("send_interrupt");
     } catch { /* ignore if no shell */ }
+  }
+
+  async function toggleDebug() {
+    try {
+      const on = await invoke<boolean>("toggle_debug");
+      setDebugMode(on);
+    } catch { /* ignore */ }
   }
 
   function handlePreset(cmd: ControllerCommand) {
@@ -166,11 +175,26 @@ export default function ConsoleTab() {
               Waiting for input ↓
             </span>
           )}
+          <button
+            className={`btn btn-secondary`}
+            onClick={toggleDebug}
+            style={{ marginLeft: "auto", fontSize: 11, padding: "2px 8px", opacity: debugMode ? 1 : 0.5, color: debugMode ? "#d97706" : undefined }}
+            title="Toggle raw chunk debug logging"
+          >
+            {debugMode ? "Debug ON" : "Debug"}
+          </button>
         </div>
         <div className="log-pane console-log">
           {log.map((line, i) => {
             const prevType = i > 0 ? log[i - 1].type : null;
             const isWizardAnswer = line.type === "input" && prevType === "wizard";
+            if (line.type === "debug") {
+              return (
+                <div key={line.id} style={{ fontSize: 10, opacity: 0.6, color: "#d97706", fontFamily: "var(--mono)", whiteSpace: "pre-wrap", lineHeight: 1.3 }}>
+                  ⬡ {line.text}
+                </div>
+              );
+            }
             return (
               <div key={line.id} className={`log-line log-${line.type}`}>
                 {isWizardAnswer ? `> ${line.text}` : line.text}

@@ -35,6 +35,10 @@ struct InnerState {
     // Set by send_input after emitting Ctrl+A+Ctrl+K so the output processor
     // can suppress the one-shot readline prompt redraw that follows.
     shell_suppress_redraw: bool,
+    // When true, each raw normalized chunk from SSH stdout is pushed to shell_logs
+    // as a \x03-prefixed debug entry so operators can see exactly what the
+    // controller sends and when.
+    shell_debug: bool,
 }
 
 struct AppState {
@@ -243,6 +247,16 @@ fn connect_controller(ip: String, state: State<'_, AppState>) -> Result<(), Stri
                     }
                     Ok(Some(bytes)) => {
                         let chunk = normalize_chunk(&String::from_utf8_lossy(&bytes));
+
+                        // Debug: log each raw normalized chunk so operators can see
+                        // exactly what the controller sends and in what order.
+                        if let Ok(mut inner) = arc2.lock() {
+                            if inner.shell_debug {
+                                let escaped = debug_escape(&chunk);
+                                inner.shell_logs.push(format!("\x03[chunk: \"{escaped}\"]"));
+                            }
+                        }
+
                         partial.push_str(&chunk);
 
                         // Extract complete lines
@@ -421,6 +435,16 @@ fn poll_controller(state: State<'_, AppState>) -> Result<ControllerPoll, String>
         detail: inner.shell_detail.clone(),
         new_lines,
     })
+}
+
+/// Toggle raw-chunk debug logging. Returns the new state (true = on).
+/// When enabled, each normalized SSH stdout chunk is pushed to shell_logs
+/// as a \x03-prefixed entry so the ConsoleTab can render it as a debug line.
+#[tauri::command]
+fn toggle_debug(state: State<'_, AppState>) -> Result<bool, String> {
+    let mut inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
+    inner.shell_debug = !inner.shell_debug;
+    Ok(inner.shell_debug)
 }
 
 /// Send Ctrl+C (interrupt byte \x03) to the active controller shell.
@@ -955,6 +979,27 @@ fn strip_wizard_prefill(s: &str) -> &str {
     s
 }
 
+/// Escape a normalized chunk for debug display: makes whitespace and control
+/// characters visible so operators can see exactly what arrived from SSH.
+fn debug_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() * 2);
+    for c in s.chars() {
+        match c {
+            '\n' => out.push_str("↵"),
+            '\r' => out.push_str("←"),
+            '\t' => out.push_str("→"),
+            '\x01'..='\x1f' => {
+                out.push('^');
+                out.push((b'@' + c as u8) as char);
+            }
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
 fn kill_shell(inner: &mut InnerState) {
     inner.shell_stdin = None;
     if let Some(mut child) = inner.shell_child.take() {
@@ -996,6 +1041,7 @@ pub fn run() {
             poll_controller,
             send_input,
             send_interrupt,
+            toggle_debug,
             disconnect_controller,
             get_app_state,
         ])
