@@ -29,9 +29,20 @@ struct InnerState {
     shell_logs: Vec<String>,
     shell_log_cursor: usize, // how many lines ConsoleTab has already consumed
     // True when the last stdout flush was a wizard prompt waiting for input.
-    // send_input will prepend \x01\x0b (Ctrl+A + Ctrl+K) to clear the readline
-    // buffer before the user's text — no prompt redraw, clears any pre-fill length.
+    // Some prompts have an editable pre-filled value; others are simple yes/no
+    // choices that should accept raw Enter or a single replacement character.
     shell_wizard_input: bool,
+    // True only when the last wizard prompt included editable pre-filled text
+    // that must be cleared before inserting the user's replacement.
+    shell_wizard_needs_clear: bool,
+    // Set by send_input when responding to a wizard prompt so the output
+    // processor can suppress the immediate one-shot readline redraw that
+    // follows the submission.
+    shell_suppress_redraw: bool,
+    // When true, each raw normalized chunk from SSH stdout is pushed to shell_logs
+    // as a \x03-prefixed debug entry so operators can see exactly what the
+    // controller sends and when.
+    shell_debug: bool,
 }
 
 struct AppState {
@@ -165,6 +176,8 @@ fn connect_controller(ip: String, state: State<'_, AppState>) -> Result<(), Stri
             "-o", "LogLevel=ERROR",
             "-o", "StrictHostKeyChecking=no",
             "-o", "UserKnownHostsFile=/dev/null",
+            "-o", "ServerAliveInterval=15",
+            "-o", "ServerAliveCountMax=3",
             "-o", "KexAlgorithms=ecdh-sha2-nistp521",
             &format!("root@{ip}"),
         ])
@@ -240,6 +253,16 @@ fn connect_controller(ip: String, state: State<'_, AppState>) -> Result<(), Stri
                     }
                     Ok(Some(bytes)) => {
                         let chunk = normalize_chunk(&String::from_utf8_lossy(&bytes));
+
+                        // Debug: log each raw normalized chunk so operators can see
+                        // exactly what the controller sends and in what order.
+                        if let Ok(mut inner) = arc2.lock() {
+                            if inner.shell_debug {
+                                let escaped = debug_escape(&chunk);
+                                inner.shell_logs.push(format!("\x03[chunk: \"{escaped}\"]"));
+                            }
+                        }
+
                         partial.push_str(&chunk);
 
                         // Extract complete lines
@@ -269,6 +292,10 @@ fn connect_controller(ip: String, state: State<'_, AppState>) -> Result<(), Stri
                                     if suppress_next_merge {
                                         // stty echo — discard silently, consume pending_prompt
                                         suppress_next_merge = false;
+                                    } else if inner.shell_suppress_redraw && after_timeout_flush {
+                                        // Ctrl+K redraw merged with the user's echo line.
+                                        // Discard — local echo already showed the input.
+                                        inner.shell_suppress_redraw = false;
                                     } else {
                                         // Shell prompt + command echo → one input line
                                         inner.shell_logs.push(format!("\x01{}{}", p, line));
@@ -329,13 +356,26 @@ fn connect_controller(ip: String, state: State<'_, AppState>) -> Result<(), Stri
 
                             if !raw_full.trim().is_empty() {
                                 let display = strip_wizard_prefill(&raw_full).to_string();
+                                let mut suppressed = false;
                                 if let Ok(mut inner) = arc2.lock() {
-                                    detect_shell_connected(&mut inner, &display);
-                                    // \x02 prefix → "wizard" type in frontend
-                                    inner.shell_logs.push(format!("\x02{}", display));
-                                    inner.shell_wizard_input = true;
+                                    // Ctrl+K redraw arrives as a wizard-looking partial after
+                                    // send_input clears a pre-fill. Suppress it — local echo
+                                    // already showed the user's input.
+                                    if inner.shell_suppress_redraw {
+                                        inner.shell_suppress_redraw = false;
+                                        suppressed = true;
+                                    } else {
+                                        detect_shell_connected(&mut inner, &display);
+                                        // \x02 prefix → "wizard" type in frontend
+                                        inner.shell_logs.push(format!("\x02{}", display));
+                                        inner.shell_wizard_input = true;
+                                        inner.shell_wizard_needs_clear =
+                                            wizard_prompt_needs_clear(&raw_full);
+                                    }
                                 }
-                                after_timeout_flush = true;
+                                if !suppressed {
+                                    after_timeout_flush = true;
+                                }
                             }
                         }
                         // If only a shell prompt is pending, leave it — user is slow.
@@ -405,6 +445,16 @@ fn poll_controller(state: State<'_, AppState>) -> Result<ControllerPoll, String>
     })
 }
 
+/// Toggle raw-chunk debug logging. Returns the new state (true = on).
+/// When enabled, each normalized SSH stdout chunk is pushed to shell_logs
+/// as a \x03-prefixed entry so the ConsoleTab can render it as a debug line.
+#[tauri::command]
+fn toggle_debug(state: State<'_, AppState>) -> Result<bool, String> {
+    let mut inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
+    inner.shell_debug = !inner.shell_debug;
+    Ok(inner.shell_debug)
+}
+
 /// Send Ctrl+C (interrupt byte \x03) to the active controller shell.
 #[tauri::command]
 fn send_interrupt(state: State<'_, AppState>) -> Result<(), String> {
@@ -426,15 +476,22 @@ fn send_input(text: String, state: State<'_, AppState>) -> Result<(), String> {
     let mut inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
     // Read and clear the wizard flag before borrowing stdin.
     let is_wizard = std::mem::replace(&mut inner.shell_wizard_input, false);
+    let needs_clear = std::mem::replace(&mut inner.shell_wizard_needs_clear, false);
+    // Set suppress flag before taking the stdin borrow (borrow-checker constraint).
+    if is_wizard {
+        // Readline often repaints the prompt immediately after submission,
+        // whether we accepted the default with Enter or replaced the prefill.
+        // Suppress that one-shot redraw so the console doesn't show a duplicate
+        // wizard line or misclassify the repaint as fresh output.
+        inner.shell_suppress_redraw = true;
+    }
     let Some(stdin) = inner.shell_stdin.as_mut() else {
         return Err("No active controller shell".into());
     };
-    if is_wizard && !text.is_empty() {
+    if is_wizard && needs_clear && !text.is_empty() {
         // Send Ctrl+A (beginning-of-line) + Ctrl+K (kill-to-end) to clear the
-        // readline pre-fill BEFORE typing the new value.
-        // Unlike Ctrl+U, this does NOT trigger a full prompt redraw — readline
-        // just emits an ANSI erase sequence which our normalize_chunk strips out.
-        // Empty submission (accept default) skips this so the default is kept.
+        // editable readline pre-fill BEFORE typing the new value.
+        // Choice prompts like "[Y]?" skip this and receive the raw answer.
         stdin.write_all(b"\x01\x0b").map_err(|e| format!("Failed to clear prefill: {e}"))?;
     }
     stdin
@@ -456,6 +513,52 @@ fn disconnect_controller(state: State<'_, AppState>) -> Result<(), String> {
     kill_shell(&mut inner);
     inner.shell_logs.push("[Disconnected]".into());
     Ok(())
+}
+
+/// Open the active controller connection in Terminal.app for full interactive setup.
+#[tauri::command]
+fn open_controller_terminal(state: State<'_, AppState>) -> Result<(), String> {
+    let ip = {
+        let inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
+        inner
+            .controller_ip
+            .clone()
+            .ok_or_else(|| "Connect to a controller first.".to_string())?
+    };
+
+    let station_key = home_ssh_dir().join("station");
+    if !station_key.exists() {
+        return Err(
+            "SSH key not found at ~/.ssh/station. Select and start VPN bundle first.".into(),
+        );
+    }
+
+    let command = format!(
+        "clear; ssh -tt -i {} -o LogLevel=ERROR -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -o KexAlgorithms=ecdh-sha2-nistp521 {}",
+        shell_quote(&station_key.to_string_lossy()),
+        shell_quote(&format!("root@{ip}")),
+    );
+    let script = format!(
+        "tell application \"Terminal\"\nactivate\ndo script {}\nend tell",
+        applescript_string_literal(&command)
+    );
+
+    let out = Command::new("osascript")
+        .arg("-e")
+        .arg(&script)
+        .output()
+        .map_err(|e| format!("Failed to open Terminal: {e}"))?;
+
+    if out.status.success() {
+        Ok(())
+    } else {
+        let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        Err(if stderr.is_empty() {
+            "Terminal launch failed.".into()
+        } else {
+            format!("Failed to open Terminal: {stderr}")
+        })
+    }
 }
 
 /// Lightweight status for the Session tab — does NOT advance the ConsoleTab cursor.
@@ -920,12 +1023,42 @@ fn normalize_chunk(raw: &str) -> String {
 
 /// For wizard prompts like "    Name [Default]: Default text",
 /// strip the pre-filled default after the last "]: " so only the prompt label remains.
+/// Also handles choice prompts like "...(A-Add, R-Replace, U-Use) [U]? U"
+/// where the pre-fill follows a "? " ending.
 fn strip_wizard_prefill(s: &str) -> &str {
     if let Some(idx) = s.rfind("]: ") {
-        &s[..idx + 3]
-    } else {
-        s
+        return &s[..idx + 3];
     }
+    // Choice prompts: e.g. "Add, Replace, Use) [U]? U" → strip after last "? "
+    if let Some(idx) = s.rfind("? ") {
+        return &s[..idx + 2];
+    }
+    s
+}
+
+fn wizard_prompt_needs_clear(s: &str) -> bool {
+    strip_wizard_prefill(s) != s
+}
+
+/// Escape a normalized chunk for debug display: makes whitespace and control
+/// characters visible so operators can see exactly what arrived from SSH.
+fn debug_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() * 2);
+    for c in s.chars() {
+        match c {
+            '\n' => out.push_str("↵"),
+            '\r' => out.push_str("←"),
+            '\t' => out.push_str("→"),
+            '\x01'..='\x1f' => {
+                out.push('^');
+                out.push((b'@' + c as u8) as char);
+            }
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            _ => out.push(c),
+        }
+    }
+    out
 }
 
 fn kill_shell(inner: &mut InnerState) {
@@ -934,6 +1067,9 @@ fn kill_shell(inner: &mut InnerState) {
         let _ = child.kill();
         let _ = child.wait();
     }
+    inner.shell_wizard_input = false;
+    inner.shell_wizard_needs_clear = false;
+    inner.shell_suppress_redraw = false;
     inner.shell_phase = "disconnected".into();
     inner.shell_detail = String::new();
 }
@@ -969,7 +1105,9 @@ pub fn run() {
             poll_controller,
             send_input,
             send_interrupt,
+            toggle_debug,
             disconnect_controller,
+            open_controller_terminal,
             get_app_state,
         ])
         .setup(|_app| Ok(()))

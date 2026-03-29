@@ -18,7 +18,7 @@ interface LogLine {
   // wizard = interactive prompt waiting    (muted, slightly different visual)
   // error  = ssh/app errors               (red)
   // info   = app messages                 (muted italic)
-  type: "input" | "output" | "wizard" | "error" | "info";
+  type: "input" | "output" | "wizard" | "error" | "info" | "debug";
 }
 
 interface ControllerPoll { phase: string; detail: string; new_lines: string[]; }
@@ -30,6 +30,9 @@ export default function ConsoleTab() {
   ]);
   const [ctrlPhase, setCtrlPhase] = useState("disconnected");
   const ctrlPhaseRef = useRef("disconnected");
+  const [debugMode, setDebugMode] = useState(false);
+  // Tracks an input we've already echoed locally so we can skip the SSH round-trip echo.
+  const pendingEchoRef = useRef<string | null>(null);
   const [paletteTab, setPaletteTab] = useState<CommandPaletteTab>("favorites");
   const [search, setSearch] = useState("");
   const [confirmCommand, setConfirmCommand] = useState<ControllerCommand | null>(null);
@@ -56,14 +59,23 @@ export default function ConsoleTab() {
         setCtrlPhase(r.phase);
       }
       if (r.new_lines.length > 0) {
-        setLog((prev) => [
-          ...prev,
-          ...r.new_lines.map((raw) => {
-            if (raw.startsWith("\x01")) return { id: idRef.current++, text: raw.slice(1), type: "input" as const };
-            if (raw.startsWith("\x02")) return { id: idRef.current++, text: raw.slice(1), type: "wizard" as const };
-            return { id: idRef.current++, text: raw, type: "output" as const };
-          }),
-        ]);
+        setLog((prev) => {
+          const newEntries: LogLine[] = r.new_lines.flatMap<LogLine>((raw) => {
+            if (raw.startsWith("\x01")) {
+              const text = raw.slice(1);
+              // Skip SSH echo if we already showed this input locally.
+              if (pendingEchoRef.current === text) {
+                pendingEchoRef.current = null;
+                return [];
+              }
+              return [{ id: idRef.current++, text, type: "input" as const }];
+            }
+            if (raw.startsWith("\x02")) return [{ id: idRef.current++, text: raw.slice(1), type: "wizard" as const }];
+            if (raw.startsWith("\x03")) return [{ id: idRef.current++, text: raw.slice(1), type: "debug" as const }];
+            return [{ id: idRef.current++, text: raw, type: "output" as const }];
+          });
+          return newEntries.length > 0 ? [...prev, ...newEntries] : prev;
+        });
       }
     } catch { /* ignore */ }
   }
@@ -73,11 +85,22 @@ export default function ConsoleTab() {
   }
 
   async function sendCommand(cmd: string) {
-    if (!cmd.trim()) return;
+    const trimmed = cmd.trim();
+    const allowEmptyWizardSubmit = waitingForInput && cmd.length === 0;
+    if (!trimmed && !allowEmptyWizardSubmit) return;
     setInput("");
+    // Immediately echo the command locally so the user sees it without waiting
+    // for the SSH round-trip. The SSH echo (prefixed \x01) will be deduped.
+    if (trimmed) {
+      addLine(cmd, "input");
+      pendingEchoRef.current = cmd;
+    } else {
+      pendingEchoRef.current = null;
+    }
     try {
       await invoke("send_input", { text: cmd });
     } catch (e) {
+      pendingEchoRef.current = null;
       addLine(`Error: ${String(e)}`, "error");
     }
   }
@@ -86,6 +109,13 @@ export default function ConsoleTab() {
     try {
       await invoke("send_interrupt");
     } catch { /* ignore if no shell */ }
+  }
+
+  async function toggleDebug() {
+    try {
+      const on = await invoke<boolean>("toggle_debug");
+      setDebugMode(on);
+    } catch { /* ignore */ }
   }
 
   function handlePreset(cmd: ControllerCommand) {
@@ -125,8 +155,10 @@ export default function ConsoleTab() {
   const lastLine = log[log.length - 1];
   const waitingForInput =
     ctrlPhase === "connected" &&
-    lastLine?.type === "output" &&
-    /[:#>$] $/.test(lastLine.text);
+    (
+      lastLine?.type === "wizard" ||
+      (lastLine?.type === "output" && /[:#>$] $/.test(lastLine.text))
+    );
 
   // Group by category for "all" tab
   const grouped: Partial<Record<CommandCategory, ControllerCommand[]>> = {};
@@ -149,11 +181,26 @@ export default function ConsoleTab() {
               Waiting for input ↓
             </span>
           )}
+          <button
+            className={`btn btn-secondary`}
+            onClick={toggleDebug}
+            style={{ marginLeft: "auto", fontSize: 11, padding: "2px 8px", opacity: debugMode ? 1 : 0.5, color: debugMode ? "#d97706" : undefined }}
+            title="Toggle raw chunk debug logging"
+          >
+            {debugMode ? "Debug ON" : "Debug"}
+          </button>
         </div>
         <div className="log-pane console-log">
           {log.map((line, i) => {
             const prevType = i > 0 ? log[i - 1].type : null;
             const isWizardAnswer = line.type === "input" && prevType === "wizard";
+            if (line.type === "debug") {
+              return (
+                <div key={line.id} style={{ fontSize: 10, opacity: 0.6, color: "#d97706", fontFamily: "var(--mono)", whiteSpace: "pre-wrap", lineHeight: 1.3 }}>
+                  ⬡ {line.text}
+                </div>
+              );
+            }
             return (
               <div key={line.id} className={`log-line log-${line.type}`}>
                 {isWizardAnswer ? `> ${line.text}` : line.text}
@@ -189,7 +236,7 @@ export default function ConsoleTab() {
           </button>
           <button
             className="btn btn-primary"
-            disabled={!input.trim()}
+            disabled={!input.trim() && !waitingForInput}
             onClick={() => sendCommand(input)}
           >
             Send
