@@ -28,6 +28,12 @@ const BUNDLE_FILES = [
   "connect-local.bin",
 ];
 
+interface PreflightResult {
+  ping_ok: boolean;
+  port_ok: boolean;
+  detail: string;
+}
+
 interface Props {
   onControllerConnected: () => void;
 }
@@ -44,9 +50,13 @@ export default function SessionTab({ onControllerConnected }: Props) {
   const [ctrlStatus, setCtrlStatus] = useState<ControllerStatus>("disconnected");
   const [ctrlDetail, setCtrlDetail] = useState("");
 
+  const [preflight, setPreflight] = useState<PreflightResult | null>(null);
+  const [preflightRunning, setPreflightRunning] = useState(false);
+
   const vpnPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const ctrlPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const prevCtrlPhaseRef = useRef<string>("disconnected");
+  const prevVpnPhaseRef = useRef<string>("disconnected");
 
   // Restore last-used bundle folder on mount
   useEffect(() => {
@@ -82,11 +92,32 @@ export default function SessionTab({ onControllerConnected }: Props) {
     };
   }, [ctrlStatus]);
 
+  // Auto-run preflight when IP changes while VPN is connected
+  useEffect(() => {
+    if (vpnStatus === "connected" && vpnIp) {
+      setPreflight(null);
+      runPreflight(vpnIp);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [vpnIp]);
+
   async function pollVpn() {
     try {
       const r = await invoke<{ phase: string; detail: string; lines: string[] }>("poll_vpn");
+      const prev = prevVpnPhaseRef.current;
+      prevVpnPhaseRef.current = r.phase;
       setVpnStatus(r.phase as VpnStatus);
       setVpnDetail(r.detail);
+      // Auto-run preflight when VPN first becomes connected and IP is already set
+      if (prev !== "connected" && r.phase === "connected") {
+        setVpnIp((ip) => {
+          if (ip) {
+            setPreflight(null);
+            runPreflight(ip);
+          }
+          return ip;
+        });
+      }
     } catch { /* ignore */ }
   }
 
@@ -102,6 +133,17 @@ export default function SessionTab({ onControllerConnected }: Props) {
         onControllerConnected();
       }
     } catch { /* ignore */ }
+  }
+
+  async function runPreflight(ip: string) {
+    if (!ip || preflightRunning) return;
+    setPreflightRunning(true);
+    setPreflight(null);
+    try {
+      const r = await invoke<PreflightResult>("run_preflight", { ip });
+      setPreflight(r);
+    } catch { /* ignore */ }
+    finally { setPreflightRunning(false); }
   }
 
   async function loadFolder(path: string) {
@@ -147,6 +189,7 @@ export default function SessionTab({ onControllerConnected }: Props) {
     try { await invoke("stop_vpn"); } catch { /* best effort */ }
     setVpnStatus("disconnected");
     setVpnDetail("");
+    setPreflight(null);
   }
 
   async function connectToController() {
@@ -169,9 +212,23 @@ export default function SessionTab({ onControllerConnected }: Props) {
     prevCtrlPhaseRef.current = "disconnected";
   }
 
+  async function launchTerminal() {
+    try {
+      await invoke("open_controller_terminal");
+    } catch (e) {
+      setCtrlDetail(String(e));
+    }
+  }
+
   const allFilesOk = validation !== null && BUNDLE_FILES.every((f) => validation[f] === true);
   const bundleValid = allFilesOk;
   const canConnect = !!vpnIp && vpnStatus === "connected";
+  const showPreflight = vpnStatus === "connected" && !!vpnIp;
+
+  function preflightDotClass(ok: boolean | undefined): string {
+    if (preflight === null) return "idle";
+    return ok ? "ok" : "fail";
+  }
 
   return (
     <div className="tab-content" style={{ alignItems: "center", overflowY: "auto" }}>
@@ -243,6 +300,31 @@ export default function SessionTab({ onControllerConnected }: Props) {
               onChange={(e) => handleVpnIpChange(e.target.value)}
             />
           </div>
+
+          {/* Pre-flight diagnostics */}
+          {showPreflight && (
+            <div className="preflight-row">
+              <div className="preflight-checks">
+                <span className={`preflight-dot ${preflightDotClass(preflight?.ping_ok)}`}>
+                  Ping
+                </span>
+                <span className={`preflight-dot ${preflightDotClass(preflight?.port_ok)}`}>
+                  Port 22
+                </span>
+                {preflight && (
+                  <span className="preflight-detail">{preflight.detail}</span>
+                )}
+              </div>
+              <button
+                className="btn-link"
+                onClick={() => runPreflight(vpnIp)}
+                disabled={preflightRunning}
+              >
+                {preflightRunning ? "Checking…" : preflight ? "Re-check" : "Check"}
+              </button>
+            </div>
+          )}
+
           <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: ctrlDetail ? 6 : 0 }}>
             <span className={`badge badge-${ctrlStatus === "disconnected" ? "disconnected" : ctrlStatus}`}>
               {CTRL_LABELS[ctrlStatus]}
@@ -266,6 +348,19 @@ export default function SessionTab({ onControllerConnected }: Props) {
           {ctrlDetail && <div className="hint">{ctrlDetail}</div>}
           {!canConnect && (ctrlStatus === "disconnected" || ctrlStatus === "failed") && !!lastOctet && vpnStatus !== "connected" && (
             <div className="hint" style={{ marginTop: 4 }}>Start VPN first.</div>
+          )}
+
+          {/* Launch Controller Terminal */}
+          {ctrlStatus === "connected" && (
+            <div style={{ marginTop: 10 }}>
+              <button
+                className="btn btn-primary"
+                style={{ width: "100%" }}
+                onClick={launchTerminal}
+              >
+                Launch Controller Terminal
+              </button>
+            </div>
           )}
         </div>
 

@@ -89,6 +89,51 @@
   color: var(--accent);
 }
 
+/* Pre-flight diagnostics */
+.preflight-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.preflight-checks {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+  flex-wrap: wrap;
+}
+
+.preflight-dot {
+  font-size: 11px;
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.preflight-dot::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+}
+
+.preflight-dot.ok::before   { background: var(--success); }
+.preflight-dot.fail::before { background: var(--danger); }
+.preflight-dot.idle::before { background: var(--text-muted); }
+
+.preflight-dot.ok   { color: var(--text-secondary); }
+.preflight-dot.fail { color: var(--danger); }
+.preflight-dot.idle { color: var(--text-muted); }
+
+.preflight-detail {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
 /* Console Tab */
 .console-main {
   flex: 1;

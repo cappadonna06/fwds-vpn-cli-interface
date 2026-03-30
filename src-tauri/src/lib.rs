@@ -515,7 +515,39 @@ fn disconnect_controller(state: State<'_, AppState>) -> Result<(), String> {
     Ok(())
 }
 
+/// Ping the target IP and check port 22 reachability for pre-flight diagnostics.
+#[tauri::command]
+fn run_preflight(ip: String) -> Result<serde_json::Value, String> {
+    // Ping: -c 3 pings, -W 1000ms timeout per reply (macOS syntax)
+    let ping_ok = Command::new("ping")
+        .args(["-c", "3", "-W", "1000", &ip])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+
+    // Port 22: nc -zw1 (zero-I/O, 1s timeout)
+    let port_ok = Command::new("nc")
+        .args(["-zw1", &ip, "22"])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+
+    let detail = match (ping_ok, port_ok) {
+        (true, true)   => format!("{ip} reachable, port 22 open"),
+        (true, false)  => format!("{ip} reachable but port 22 closed"),
+        (false, true)  => format!("{ip} ping failed, port 22 open"),
+        (false, false) => format!("{ip} unreachable"),
+    };
+
+    Ok(serde_json::json!({
+        "ping_ok": ping_ok,
+        "port_ok": port_ok,
+        "detail": detail,
+    }))
+}
+
 /// Open the active controller connection in Terminal.app for full interactive setup.
+/// SSH session is wrapped with `script` to log output to ~/Desktop/fwds-{IP}-{date}.txt.
 #[tauri::command]
 fn open_controller_terminal(state: State<'_, AppState>) -> Result<(), String> {
     let ip = {
@@ -533,10 +565,17 @@ fn open_controller_terminal(state: State<'_, AppState>) -> Result<(), String> {
         );
     }
 
-    let command = format!(
-        "clear; ssh -tt -i {} -o LogLevel=ERROR -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -o KexAlgorithms=ecdh-sha2-nistp521 {}",
+    // Log path uses shell $(date) evaluated by Terminal.app's shell at launch time
+    let log_path = format!("$HOME/Desktop/fwds-{}-$(date +%Y-%m-%d).txt", ip);
+    let ssh_cmd = format!(
+        "ssh -tt -i {} -o LogLevel=ERROR -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -o KexAlgorithms=ecdh-sha2-nistp521 {}",
         shell_quote(&station_key.to_string_lossy()),
         shell_quote(&format!("root@{ip}")),
+    );
+    let command = format!(
+        "clear; script -q {} {}; exit",
+        shell_quote(&log_path),
+        &ssh_cmd,
     );
     let script = format!(
         "tell application \"Terminal\"\nactivate\ndo script {}\nend tell",
@@ -1107,6 +1146,7 @@ pub fn run() {
             send_interrupt,
             toggle_debug,
             disconnect_controller,
+            run_preflight,
             open_controller_terminal,
             get_app_state,
         ])

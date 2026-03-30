@@ -10,7 +10,7 @@ import "./components/tabs/tabs.css";
 type Tab = "session" | "console" | "wizard" | "logs";
 
 const TABS: { id: Tab; label: string }[] = [
-  { id: "session", label: "Session" },
+  { id: "session", label: "Connect" },
   { id: "console", label: "Console" },
   { id: "wizard", label: "Setup Wizard" },
   { id: "logs", label: "Logs" },
