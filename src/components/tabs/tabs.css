@@ -23,6 +23,43 @@
   gap: 8px;
 }
 
+/* Split IP input — prefix + octet look like one cohesive field */
+.ip-input-group {
+  display: flex;
+  align-items: center;
+  flex: 1;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.ip-input-group:focus-within {
+  border-color: var(--accent);
+}
+
+.ip-prefix {
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--text-muted);
+  padding: 6px 0 6px 10px;
+  background: var(--bg-2);
+  user-select: none;
+  flex-shrink: 0;
+}
+
+.ip-octet-input {
+  border: none !important;
+  border-radius: 0 !important;
+  background: var(--bg-2) !important;
+  padding: 6px 10px 6px 4px;
+  width: 52px;
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--text-primary);
+  outline: none;
+}
+
 .btn-group {
   display: flex;
   gap: 6px;

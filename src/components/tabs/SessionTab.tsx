@@ -43,6 +43,7 @@ export default function SessionTab() {
 
   const [vpnIp, setVpnIp] = useState("");
   const [lastOctet, setLastOctet] = useState("");
+  const [savedOctet, setSavedOctet] = useState("");
   const [ctrlStatus, setCtrlStatus] = useState<ControllerStatus>("disconnected");
   const [ctrlDetail, setCtrlDetail] = useState("");
 
@@ -54,10 +55,13 @@ export default function SessionTab() {
   const prevCtrlPhaseRef = useRef<string>("disconnected");
   const prevVpnPhaseRef = useRef<string>("disconnected");
 
-  // Restore last-used bundle folder on mount
+  // Restore last-used bundle folder and VPN octet on mount
   useEffect(() => {
-    const saved = localStorage.getItem("vpn_bundle_path");
-    if (saved) loadFolder(saved);
+    const savedPath = localStorage.getItem("vpn_bundle_path");
+    if (savedPath) loadFolder(savedPath);
+
+    const octet = localStorage.getItem("vpn_last_octet");
+    if (octet) setSavedOctet(octet);
   }, []);
 
   // VPN polling
@@ -88,15 +92,6 @@ export default function SessionTab() {
     };
   }, [ctrlStatus]);
 
-  // Auto-run preflight when IP changes while VPN is connected
-  useEffect(() => {
-    if (vpnStatus === "connected" && vpnIp) {
-      setPreflight(null);
-      runPreflight(vpnIp);
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [vpnIp]);
-
   async function pollVpn() {
     try {
       const r = await invoke<{ phase: string; detail: string; lines: string[] }>("poll_vpn");
@@ -104,7 +99,7 @@ export default function SessionTab() {
       prevVpnPhaseRef.current = r.phase;
       setVpnStatus(r.phase as VpnStatus);
       setVpnDetail(r.detail);
-      // Auto-run preflight when VPN first becomes connected and IP is already set
+      // Auto-run preflight once when VPN first becomes connected and IP is already set
       if (prev !== "connected" && r.phase === "connected") {
         setVpnIp((ip) => {
           if (ip) {
@@ -155,14 +150,18 @@ export default function SessionTab() {
     } catch { /* cancelled */ }
   }
 
-  function handleVpnIpChange(val: string) {
-    setVpnIp(val);
-    const parts = val.trim().split(".");
-    if (parts.length === 4) {
-      const octet = parts[3];
-      setLastOctet(octet && !isNaN(Number(octet)) ? octet : "");
-    } else {
-      setLastOctet("");
+  function handleOctetChange(raw: string) {
+    const cleaned = raw.replace(/\D/g, "").slice(0, 3);
+    setLastOctet(cleaned);
+    setVpnIp(cleaned ? `10.9.0.${cleaned}` : "");
+    setPreflight(null);
+  }
+
+  function handleOctetBlur() {
+    const n = parseInt(lastOctet, 10);
+    if (!lastOctet || isNaN(n) || n < 1 || n > 254) return;
+    if (vpnStatus === "connected") {
+      runPreflight(vpnIp);
     }
   }
 
@@ -186,6 +185,8 @@ export default function SessionTab() {
 
   async function connectToController() {
     if (!vpnIp) return;
+    localStorage.setItem("vpn_last_octet", lastOctet);
+    setSavedOctet(lastOctet);
     setCtrlStatus("connecting");
     setCtrlDetail(`Connecting to ${vpnIp}…`);
     prevCtrlPhaseRef.current = "connecting";
@@ -214,8 +215,10 @@ export default function SessionTab() {
 
   const allFilesOk = validation !== null && BUNDLE_FILES.every((f) => validation[f] === true);
   const bundleValid = allFilesOk;
-  const canConnect = !!vpnIp && vpnStatus === "connected";
-  const showPreflight = vpnStatus === "connected" && !!vpnIp;
+  const octetNum = parseInt(lastOctet, 10);
+  const octetValid = lastOctet !== "" && !isNaN(octetNum) && octetNum >= 1 && octetNum <= 254;
+  const canConnect = octetValid && vpnStatus === "connected";
+  const showPreflight = vpnStatus === "connected" && octetValid;
 
   function preflightDotClass(ok: boolean | undefined): string {
     if (preflight === null) return "idle";
@@ -284,15 +287,29 @@ export default function SessionTab() {
         {/* Controller */}
         <div className="card">
           <div className="card-title">Controller</div>
-          <div className="field-row" style={{ marginBottom: 10 }}>
+          <div className="field-row" style={{ marginBottom: savedOctet && !lastOctet ? 4 : 10 }}>
             <label>VPN IP</label>
-            <input
-              type="text"
-              placeholder="10.9.0.x"
-              value={vpnIp}
-              onChange={(e) => handleVpnIpChange(e.target.value)}
-            />
+            <div className="ip-input-group">
+              <span className="ip-prefix">10.9.0.</span>
+              <input
+                className="ip-octet-input"
+                type="text"
+                inputMode="numeric"
+                placeholder="x"
+                maxLength={3}
+                value={lastOctet}
+                onChange={(e) => handleOctetChange(e.target.value)}
+                onBlur={handleOctetBlur}
+              />
+            </div>
           </div>
+          {savedOctet && !lastOctet && (
+            <div style={{ marginBottom: 10 }}>
+              <button className="btn-link" onClick={() => handleOctetChange(savedOctet)}>
+                Use last: .{savedOctet}
+              </button>
+            </div>
+          )}
 
           {/* Pre-flight diagnostics */}
           {showPreflight && (
