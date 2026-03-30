@@ -64,6 +64,12 @@
 
 .file-name { color: var(--text-secondary); }
 
+.bundle-ready {
+  font-size: 11px;
+  color: var(--success);
+  margin-top: 4px;
+}
+
 .folder-selected {
   display: flex;
   align-items: center;

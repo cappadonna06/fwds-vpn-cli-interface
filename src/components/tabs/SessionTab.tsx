@@ -249,17 +249,18 @@ export default function SessionTab({ onControllerConnected }: Props) {
             </button>
           )}
           {validation !== null && (
-            <div className="file-checklist">
-              {BUNDLE_FILES.map((f) => {
-                const ok = validation[f] === true;
-                return (
+            allFilesOk ? (
+              <div className="bundle-ready">✓ Bundle ready</div>
+            ) : (
+              <div className="file-checklist">
+                {BUNDLE_FILES.filter((f) => validation[f] !== true).map((f) => (
                   <div key={f} className="file-check-row">
-                    <span className={`file-check-icon ${ok ? "ok" : "missing"}`}>{ok ? "✓" : "✗"}</span>
-                    <span className="file-name" style={{ color: ok ? undefined : "var(--danger)" }}>{f}</span>
+                    <span className="file-check-icon missing">✗</span>
+                    <span className="file-name" style={{ color: "var(--danger)" }}>{f}</span>
                   </div>
-                );
-              })}
-            </div>
+                ))}
+              </div>
+            )
           )}
         </div>
 
