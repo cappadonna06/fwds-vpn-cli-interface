@@ -34,11 +34,7 @@ interface PreflightResult {
   detail: string;
 }
 
-interface Props {
-  onControllerConnected: () => void;
-}
-
-export default function SessionTab({ onControllerConnected }: Props) {
+export default function SessionTab() {
   const [bundlePath, setBundlePath] = useState("");
   const [validation, setValidation] = useState<Record<string, boolean> | null>(null);
 
@@ -128,10 +124,6 @@ export default function SessionTab({ onControllerConnected }: Props) {
       prevCtrlPhaseRef.current = r.phase;
       setCtrlStatus(r.phase as ControllerStatus);
       setCtrlDetail(r.detail);
-      // Auto-switch to Console the moment we become connected
-      if (prev !== "connected" && r.phase === "connected") {
-        onControllerConnected();
-      }
     } catch { /* ignore */ }
   }
 

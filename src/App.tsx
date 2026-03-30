@@ -73,7 +73,7 @@ export default function App() {
 
       <main className="app-body">
         <div style={{ display: activeTab === "session" ? "contents" : "none" }}>
-          <SessionTab onControllerConnected={() => setActiveTab("console")} />
+          <SessionTab />
         </div>
         <div style={{ display: activeTab === "console" ? "contents" : "none" }}><ConsoleTab /></div>
         <div style={{ display: activeTab === "wizard" ? "contents" : "none" }}><WizardTab /></div>

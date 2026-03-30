@@ -565,8 +565,15 @@ fn open_controller_terminal(state: State<'_, AppState>) -> Result<(), String> {
         );
     }
 
-    // Log path uses shell $(date) evaluated by Terminal.app's shell at launch time
-    let log_path = format!("$HOME/Desktop/fwds-{}-$(date +%Y-%m-%d).txt", ip);
+    // Resolve HOME and date in Rust so the path is fully expanded before quoting.
+    // shell_quote wraps in single quotes which would prevent $HOME/$(date) from expanding.
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+    let date_str = Command::new("date")
+        .arg("+%Y-%m-%d")
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_else(|_| "session".into());
+    let log_path = format!("{}/Desktop/fwds-{}-{}.txt", home, ip, date_str);
     let ssh_cmd = format!(
         "ssh -tt -i {} -o LogLevel=ERROR -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -o KexAlgorithms=ecdh-sha2-nistp521 {}",
         shell_quote(&station_key.to_string_lossy()),
