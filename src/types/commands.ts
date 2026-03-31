@@ -513,6 +513,7 @@ export interface DiagnosticBlock {
   label: string;
   icon: string;
   description: string;
+  when_to_run?: string;
   light_command_ids: string[];
   heavy_command_ids: string[];
   time_warning?: string;
@@ -523,7 +524,8 @@ export const DIAGNOSTIC_BLOCKS: DiagnosticBlock[] = [
     id: "ethernet",
     label: "Ethernet",
     icon: "🌐",
-    description: "Physical link, IP assignment, DNS, and internet reachability",
+    description: "Physical link, IP assignment, DNS, and internet reachability. Tests that the cable is connected, an IP is assigned via DHCP, DNS resolves, and the internet is reachable.",
+    when_to_run: "After setup-ethernet, after any network change, or when the site reports connectivity issues.",
     light_command_ids: ["ethernet-check"],
     heavy_command_ids: ["ethernet-check", "ethtool-eth0", "ifconfig-eth0"],
   },
@@ -531,7 +533,8 @@ export const DIAGNOSTIC_BLOCKS: DiagnosticBlock[] = [
     id: "wifi",
     label: "Wi-Fi",
     icon: "📶",
-    description: "Wireless connection, signal strength, and connectivity",
+    description: "Wireless connection, signal strength, and interface details. Verifies the controller is associated to the correct SSID, reports signal quality, and lists visible networks.",
+    when_to_run: "After setup-wifi or when Wi-Fi connectivity or signal quality is in question.",
     light_command_ids: ["wifi-check", "wifi-signal"],
     heavy_command_ids: ["wifi-check", "wifi-signal", "iwconfig", "iwlist-scan"],
   },
@@ -539,7 +542,8 @@ export const DIAGNOSTIC_BLOCKS: DiagnosticBlock[] = [
     id: "cellular",
     label: "Cellular",
     icon: "📱",
-    description: "LTE-M modem, signal, provider, and SIM details",
+    description: "LTE-M modem connectivity, signal strength, provider, and SIM details. Confirms the modem is registered, signal is acceptable, and the SIM and APN are configured correctly.",
+    when_to_run: "After setup-cellular or when the site reports cellular connectivity issues or alerts are not reaching the cloud.",
     light_command_ids: ["cellular-check", "cell-signal"],
     heavy_command_ids: ["cellular-check", "cell-signal", "cell-provider", "cell-ccid", "cell-imei", "cell-apn", "cell-status"],
   },
@@ -547,7 +551,8 @@ export const DIAGNOSTIC_BLOCKS: DiagnosticBlock[] = [
     id: "satellite",
     label: "Satellite",
     icon: "🛰",
-    description: "Iridium satellite modem visibility and uptime",
+    description: "Iridium satellite modem sky visibility and uptime percentage. Runs continuously for ~10 minutes and reports the percentage of time the satellite was in view. Use this to confirm the modem has sufficient sky visibility before relying on satellite backup.",
+    when_to_run: "When satellite connectivity needs to be verified or when satellite-dependent alerts are not firing.",
     light_command_ids: ["satellite-check-m"],
     heavy_command_ids: ["satellite-check-m", "sat-imei"],
     time_warning: "satellite-check -m runs for ~10 minutes. Do not close the terminal.",
@@ -556,7 +561,8 @@ export const DIAGNOSTIC_BLOCKS: DiagnosticBlock[] = [
     id: "system",
     label: "System",
     icon: "🖥",
-    description: "Firmware version, controller ID, and release info",
+    description: "Firmware version, controller serial number, and release metadata. Use at the start of any session to confirm which controller you are connected to and whether the firmware is current.",
+    when_to_run: "At the start of any session to confirm controller identity and firmware version.",
     light_command_ids: ["version", "sid", "release"],
     heavy_command_ids: ["version", "sid", "release"],
   },
@@ -564,7 +570,8 @@ export const DIAGNOSTIC_BLOCKS: DiagnosticBlock[] = [
     id: "networking-all",
     label: "Networking — All Light",
     icon: "⚡",
-    description: "All network interfaces, light tier only (~45 seconds)",
+    description: "Runs the light-tier check on all four network interfaces in sequence: Ethernet, Wi-Fi, cellular, and signal readings. Good first-pass sweep after install or when multiple interfaces need a quick status check.",
+    when_to_run: "First-pass network check after install or when multiple interfaces need a quick status sweep (~45 seconds total).",
     light_command_ids: ["ethernet-check", "wifi-check", "wifi-signal", "cellular-check", "cell-signal"],
     heavy_command_ids: ["ethernet-check", "wifi-check", "wifi-signal", "cellular-check", "cell-signal"],
   },
@@ -572,7 +579,8 @@ export const DIAGNOSTIC_BLOCKS: DiagnosticBlock[] = [
     id: "full-diags",
     label: "Full Diagnostics",
     icon: "🔬",
-    description: "Complete diagnostic suite — all interfaces, heavy tier",
+    description: "Complete diagnostic suite across all interfaces using the heavy tier. Covers Ethernet link and IP details, Wi-Fi signal and scan, full cellular modem info, satellite visibility, and system identity. Produces a comprehensive baseline suitable for post-install sign-off or hard-to-diagnose issues.",
+    when_to_run: "New install sign-off, post-repair baseline, or when a site has intermittent issues and you need a full picture.",
     light_command_ids: [],
     heavy_command_ids: [
       "ethernet-check", "ethtool-eth0", "ifconfig-eth0",
@@ -587,7 +595,8 @@ export const DIAGNOSTIC_BLOCKS: DiagnosticBlock[] = [
     id: "full-diags-no-sat",
     label: "Full Diags (no satellite)",
     icon: "🔬",
-    description: "Complete diagnostic suite excluding satellite",
+    description: "Complete diagnostic suite excluding satellite commands. Same coverage as Full Diagnostics for Ethernet, Wi-Fi, cellular, and system — use when satellite is not installed or not relevant to the issue at hand.",
+    when_to_run: "Same as Full Diagnostics but when satellite is not installed or not relevant to the current issue.",
     light_command_ids: [],
     heavy_command_ids: [
       "ethernet-check", "ethtool-eth0", "ifconfig-eth0",

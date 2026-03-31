@@ -879,25 +879,28 @@
 }
 
 .cmd-chevron-btn {
-  background: none;
-  border: none;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
   color: var(--text-muted);
   font-size: 13px;
-  padding: 2px 5px;
+  padding: 2px 6px;
   cursor: pointer;
   border-radius: 3px;
-  transition: color 0.1s, background 0.1s, transform 0.15s;
+  transition: color 0.1s, background 0.1s, border-color 0.1s, transform 0.15s;
   line-height: 1;
 }
 
 .cmd-chevron-btn:hover {
   color: var(--text-primary);
   background: var(--bg-3);
+  border-color: var(--accent);
 }
 
 .cmd-chevron-btn-open {
   transform: rotate(180deg);
   color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
+  border-color: var(--accent);
 }
 
 /* Highlight match in search results */
@@ -1278,4 +1281,92 @@
   background: color-mix(in srgb, var(--danger) 10%, transparent);
   padding: 1px 4px;
   border-radius: 3px;
+}
+
+/* ─── Diagnostic block open state ────────────────────────────────────────── */
+
+.diag-block-row-open {
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 35%, transparent) !important;
+}
+
+/* ─── Diagnostic block detail drawer ─────────────────────────────────────── */
+
+.block-drawer-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.block-drawer-title-icon {
+  font-size: 18px;
+  line-height: 1;
+}
+
+.block-drawer-tier-time {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-left: 6px;
+  font-weight: normal;
+}
+
+.block-drawer-when {
+  font-size: 12px;
+  color: var(--text-muted);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  border-left: 2px solid var(--accent);
+  border-radius: 0 3px 3px 0;
+  padding: 5px 10px;
+  margin-top: 6px;
+  line-height: 1.5;
+}
+
+.block-drawer-tier-heading {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  margin: 14px 0 6px;
+}
+
+.block-drawer-cmd-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.block-drawer-cmd-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 8px;
+  border-radius: 4px;
+  background: var(--bg-2);
+  border: 1px solid transparent;
+}
+
+.block-drawer-cmd-item:hover {
+  border-color: var(--border);
+}
+
+.block-drawer-cmd-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.block-drawer-cmd-top code {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--accent);
+}
+
+.block-drawer-cmd-desc {
+  font-size: 11px;
+  color: var(--text-muted);
+  line-height: 1.4;
 }

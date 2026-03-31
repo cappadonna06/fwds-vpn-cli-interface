@@ -31,6 +31,13 @@ function formatSeconds(s: number): string {
   return `~${m}m`;
 }
 
+function sumSeconds(ids: string[]): number {
+  return ids.reduce((total, id) => {
+    const c = COMMANDS.find((x) => x.id === id);
+    return total + (c?.est_seconds ?? 0);
+  }, 0);
+}
+
 function highlightMatch(text: string, query: string): ReactNode {
   if (!query) return text;
   const idx = text.toLowerCase().indexOf(query.toLowerCase());
@@ -168,6 +175,8 @@ interface DiagnosticBlockRowProps {
   onCopyLight: (block: DiagnosticBlock) => void;
   onCopyHeavy: (block: DiagnosticBlock) => void;
   copiedBlockId: string | null;
+  onOpenDrawer: (id: string) => void;
+  isDrawerOpen: boolean;
 }
 
 function DiagnosticBlockRow({
@@ -176,6 +185,8 @@ function DiagnosticBlockRow({
   onCopyLight,
   onCopyHeavy,
   copiedBlockId,
+  onOpenDrawer,
+  isDrawerOpen,
 }: DiagnosticBlockRowProps) {
   const lightCopied = copiedBlockId === `${block.id}-light`;
   const heavyCopied = copiedBlockId === `${block.id}-heavy`;
@@ -201,7 +212,7 @@ function DiagnosticBlockRow({
     .join("\n");
 
   return (
-    <div className="diag-block-row">
+    <div className={`diag-block-row ${isDrawerOpen ? "diag-block-row-open" : ""}`}>
       <div className="diag-block-icon">{block.icon}</div>
       <div className="diag-block-content">
         <div className="diag-block-header">
@@ -233,14 +244,193 @@ function DiagnosticBlockRow({
                 {singleCopied ? "✓" : "Copy"}
               </button>
             )}
+            <button
+              className={`cmd-chevron-btn ${isDrawerOpen ? "cmd-chevron-btn-open" : ""}`}
+              onClick={() => onOpenDrawer(block.id)}
+              title="Block details"
+              aria-label="Show block details"
+            >
+              ▾
+            </button>
           </div>
         </div>
-        <div className="diag-block-desc">{block.description}</div>
+        <div className="diag-block-desc">{block.description.split(".")[0]}.</div>
         {block.time_warning && (
           <div className="diag-block-warning">{block.time_warning}</div>
         )}
       </div>
     </div>
+  );
+}
+
+// ─── DiagnosticBlockDrawer ────────────────────────────────────────────────────
+
+interface DiagnosticBlockDrawerProps {
+  block: DiagnosticBlock;
+  allCommands: ControllerCommand[];
+  onClose: () => void;
+  onCopyLight: (block: DiagnosticBlock) => void;
+  onCopyHeavy: (block: DiagnosticBlock) => void;
+  copiedBlockId: string | null;
+}
+
+function DiagnosticBlockDrawer({
+  block,
+  allCommands,
+  onClose,
+  onCopyLight,
+  onCopyHeavy,
+  copiedBlockId,
+}: DiagnosticBlockDrawerProps) {
+  useEffect(() => {
+    function handleKey(e: KeyboardEvent) {
+      if (e.key === "Escape") onClose();
+    }
+    window.addEventListener("keydown", handleKey);
+    return () => window.removeEventListener("keydown", handleKey);
+  }, [onClose]);
+
+  const hasDistinctTiers =
+    block.light_command_ids.length > 0 &&
+    block.heavy_command_ids.length > 0 &&
+    JSON.stringify(block.light_command_ids) !== JSON.stringify(block.heavy_command_ids);
+
+  const lightCopied = copiedBlockId === `${block.id}-light`;
+  const heavyCopied = copiedBlockId === `${block.id}-heavy`;
+  const singleCopied = copiedBlockId === `${block.id}-single`;
+
+  const lightTotal = sumSeconds(block.light_command_ids);
+  const heavyTotal = sumSeconds(block.heavy_command_ids);
+
+  function resolveCommands(ids: string[]): ControllerCommand[] {
+    return ids
+      .map((id) => allCommands.find((c) => c.id === id))
+      .filter((c): c is ControllerCommand => c !== undefined);
+  }
+
+  const lightCmds = resolveCommands(block.light_command_ids);
+  const heavyCmds = resolveCommands(block.heavy_command_ids);
+
+  function renderCommandList(cmds: ControllerCommand[]) {
+    return (
+      <div className="block-drawer-cmd-list">
+        {cmds.map((c) => (
+          <div key={c.id} className="block-drawer-cmd-item">
+            <div className="block-drawer-cmd-top">
+              <code className="cmd-name">{c.label}</code>
+              {c.est_seconds !== undefined && (
+                <span className="cmd-time-badge">{formatSeconds(c.est_seconds)}</span>
+              )}
+            </div>
+            <div className="cmd-desc">{c.description}</div>
+          </div>
+        ))}
+      </div>
+    );
+  }
+
+  return (
+    <>
+      <div className="cmd-drawer-overlay" onClick={onClose} />
+      <div className="cmd-drawer" role="dialog" aria-modal="true">
+        <div className="cmd-drawer-header">
+          <span className="block-drawer-title">
+            <span className="block-drawer-title-icon">{block.icon}</span>
+            {block.label}
+          </span>
+          <div className="cmd-drawer-header-actions">
+            {block.time_warning && (
+              <span className="cmd-drawer-guard-hint">⚠ {block.time_warning}</span>
+            )}
+            {hasDistinctTiers ? (
+              <>
+                <button
+                  className={`cmd-copy-btn ${lightCopied ? "cmd-copy-btn-copied" : ""}`}
+                  onClick={() => onCopyLight(block)}
+                >
+                  {lightCopied ? "✓ Copied" : "Copy Light"}
+                </button>
+                <button
+                  className={`cmd-copy-btn diag-block-btn-heavy ${heavyCopied ? "cmd-copy-btn-copied" : ""}`}
+                  onClick={() => onCopyHeavy(block)}
+                >
+                  {heavyCopied ? "✓ Copied" : "Copy Heavy"}
+                </button>
+              </>
+            ) : block.heavy_command_ids.length > 0 ? (
+              <button
+                className={`cmd-copy-btn ${singleCopied ? "cmd-copy-btn-copied" : ""}`}
+                onClick={() => onCopyHeavy(block)}
+              >
+                {singleCopied ? "✓ Copied" : "Copy commands"}
+              </button>
+            ) : null}
+            <button className="cmd-drawer-close" onClick={onClose} aria-label="Close">
+              ×
+            </button>
+          </div>
+        </div>
+        <div className="cmd-drawer-sep" />
+        <div className="cmd-drawer-body">
+          <p className="cmd-drawer-description">{block.description}</p>
+
+          {block.when_to_run && (
+            <div className="cmd-drawer-section">
+              <div className="cmd-drawer-section-title">When to run</div>
+              <div className="cmd-drawer-section-body">{block.when_to_run}</div>
+            </div>
+          )}
+
+          {block.time_warning && (
+            <div className="diag-block-warning" style={{ marginTop: 0 }}>
+              {block.time_warning}
+            </div>
+          )}
+
+          {/* If light === heavy or no light, show one combined section */}
+          {!hasDistinctTiers && heavyCmds.length > 0 && (
+            <div className="cmd-drawer-section">
+              <div className="cmd-drawer-section-title">
+                Commands
+                {heavyTotal > 0 && (
+                  <span className="block-drawer-tier-time">{formatSeconds(heavyTotal)} total</span>
+                )}
+              </div>
+              {renderCommandList(heavyCmds)}
+            </div>
+          )}
+
+          {/* Light tier */}
+          {hasDistinctTiers && lightCmds.length > 0 && (
+            <div className="cmd-drawer-section">
+              <div className="cmd-drawer-section-title">
+                Light tier
+                {lightTotal > 0 && (
+                  <span className="block-drawer-tier-time">{formatSeconds(lightTotal)} total</span>
+                )}
+              </div>
+              {renderCommandList(lightCmds)}
+            </div>
+          )}
+
+          {/* Heavy tier */}
+          {hasDistinctTiers && heavyCmds.length > 0 && (
+            <div className="cmd-drawer-section">
+              <div className="cmd-drawer-section-title">
+                Heavy tier
+                {heavyTotal > 0 && (
+                  <span className="block-drawer-tier-time">{formatSeconds(heavyTotal)} total</span>
+                )}
+              </div>
+              {renderCommandList(heavyCmds)}
+            </div>
+          )}
+
+          {/* Full-diags: only heavy, no light */}
+          {!hasDistinctTiers && block.light_command_ids.length === 0 && heavyCmds.length > 0 && null /* already rendered above */}
+        </div>
+      </div>
+    </>
   );
 }
 
@@ -430,6 +620,7 @@ export default function CommandsTab() {
   const [search, setSearch] = useState("");
   const [paletteTab, setPaletteTab] = useState<PaletteTab>("favorites");
   const [openDrawerId, setOpenDrawerId] = useState<string | null>(null);
+  const [openBlockDrawerId, setOpenBlockDrawerId] = useState<string | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [copiedBlockId, setCopiedBlockId] = useState<string | null>(null);
   const [favorites, setFavorites] = useState<string[]>(() => {
@@ -480,11 +671,8 @@ export default function CommandsTab() {
   function toggleCategory(cat: CommandCategory) {
     setCollapsedCategories((prev) => {
       const next = new Set(prev);
-      if (next.has(cat)) {
-        next.delete(cat);
-      } else {
-        next.add(cat);
-      }
+      if (next.has(cat)) next.delete(cat);
+      else next.add(cat);
       return next;
     });
   }
@@ -528,8 +716,15 @@ export default function CommandsTab() {
     }
   }
 
-  function handleOpenDrawer(id: string) {
+  // Opening a command drawer closes any block drawer, and vice versa
+  function handleOpenCommandDrawer(id: string) {
+    setOpenBlockDrawerId(null);
     setOpenDrawerId((prev: string | null) => (prev === id ? null : id));
+  }
+
+  function handleOpenBlockDrawer(id: string) {
+    setOpenDrawerId(null);
+    setOpenBlockDrawerId((prev: string | null) => (prev === id ? null : id));
   }
 
   function handleBlockCopy(block: DiagnosticBlock, tier: "light" | "heavy" | "single") {
@@ -547,6 +742,18 @@ export default function CommandsTab() {
       () => setCopiedBlockId((prev: string | null) => (prev === key ? null : prev)),
       1500
     );
+  }
+
+  function blockCopyLight(block: DiagnosticBlock) {
+    handleBlockCopy(block, "light");
+  }
+
+  function blockCopyHeavy(block: DiagnosticBlock) {
+    const hasDistinct =
+      block.light_command_ids.length > 0 &&
+      block.heavy_command_ids.length > 0 &&
+      JSON.stringify(block.light_command_ids) !== JSON.stringify(block.heavy_command_ids);
+    handleBlockCopy(block, hasDistinct ? "heavy" : "single");
   }
 
   // Determine displayed palette commands
@@ -582,6 +789,10 @@ export default function CommandsTab() {
     ? COMMANDS.find((c) => c.id === openDrawerId) ?? null
     : null;
 
+  const openBlockDrawer = openBlockDrawerId
+    ? DIAGNOSTIC_BLOCKS.find((b) => b.id === openBlockDrawerId) ?? null
+    : null;
+
   // Group for "all" tab
   const grouped: Partial<Record<CommandCategory, ControllerCommand[]>> = {};
   if (!isSearching && paletteTab === "all") {
@@ -597,7 +808,7 @@ export default function CommandsTab() {
         cmd={cmd}
         onCopy={handleCopyFromRow}
         onConfirmedCopy={handleConfirmedRowCopy}
-        onOpenDrawer={handleOpenDrawer}
+        onOpenDrawer={handleOpenCommandDrawer}
         isCopied={copiedId === cmd.id}
         isFavorite={favorites.includes(cmd.id)}
         onToggleFavorite={handleToggleFavorite}
@@ -664,7 +875,7 @@ export default function CommandsTab() {
                     cmd={cmd}
                     onCopy={handleCopyFromRow}
                     onConfirmedCopy={handleConfirmedRowCopy}
-                    onOpenDrawer={handleOpenDrawer}
+                    onOpenDrawer={handleOpenCommandDrawer}
                     isCopied={copiedId === cmd.id}
                     isFavorite={favorites.includes(cmd.id)}
                     onToggleFavorite={handleToggleFavorite}
@@ -731,15 +942,11 @@ export default function CommandsTab() {
               key={block.id}
               block={block}
               commands={COMMANDS}
-              onCopyLight={(b) => handleBlockCopy(b, "light")}
-              onCopyHeavy={(b) => {
-                const hasDistinct =
-                  b.light_command_ids.length > 0 &&
-                  b.heavy_command_ids.length > 0 &&
-                  JSON.stringify(b.light_command_ids) !== JSON.stringify(b.heavy_command_ids);
-                handleBlockCopy(b, hasDistinct ? "heavy" : "single");
-              }}
+              onCopyLight={blockCopyLight}
+              onCopyHeavy={blockCopyHeavy}
               copiedBlockId={copiedBlockId}
+              onOpenDrawer={handleOpenBlockDrawer}
+              isDrawerOpen={openBlockDrawerId === block.id}
             />
           ))}
         </div>
@@ -754,6 +961,18 @@ export default function CommandsTab() {
           onCopy={handleCopyFromDrawer}
           isCopied={copiedId === openDrawerCmd.id}
           onNavigate={(id) => setOpenDrawerId(id)}
+        />
+      )}
+
+      {/* Diagnostic block drawer */}
+      {openBlockDrawer && (
+        <DiagnosticBlockDrawer
+          block={openBlockDrawer}
+          allCommands={COMMANDS}
+          onClose={() => setOpenBlockDrawerId(null)}
+          onCopyLight={blockCopyLight}
+          onCopyHeavy={blockCopyHeavy}
+          copiedBlockId={copiedBlockId}
         />
       )}
 
