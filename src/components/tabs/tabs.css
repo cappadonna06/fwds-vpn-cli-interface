@@ -1545,6 +1545,11 @@
   margin: 0 4px;
 }
 
+/* Pushes copy+help buttons to the right edge on suffix rows */
+.ref-row-spacer {
+  flex: 1;
+}
+
 /* Type number in split rows stays compact */
 .ref-row-value-fixed {
   flex: 0 0 auto !important;

@@ -471,7 +471,7 @@ export default function WizardTab() {
                         <span className="ref-row-label">{row.label}</span>
 
                         {/* Value */}
-                        <span className={row.split ? "ref-row-value ref-row-value-fixed" : "ref-row-value"}>
+                        <span className={(row.split || row.valueSuffix) ? "ref-row-value ref-row-value-fixed" : "ref-row-value"}>
                           {isPasswordRow && !showPassword
                             ? "••••••••"
                             : displayValue || <span className="ref-row-empty">—</span>}
@@ -489,7 +489,10 @@ export default function WizardTab() {
 
                         {/* Non-copyable descriptor next to value (HHC name, water mode, etc.) */}
                         {row.valueSuffix && (
-                          <span className="ref-row-suffix">{row.valueSuffix}</span>
+                          <>
+                            <span className="ref-row-suffix">{row.valueSuffix}</span>
+                            {!row.split && <span className="ref-row-spacer" />}
+                          </>
                         )}
 
                         {/* Copy button */}
