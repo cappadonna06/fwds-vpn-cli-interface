@@ -470,7 +470,7 @@ export default function WizardTab() {
                         <span className="ref-row-label">{row.label}</span>
 
                         {/* Value */}
-                        <span className="ref-row-value">
+                        <span className={row.split ? "ref-row-value ref-row-value-fixed" : "ref-row-value"}>
                           {isPasswordRow && !showPassword
                             ? "••••••••"
                             : displayValue || <span className="ref-row-empty">—</span>}
@@ -494,6 +494,28 @@ export default function WizardTab() {
                         >
                           {copiedId === row.id ? "✓" : "Copy"}
                         </button>
+
+                        {/* Non-copyable descriptor (HHC type name, water mode, etc.) */}
+                        {row.valueSuffix && (
+                          <span className="ref-row-suffix">{row.valueSuffix}</span>
+                        )}
+
+                        {/* Split second prompt (zone name after zone type) */}
+                        {row.split && (
+                          <>
+                            <span className="ref-row-split-divider" aria-hidden="true" />
+                            <span className="ref-row-value ref-row-split-value">
+                              {row.split.value || <span className="ref-row-empty">—</span>}
+                            </span>
+                            <button
+                              className="btn btn-secondary ref-copy-btn"
+                              onClick={() => copyValue(row.split!.value, row.split!.id)}
+                              disabled={!row.split.value}
+                            >
+                              {copiedId === row.split.id ? "✓" : "Copy"}
+                            </button>
+                          </>
+                        )}
 
                         {/* Help toggle — only if helper text exists */}
                         {row.helper && (

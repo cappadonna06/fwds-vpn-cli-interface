@@ -4,6 +4,8 @@ export interface PromptRow {
   id: string;
   label: string;
   value: string;
+  valueSuffix?: string;            // non-copyable descriptive text shown after [Copy]
+  split?: { id: string; value: string }; // second sequential prompt on the same row
   sensitive?: boolean;
   warning?: string;
   helper?: string;
@@ -79,7 +81,8 @@ export function buildReferenceSections(config: SystemConfig): ReferenceSection[]
     {
       id: "system-hhc-type",
       label: "HHC type (0–3)",
-      value: `${HHC_NUM[config.hhc_type]} — ${config.hhc_type}`,
+      value: HHC_NUM[config.hhc_type],
+      valueSuffix: config.hhc_type,
       helper:
         "Enter the number: 0 = Legacy, 1 = HP6, 2 = MP3, 3 = LV2. Must match the physical unit installed. Wrong HHC type will cause zone mapping and pressure behavior to be incorrect.",
     },
@@ -121,11 +124,13 @@ export function buildReferenceSections(config: SystemConfig): ReferenceSection[]
       title: "Zone names",
       rows: config.zones.map((zone, i) => ({
         id: `zone-${i}`,
-        label: `Zone ${i + 1} — type, then name`,
-        value: `${ZONE_TYPE_NUM[zone.type]} — ${zone.name}`,
+        label: `Zone ${i + 1}`,
+        value: ZONE_TYPE_NUM[zone.type],
+        valueSuffix: zone.type,
+        split: { id: `zone-${i}-name`, value: zone.name },
         warning: !zone.name ? `Zone ${i + 1} name is missing` : undefined,
         helper:
-          "The controller asks for type first (0 = Roof, 1 = Eave, 2 = Perimeter), then name. Zone names appear on the dashboard and in alerts. Maximum 16 characters.",
+          "Two prompts in sequence: first the zone type (0 = Roof, 1 = Eave, 2 = Perimeter), then the name. Zone names appear on the dashboard and in alerts. Maximum 16 characters.",
       })),
       sectionNote:
         "Zone entries are prompted sequentially within setup-system, after zone count.",
@@ -155,7 +160,8 @@ export function buildReferenceSections(config: SystemConfig): ReferenceSection[]
       {
         id: "system-water-mode",
         label: "Water use mode (0–1)",
-        value: `${WATER_MODE_NUM[config.water_use_mode]} — ${config.water_use_mode}`,
+        value: WATER_MODE_NUM[config.water_use_mode],
+        valueSuffix: config.water_use_mode,
         helper:
           "Enter the number: 0 = Standard, 1 = High. Standard is correct for most installs. High increases flow rate and is used for sites with larger coverage requirements or lower water pressure. Should be specified in the intake — do not change without instruction.",
       }
@@ -292,10 +298,10 @@ export function buildReferenceSections(config: SystemConfig): ReferenceSection[]
   });
 
   // ── SECTION 9: setup-preferred-network ───────────────────────────────────
-  const prefLabels: Record<string, string> = {
-    E: "E — Ethernet",
-    W: "W — Wi-Fi",
-    C: "C — Cellular",
+  const prefNames: Record<string, string> = {
+    E: "Ethernet",
+    W: "Wi-Fi",
+    C: "Cellular",
   };
   const prefValue = config.preferred_network ?? "E";
 
@@ -307,7 +313,8 @@ export function buildReferenceSections(config: SystemConfig): ReferenceSection[]
       {
         id: "preferred-network",
         label: "Preferred network (E/W/C)",
-        value: prefLabels[prefValue] ?? prefValue,
+        value: prefValue,
+        valueSuffix: prefNames[prefValue] ?? prefValue,
         warning: !config.preferred_network
           ? "Preferred network not set in intake — defaulting to Ethernet"
           : undefined,
