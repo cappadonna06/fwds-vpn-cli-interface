@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import SessionTab from "./components/tabs/SessionTab";
-import ConsoleTab from "./components/tabs/ConsoleTab";
+import CommandsTab from "./components/tabs/CommandsTab";
 import WizardTab from "./components/tabs/WizardTab";
 import LogsTab from "./components/tabs/LogsTab";
 import "./App.css";
@@ -10,8 +10,8 @@ import "./components/tabs/tabs.css";
 type Tab = "session" | "console" | "wizard" | "logs";
 
 const TABS: { id: Tab; label: string }[] = [
-  { id: "session", label: "Session" },
-  { id: "console", label: "Console" },
+  { id: "session", label: "Connect" },
+  { id: "console", label: "Commands" },
   { id: "wizard", label: "Setup Wizard" },
   { id: "logs", label: "Logs" },
 ];
@@ -73,9 +73,9 @@ export default function App() {
 
       <main className="app-body">
         <div style={{ display: activeTab === "session" ? "contents" : "none" }}>
-          <SessionTab onControllerConnected={() => setActiveTab("console")} />
+          <SessionTab />
         </div>
-        <div style={{ display: activeTab === "console" ? "contents" : "none" }}><ConsoleTab /></div>
+        <div style={{ display: activeTab === "console" ? "contents" : "none" }}><CommandsTab /></div>
         <div style={{ display: activeTab === "wizard" ? "contents" : "none" }}><WizardTab /></div>
         <div style={{ display: activeTab === "logs" ? "contents" : "none" }}><LogsTab /></div>
       </main>
