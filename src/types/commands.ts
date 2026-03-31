@@ -11,6 +11,11 @@ export interface ControllerCommand {
   guard: GuardLevel;
   guard_message?: string;
   destructive?: boolean;
+  est_seconds?: number;
+  when_to_run?: string;
+  what_to_look_for?: string[];
+  related_command_ids?: string[];
+  tags?: string[];
 }
 
 export const COMMANDS: ControllerCommand[] = [
@@ -32,6 +37,13 @@ export const COMMANDS: ControllerCommand[] = [
     description: "Station and site configuration: customer name, location, install date. Non-destructive.",
     reboot_required: true,
     guard: "none",
+    est_seconds: 90,
+    when_to_run: "First-time install or when station metadata needs correction.",
+    what_to_look_for: [
+      "Prompts for customer name, location, and install date",
+      "Accept defaults by pressing Enter, or type new values",
+    ],
+    related_command_ids: ["setup-system", "setup-network"],
   },
   {
     id: "setup-system",
@@ -43,6 +55,13 @@ export const COMMANDS: ControllerCommand[] = [
     guard: "confirm",
     guard_message: "setup-system is destructive and will erase existing hydraulic configuration. Continue?",
     destructive: true,
+    est_seconds: 150,
+    when_to_run: "First-time install only. DESTRUCTIVE on already-configured controllers.",
+    what_to_look_for: [
+      "Prompts for HHC type, zone count, foam, drain settings",
+      "Will erase existing hydraulic config without warning",
+    ],
+    related_command_ids: ["setup-station", "setup-network"],
   },
   {
     id: "setup-network",
@@ -52,6 +71,13 @@ export const COMMANDS: ControllerCommand[] = [
     description: "Network configuration: Ethernet, Wi-Fi, Cellular, Satellite, preferred network.",
     reboot_required: true,
     guard: "none",
+    est_seconds: 180,
+    when_to_run: "After first install or when network configuration needs to change.",
+    what_to_look_for: [
+      "Prompts for Ethernet, Wi-Fi, Cellular, Satellite, preferred network",
+      "Requires reboot to take effect",
+    ],
+    related_command_ids: ["setup-wifi", "setup-ethernet", "setup-cellular"],
   },
   {
     id: "setup-ethernet",
@@ -61,6 +87,9 @@ export const COMMANDS: ControllerCommand[] = [
     description: "Configure wired Ethernet. No reboot required unless primary network changes.",
     reboot_required: false,
     guard: "none",
+    est_seconds: 15,
+    when_to_run: "When Ethernet configuration needs to change independently.",
+    related_command_ids: ["ethernet-check", "setup-network"],
   },
   {
     id: "setup-wifi",
@@ -70,6 +99,13 @@ export const COMMANDS: ControllerCommand[] = [
     description: "Configure Wi-Fi. Scans and presents available networks. No reboot required unless primary network changes.",
     reboot_required: false,
     guard: "none",
+    est_seconds: 30,
+    when_to_run: "When only Wi-Fi needs to change without running full setup-network.",
+    what_to_look_for: [
+      "Prompts: Add, Replace, or Use existing network",
+      "Enter SSID and password when prompted",
+    ],
+    related_command_ids: ["setup-network", "wifi-check"],
   },
   {
     id: "setup-cellular",
@@ -79,6 +115,9 @@ export const COMMANDS: ControllerCommand[] = [
     description: "Configure LTE-M cellular. No reboot required unless primary network changes.",
     reboot_required: false,
     guard: "none",
+    est_seconds: 20,
+    when_to_run: "When cellular configuration needs to change independently.",
+    related_command_ids: ["cellular-check", "setup-network"],
   },
   {
     id: "setup-satellite",
@@ -140,6 +179,15 @@ export const COMMANDS: ControllerCommand[] = [
     description: "Test and confirm Wi-Fi connectivity.",
     reboot_required: false,
     guard: "none",
+    est_seconds: 10,
+    when_to_run: "After setup-wifi or when Wi-Fi connectivity is in question.",
+    what_to_look_for: [
+      "✓ wifi-check: Success at the end of output",
+      "⚠ Connected but weak signal — check antenna or move controller",
+      "✗ Not connected — verify SSID and password with setup-wifi",
+    ],
+    related_command_ids: ["wifi-signal", "setup-wifi"],
+    tags: ["network", "wireless", "ssid"],
   },
   {
     id: "cellular-check",
@@ -149,6 +197,15 @@ export const COMMANDS: ControllerCommand[] = [
     description: "Test cellular modem operation and signal level.",
     reboot_required: false,
     guard: "none",
+    est_seconds: 15,
+    when_to_run: "After setup-cellular or when cellular connectivity is in question.",
+    what_to_look_for: [
+      "✓ Internet reachability: online — cellular is working",
+      "⚠ Cellular state: ready but low signal — check antenna placement",
+      "✗ Cellular state: not ready — SIM issue or APN misconfiguration",
+    ],
+    related_command_ids: ["cell-signal", "cell-provider", "cell-ccid"],
+    tags: ["network", "lte", "sim", "verizon", "att"],
   },
   {
     id: "ethernet-check",
@@ -158,6 +215,15 @@ export const COMMANDS: ControllerCommand[] = [
     description: "Test and confirm Ethernet connectivity.",
     reboot_required: false,
     guard: "none",
+    est_seconds: 10,
+    when_to_run: "After setup-ethernet, after any network change, or when the site reports connectivity issues.",
+    what_to_look_for: [
+      "✓ Done: Success — Ethernet is healthy",
+      "⚠ Done: Failure + link detected: yes — link is up but DNS/routing failed, check router",
+      "✗ Done: Failure + link detected: no — physical layer problem, swap switch port or cable",
+    ],
+    related_command_ids: ["ethtool-eth0", "ifconfig-eth0", "setup-ethernet"],
+    tags: ["network", "connectivity", "dns", "link"],
   },
   {
     id: "satellite-check-m",
@@ -167,6 +233,15 @@ export const COMMANDS: ControllerCommand[] = [
     description: "Monitor satellite status continuously. After 10 minutes prints visibility uptime.",
     reboot_required: false,
     guard: "none",
+    est_seconds: 600,
+    when_to_run: "When satellite connectivity needs to be verified. Runs for ~10 minutes.",
+    what_to_look_for: [
+      "Watch for uptime percentage — higher is better",
+      "< 50% uptime may indicate obstruction or modem issue",
+      "Press Ctrl+C to stop early",
+    ],
+    related_command_ids: ["sat-imei", "setup-satellite"],
+    tags: ["network", "iridium", "backup"],
   },
   {
     id: "satellite-check-t",
@@ -196,6 +271,9 @@ export const COMMANDS: ControllerCommand[] = [
     description: "Display controller serial number.",
     reboot_required: false,
     guard: "none",
+    est_seconds: 1,
+    when_to_run: "To confirm controller serial number. Always run at start of session.",
+    related_command_ids: ["version", "release"],
   },
   {
     id: "version",
@@ -205,6 +283,9 @@ export const COMMANDS: ControllerCommand[] = [
     description: "Display controller firmware version.",
     reboot_required: false,
     guard: "none",
+    est_seconds: 1,
+    when_to_run: "To confirm firmware version or check if an update is available.",
+    related_command_ids: ["sid", "release"],
   },
   {
     id: "release",
@@ -223,6 +304,14 @@ export const COMMANDS: ControllerCommand[] = [
     description: "Display cellular signal strength (0–100%).",
     reboot_required: false,
     guard: "none",
+    est_seconds: 2,
+    when_to_run: "Quick check of cellular signal strength, 0–100.",
+    what_to_look_for: [
+      "> 60 is good",
+      "40–60 is acceptable",
+      "< 40 may cause reliability issues",
+    ],
+    related_command_ids: ["cellular-check"],
   },
   {
     id: "wifi-signal",
@@ -232,6 +321,14 @@ export const COMMANDS: ControllerCommand[] = [
     description: "Display Wi-Fi signal strength.",
     reboot_required: false,
     guard: "none",
+    est_seconds: 2,
+    when_to_run: "Quick check of Wi-Fi signal strength.",
+    what_to_look_for: [
+      "> 70 is good",
+      "40–70 is acceptable",
+      "< 40 investigate antenna or distance",
+    ],
+    related_command_ids: ["wifi-check"],
   },
   {
     id: "cell-imei",
@@ -307,6 +404,12 @@ export const COMMANDS: ControllerCommand[] = [
     reboot_required: false,
     guard: "confirm",
     guard_message: "Reboot the controller? The current session will disconnect.",
+    est_seconds: 60,
+    when_to_run: "After setup commands that require a reboot to take effect. Session will drop.",
+    what_to_look_for: [
+      "SSH session will disconnect immediately",
+      "Allow 60 seconds before reconnecting",
+    ],
   },
   {
     id: "exit",
@@ -330,4 +433,94 @@ export const FAVORITE_COMMAND_IDS = [
   "version",
   "cell-signal",
   "reboot",
+];
+
+export interface DiagnosticBlock {
+  id: string;
+  label: string;
+  icon: string;
+  description: string;
+  light_command_ids: string[];
+  heavy_command_ids: string[];
+  time_warning?: string;
+}
+
+export const DIAGNOSTIC_BLOCKS: DiagnosticBlock[] = [
+  {
+    id: "ethernet",
+    label: "Ethernet",
+    icon: "🌐",
+    description: "Physical link, IP assignment, DNS, and internet reachability",
+    light_command_ids: ["ethernet-check"],
+    heavy_command_ids: ["ethernet-check", "ethtool-eth0", "ifconfig-eth0"],
+  },
+  {
+    id: "wifi",
+    label: "Wi-Fi",
+    icon: "📶",
+    description: "Wireless connection, signal strength, and connectivity",
+    light_command_ids: ["wifi-check", "wifi-signal"],
+    heavy_command_ids: ["wifi-check", "wifi-signal"],
+  },
+  {
+    id: "cellular",
+    label: "Cellular",
+    icon: "📱",
+    description: "LTE-M modem, signal, provider, and SIM details",
+    light_command_ids: ["cellular-check", "cell-signal"],
+    heavy_command_ids: ["cellular-check", "cell-signal", "cell-provider", "cell-ccid", "cell-imei", "cell-apn", "cell-status"],
+  },
+  {
+    id: "satellite",
+    label: "Satellite",
+    icon: "🛰",
+    description: "Iridium satellite modem visibility and uptime",
+    light_command_ids: ["satellite-check-m"],
+    heavy_command_ids: ["satellite-check-m", "sat-imei"],
+    time_warning: "satellite-check -m runs for ~10 minutes. Do not close the terminal.",
+  },
+  {
+    id: "system",
+    label: "System",
+    icon: "🖥",
+    description: "Firmware version, controller ID, and release info",
+    light_command_ids: ["version", "sid", "release"],
+    heavy_command_ids: ["version", "sid", "release"],
+  },
+  {
+    id: "networking-all",
+    label: "Networking — All Light",
+    icon: "⚡",
+    description: "All network interfaces, light tier only (~45 seconds)",
+    light_command_ids: ["ethernet-check", "wifi-check", "wifi-signal", "cellular-check", "cell-signal"],
+    heavy_command_ids: ["ethernet-check", "wifi-check", "wifi-signal", "cellular-check", "cell-signal"],
+  },
+  {
+    id: "full-diags",
+    label: "Full Diagnostics",
+    icon: "🔬",
+    description: "Complete diagnostic suite — all interfaces, heavy tier",
+    light_command_ids: [],
+    heavy_command_ids: [
+      "ethernet-check", "ethtool-eth0", "ifconfig-eth0",
+      "wifi-check", "wifi-signal",
+      "cellular-check", "cell-signal", "cell-provider", "cell-ccid", "cell-imei", "cell-apn", "cell-status",
+      "satellite-check-m", "sat-imei",
+      "version", "sid", "release",
+    ],
+    time_warning: "Includes satellite-check -m (~10 min). Use 'Full Diags (no satellite)' to skip.",
+  },
+  {
+    id: "full-diags-no-sat",
+    label: "Full Diags (no satellite)",
+    icon: "🔬",
+    description: "Complete diagnostic suite excluding satellite",
+    light_command_ids: [],
+    heavy_command_ids: [
+      "ethernet-check", "ethtool-eth0", "ifconfig-eth0",
+      "wifi-check", "wifi-signal",
+      "cellular-check", "cell-signal", "cell-provider", "cell-ccid", "cell-imei", "cell-apn", "cell-status",
+      "version", "sid", "release",
+    ],
+  },
 ];
