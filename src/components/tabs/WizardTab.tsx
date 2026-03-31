@@ -387,6 +387,7 @@ export default function WizardTab() {
 
       {/* ── Scrollable body ── */}
       <div className="ref-body">
+      <div className="ref-body-inner">
         {sections.map(section => (
           <div key={section.id} className="ref-section">
 
@@ -486,6 +487,11 @@ export default function WizardTab() {
                           </button>
                         )}
 
+                        {/* Non-copyable descriptor next to value (HHC name, water mode, etc.) */}
+                        {row.valueSuffix && (
+                          <span className="ref-row-suffix">{row.valueSuffix}</span>
+                        )}
+
                         {/* Copy button */}
                         <button
                           className="btn btn-secondary ref-copy-btn"
@@ -494,11 +500,6 @@ export default function WizardTab() {
                         >
                           {copiedId === row.id ? "✓" : "Copy"}
                         </button>
-
-                        {/* Non-copyable descriptor (HHC type name, water mode, etc.) */}
-                        {row.valueSuffix && (
-                          <span className="ref-row-suffix">{row.valueSuffix}</span>
-                        )}
 
                         {/* Split second prompt (zone name after zone type) */}
                         {row.split && (
@@ -545,6 +546,7 @@ export default function WizardTab() {
             )}
           </div>
         ))}
+      </div>
       </div>
     </div>
   );
