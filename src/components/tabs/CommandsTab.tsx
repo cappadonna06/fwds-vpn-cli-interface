@@ -48,7 +48,10 @@ function highlightMatch(text: string, query: string): ReactNode {
 
 interface CommandRowProps {
   cmd: ControllerCommand;
+  /** Called for guard:none and guard:hard — parent handles clipboard or modal */
   onCopy: (cmd: ControllerCommand) => void;
+  /** Called after the inline confirm banner is accepted (guard:confirm only) */
+  onConfirmedCopy: (cmd: ControllerCommand) => void;
   onOpenDrawer: (id: string) => void;
   isCopied: boolean;
   isFavorite: boolean;
@@ -60,6 +63,7 @@ interface CommandRowProps {
 function CommandRow({
   cmd,
   onCopy,
+  onConfirmedCopy,
   onOpenDrawer,
   isCopied,
   isFavorite,
@@ -69,6 +73,20 @@ function CommandRow({
 }: CommandRowProps) {
   const isDrawerOpen = openDrawerId === cmd.id;
   const isDestructive = !!cmd.destructive;
+  const [showBanner, setShowBanner] = useState(false);
+
+  function handleCopyClick() {
+    if (cmd.guard === "confirm") {
+      setShowBanner(true);
+    } else {
+      onCopy(cmd);
+    }
+  }
+
+  function handleBannerConfirm() {
+    setShowBanner(false);
+    onConfirmedCopy(cmd);
+  }
 
   return (
     <div className={`cmd-row ${isDestructive ? "cmd-row-destructive" : ""}`}>
@@ -100,12 +118,31 @@ function CommandRow({
           )}
         </div>
         <div className="cmd-desc">{cmd.description}</div>
+        {showBanner && (
+          <div className="cmd-inline-confirm">
+            <span className="cmd-inline-confirm-msg">
+              {cmd.guard_message ?? `Run ${cmd.command}?`}
+            </span>
+            <button
+              className="btn btn-secondary cmd-inline-confirm-btn"
+              onClick={() => setShowBanner(false)}
+            >
+              Cancel
+            </button>
+            <button
+              className={`btn ${cmd.destructive ? "btn-danger" : "btn-primary"} cmd-inline-confirm-btn`}
+              onClick={handleBannerConfirm}
+            >
+              Copy anyway
+            </button>
+          </div>
+        )}
       </div>
 
       <div className="cmd-row-actions">
         <button
           className={`cmd-copy-btn ${isCopied ? "cmd-copy-btn-copied" : ""}`}
-          onClick={() => onCopy(cmd)}
+          onClick={handleCopyClick}
           title="Copy command to clipboard"
         >
           {isCopied ? "✓ Copied" : "Copy"}
@@ -323,12 +360,12 @@ function CommandDrawer({
   );
 }
 
-// ─── ConfirmModal ─────────────────────────────────────────────────────────────
+// ─── ConfirmModal (guard: hard only) ─────────────────────────────────────────
 
 interface ConfirmModalProps {
   cmd: ControllerCommand;
   onCancel: () => void;
-  onConfirm: (text: string) => void;
+  onConfirm: () => void;
   hardConfirmText: string;
   setHardConfirmText: (v: string) => void;
 }
@@ -340,8 +377,7 @@ function ConfirmModal({
   hardConfirmText,
   setHardConfirmText,
 }: ConfirmModalProps) {
-  const isHard = cmd.guard === "hard";
-  const canConfirm = !isHard || hardConfirmText === cmd.command;
+  const canConfirm = hardConfirmText === cmd.command;
 
   useEffect(() => {
     function handleKey(e: KeyboardEvent) {
@@ -354,35 +390,31 @@ function ConfirmModal({
   return (
     <div className="modal-overlay" onClick={onCancel}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
-        <div className="modal-title">
-          {isHard ? "Warning — Destructive Action" : "Confirm"}
-        </div>
+        <div className="modal-title">Warning — Destructive Action</div>
         <div className="modal-body">{cmd.guard_message}</div>
-        {isHard && (
-          <div className="modal-hard-confirm">
-            <label className="modal-hard-label">
-              Type <code>{cmd.command}</code> to confirm:
-            </label>
-            <input
-              type="text"
-              value={hardConfirmText}
-              onChange={(e) => setHardConfirmText(e.target.value)}
-              placeholder={cmd.command}
-              autoFocus
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && canConfirm) onConfirm(cmd.command);
-              }}
-            />
-          </div>
-        )}
+        <div className="modal-hard-confirm">
+          <label className="modal-hard-label">
+            Type <code>{cmd.command}</code> to confirm:
+          </label>
+          <input
+            type="text"
+            value={hardConfirmText}
+            onChange={(e) => setHardConfirmText(e.target.value)}
+            placeholder={cmd.command}
+            autoFocus
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && canConfirm) onConfirm();
+            }}
+          />
+        </div>
         <div className="modal-footer">
           <button className="btn btn-secondary" onClick={onCancel}>
             Cancel
           </button>
           <button
-            className={`btn ${cmd.destructive ? "btn-danger" : "btn-primary"}`}
+            className="btn btn-danger"
             disabled={!canConfirm}
-            onClick={() => onConfirm(cmd.command)}
+            onClick={onConfirm}
           >
             Copy {cmd.command}
           </button>
@@ -409,7 +441,9 @@ export default function CommandsTab() {
     }
   });
   const [recentlyUsed, setRecentlyUsed] = useState<string[]>([]);
-  const [confirmCommand, setConfirmCommand] = useState<ControllerCommand | null>(null);
+  const [recentlyUsedOpen, setRecentlyUsedOpen] = useState(true);
+  const [collapsedCategories, setCollapsedCategories] = useState<Set<CommandCategory>>(new Set());
+  const [hardConfirmCmd, setHardConfirmCmd] = useState<ControllerCommand | null>(null);
   const [hardConfirmText, setHardConfirmText] = useState("");
 
   const searchRef = useRef<HTMLInputElement>(null);
@@ -417,8 +451,8 @@ export default function CommandsTab() {
   // Register external recent-command adder
   useEffect(() => {
     _addRecentExternal = (id: string) => {
-      setRecentlyUsed((prev) => {
-        const filtered = prev.filter((x) => x !== id);
+      setRecentlyUsed((prev: string[]) => {
+        const filtered = prev.filter((x: string) => x !== id);
         return [id, ...filtered].slice(0, 5);
       });
     };
@@ -438,42 +472,70 @@ export default function CommandsTab() {
   }, []);
 
   const handleToggleFavorite = useCallback((id: string) => {
-    setFavorites((prev) =>
-      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
+    setFavorites((prev: string[]) =>
+      prev.includes(id) ? prev.filter((x: string) => x !== id) : [...prev, id]
     );
   }, []);
+
+  function toggleCategory(cat: CommandCategory) {
+    setCollapsedCategories((prev) => {
+      const next = new Set(prev);
+      if (next.has(cat)) {
+        next.delete(cat);
+      } else {
+        next.add(cat);
+      }
+      return next;
+    });
+  }
 
   function doCopy(text: string, id: string) {
     navigator.clipboard.writeText(text).catch(() => {});
     setCopiedId(id);
-    setTimeout(() => setCopiedId((prev) => (prev === id ? null : prev)), 1500);
+    setTimeout(() => setCopiedId((prev: string | null) => (prev === id ? null : prev)), 1500);
   }
 
-  function handleCopy(cmd: ControllerCommand) {
-    if (cmd.guard === "hard" || cmd.guard === "confirm") {
+  // Called by CommandRow for guard:none and guard:hard
+  function handleCopyFromRow(cmd: ControllerCommand) {
+    if (cmd.guard === "hard") {
       setHardConfirmText("");
-      setConfirmCommand(cmd);
+      setHardConfirmCmd(cmd);
       return;
     }
     doCopy(cmd.command, cmd.id);
   }
 
-  function handleConfirm(_text: string) {
-    if (confirmCommand) {
-      doCopy(confirmCommand.command, confirmCommand.id);
-      setConfirmCommand(null);
+  // Called by CommandRow after inline confirm banner accepted (guard:confirm)
+  function handleConfirmedRowCopy(cmd: ControllerCommand) {
+    doCopy(cmd.command, cmd.id);
+  }
+
+  // Called by CommandDrawer Copy button — uses modal for both confirm and hard
+  function handleCopyFromDrawer(cmd: ControllerCommand) {
+    if (cmd.guard === "hard" || cmd.guard === "confirm") {
+      setHardConfirmText("");
+      setHardConfirmCmd(cmd);
+      return;
+    }
+    doCopy(cmd.command, cmd.id);
+  }
+
+  function handleHardConfirm() {
+    if (hardConfirmCmd) {
+      doCopy(hardConfirmCmd.command, hardConfirmCmd.id);
+      setHardConfirmCmd(null);
       setHardConfirmText("");
     }
   }
 
   function handleOpenDrawer(id: string) {
-    setOpenDrawerId((prev) => (prev === id ? null : id));
+    setOpenDrawerId((prev: string | null) => (prev === id ? null : id));
   }
 
   function handleBlockCopy(block: DiagnosticBlock, tier: "light" | "heavy" | "single") {
     const ids = tier === "light" ? block.light_command_ids : block.heavy_command_ids;
     const text = ids
-      .map((id) => {
+      .map((id: string) => {
         const c = COMMANDS.find((x) => x.id === id);
         return c ? c.command : id;
       })
@@ -482,7 +544,7 @@ export default function CommandsTab() {
     const key = tier === "single" ? `${block.id}-single` : `${block.id}-${tier}`;
     setCopiedBlockId(key);
     setTimeout(
-      () => setCopiedBlockId((prev) => (prev === key ? null : prev)),
+      () => setCopiedBlockId((prev: string | null) => (prev === key ? null : prev)),
       1500
     );
   }
@@ -498,7 +560,7 @@ export default function CommandsTab() {
           c.label.toLowerCase().includes(q) ||
           c.command.toLowerCase().includes(q) ||
           c.description.toLowerCase().includes(q) ||
-          (c.tags ?? []).some((t) => t.toLowerCase().includes(q))
+          (c.tags ?? []).some((t: string) => t.toLowerCase().includes(q))
       );
     }
     if (paletteTab === "favorites") {
@@ -513,7 +575,7 @@ export default function CommandsTab() {
   const displayedCommands = getFilteredCommands();
 
   const recentCmds = recentlyUsed
-    .map((id) => COMMANDS.find((c) => c.id === id))
+    .map((id: string) => COMMANDS.find((c) => c.id === id))
     .filter((c): c is ControllerCommand => c !== undefined);
 
   const openDrawerCmd = openDrawerId
@@ -526,6 +588,22 @@ export default function CommandsTab() {
     for (const cmd of displayedCommands) {
       grouped[cmd.category] = [...(grouped[cmd.category] ?? []), cmd];
     }
+  }
+
+  function renderRow(cmd: ControllerCommand) {
+    return (
+      <CommandRow
+        key={cmd.id}
+        cmd={cmd}
+        onCopy={handleCopyFromRow}
+        onConfirmedCopy={handleConfirmedRowCopy}
+        onOpenDrawer={handleOpenDrawer}
+        isCopied={copiedId === cmd.id}
+        isFavorite={favorites.includes(cmd.id)}
+        onToggleFavorite={handleToggleFavorite}
+        openDrawerId={openDrawerId}
+      />
+    );
   }
 
   return (
@@ -584,7 +662,8 @@ export default function CommandsTab() {
                   <CommandRow
                     key={cmd.id}
                     cmd={cmd}
-                    onCopy={handleCopy}
+                    onCopy={handleCopyFromRow}
+                    onConfirmedCopy={handleConfirmedRowCopy}
                     onOpenDrawer={handleOpenDrawer}
                     isCopied={copiedId === cmd.id}
                     isFavorite={favorites.includes(cmd.id)}
@@ -598,73 +677,45 @@ export default function CommandsTab() {
               <>
                 {recentCmds.length > 0 && (
                   <div className="recently-used-section">
-                    <div className="palette-group-label">Recently Used</div>
-                    {recentCmds.map((cmd) => (
-                      <CommandRow
-                        key={cmd.id}
-                        cmd={cmd}
-                        onCopy={handleCopy}
-                        onOpenDrawer={handleOpenDrawer}
-                        isCopied={copiedId === cmd.id}
-                        isFavorite={favorites.includes(cmd.id)}
-                        onToggleFavorite={handleToggleFavorite}
-                        openDrawerId={openDrawerId}
-                      />
-                    ))}
+                    <button
+                      className="recently-used-header"
+                      onClick={() => setRecentlyUsedOpen((o) => !o)}
+                    >
+                      <span className="recently-used-toggle">
+                        {recentlyUsedOpen ? "▾" : "▸"}
+                      </span>
+                      Recently Used
+                    </button>
+                    {recentlyUsedOpen && recentCmds.map(renderRow)}
                   </div>
                 )}
                 {displayedCommands.length === 0 ? (
                   <div className="palette-empty">No favorites yet. Click ☆ on any command.</div>
                 ) : (
-                  displayedCommands.map((cmd) => (
-                    <CommandRow
-                      key={cmd.id}
-                      cmd={cmd}
-                      onCopy={handleCopy}
-                      onOpenDrawer={handleOpenDrawer}
-                      isCopied={copiedId === cmd.id}
-                      isFavorite={favorites.includes(cmd.id)}
-                      onToggleFavorite={handleToggleFavorite}
-                      openDrawerId={openDrawerId}
-                    />
-                  ))
+                  displayedCommands.map(renderRow)
                 )}
               </>
             ) : paletteTab === "common" ? (
               displayedCommands.length === 0 ? (
                 <div className="palette-empty">No commands.</div>
               ) : (
-                displayedCommands.map((cmd) => (
-                  <CommandRow
-                    key={cmd.id}
-                    cmd={cmd}
-                    onCopy={handleCopy}
-                    onOpenDrawer={handleOpenDrawer}
-                    isCopied={copiedId === cmd.id}
-                    isFavorite={favorites.includes(cmd.id)}
-                    onToggleFavorite={handleToggleFavorite}
-                    openDrawerId={openDrawerId}
-                  />
-                ))
+                displayedCommands.map(renderRow)
               )
             ) : (
-              // "all" tab — grouped
+              // "all" tab — grouped with collapsible headers
               (["config", "diagnostic", "info", "system"] as CommandCategory[]).map((cat) =>
                 grouped[cat]?.length ? (
                   <div key={cat} className="palette-group">
-                    <div className="palette-group-label">{categoryLabel(cat)}</div>
-                    {grouped[cat]!.map((cmd) => (
-                      <CommandRow
-                        key={cmd.id}
-                        cmd={cmd}
-                        onCopy={handleCopy}
-                        onOpenDrawer={handleOpenDrawer}
-                        isCopied={copiedId === cmd.id}
-                        isFavorite={favorites.includes(cmd.id)}
-                        onToggleFavorite={handleToggleFavorite}
-                        openDrawerId={openDrawerId}
-                      />
-                    ))}
+                    <button
+                      className="palette-group-header"
+                      onClick={() => toggleCategory(cat)}
+                    >
+                      <span className="palette-group-toggle">
+                        {collapsedCategories.has(cat) ? "▸" : "▾"}
+                      </span>
+                      {categoryLabel(cat)}
+                    </button>
+                    {!collapsedCategories.has(cat) && grouped[cat]!.map(renderRow)}
                   </div>
                 ) : null
               )
@@ -700,21 +751,21 @@ export default function CommandsTab() {
           cmd={openDrawerCmd}
           allCommands={COMMANDS}
           onClose={() => setOpenDrawerId(null)}
-          onCopy={handleCopy}
+          onCopy={handleCopyFromDrawer}
           isCopied={copiedId === openDrawerCmd.id}
           onNavigate={(id) => setOpenDrawerId(id)}
         />
       )}
 
-      {/* Confirm modal */}
-      {confirmCommand && (
+      {/* Hard-confirm modal (guard: hard, or guard: confirm triggered from drawer) */}
+      {hardConfirmCmd && (
         <ConfirmModal
-          cmd={confirmCommand}
+          cmd={hardConfirmCmd}
           onCancel={() => {
-            setConfirmCommand(null);
+            setHardConfirmCmd(null);
             setHardConfirmText("");
           }}
-          onConfirm={handleConfirm}
+          onConfirm={handleHardConfirm}
           hardConfirmText={hardConfirmText}
           setHardConfirmText={setHardConfirmText}
         />

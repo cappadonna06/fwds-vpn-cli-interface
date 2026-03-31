@@ -172,6 +172,60 @@ export const COMMANDS: ControllerCommand[] = [
 
   // Diagnostic
   {
+    id: "ethtool-eth0",
+    label: "ethtool eth0",
+    command: "ethtool eth0",
+    category: "diagnostic",
+    description: "Display Ethernet interface link state, speed, duplex, and driver details.",
+    reboot_required: false,
+    guard: "none",
+    est_seconds: 2,
+    when_to_run: "When ethernet-check fails or link state needs closer inspection.",
+    what_to_look_for: [
+      "Link detected: yes — physical connection is present",
+      "Link detected: no — cable or switch port issue",
+      "Speed and duplex mismatch can cause intermittent failures",
+    ],
+    related_command_ids: ["ethernet-check", "ifconfig-eth0"],
+    tags: ["network", "ethernet", "link", "speed"],
+  },
+  {
+    id: "iwconfig",
+    label: "iwconfig",
+    command: "iwconfig",
+    category: "diagnostic",
+    description: "Display wireless interface configuration: SSID, mode, bit rate, signal level.",
+    reboot_required: false,
+    guard: "none",
+    est_seconds: 1,
+    when_to_run: "When detailed Wi-Fi connection properties are needed.",
+    what_to_look_for: [
+      "ESSID shows the connected network name",
+      "Bit Rate and Signal level indicate connection quality",
+      'Mode: Managed indicates normal client connection',
+    ],
+    related_command_ids: ["wifi-check", "wifi-signal"],
+    tags: ["network", "wireless", "ssid", "signal"],
+  },
+  {
+    id: "iwlist-scan",
+    label: "iwlist wlan0 scan",
+    command: "iwlist wlan0 scan",
+    category: "diagnostic",
+    description: "Scan and list all nearby Wi-Fi networks with SSID, signal, and channel.",
+    reboot_required: false,
+    guard: "none",
+    est_seconds: 5,
+    when_to_run: "When verifying a target SSID is visible or checking for interference.",
+    what_to_look_for: [
+      "Target SSID appears in scan results",
+      "Signal level > -70 dBm is acceptable for connection",
+      "Multiple networks on same channel can cause interference",
+    ],
+    related_command_ids: ["wifi-check", "iwconfig"],
+    tags: ["network", "wireless", "ssid", "scan"],
+  },
+  {
     id: "wifi-check",
     label: "wifi-check",
     command: "wifi-check",
@@ -263,6 +317,24 @@ export const COMMANDS: ControllerCommand[] = [
   },
 
   // Informational
+  {
+    id: "ifconfig-eth0",
+    label: "ifconfig eth0",
+    command: "ifconfig eth0",
+    category: "info",
+    description: "Display Ethernet interface IP address, netmask, MAC address, and packet stats.",
+    reboot_required: false,
+    guard: "none",
+    est_seconds: 1,
+    when_to_run: "When ethernet-check fails or IP assignment needs to be verified.",
+    what_to_look_for: [
+      "inet shows the assigned IP address",
+      "No inet line means DHCP failed — check router or cable",
+      "RX/TX errors count may indicate hardware or cable issues",
+    ],
+    related_command_ids: ["ethernet-check", "ethtool-eth0"],
+    tags: ["network", "ethernet", "ip", "dhcp"],
+  },
   {
     id: "sid",
     label: "sid",
@@ -423,15 +495,16 @@ export const COMMANDS: ControllerCommand[] = [
 ];
 
 export const FAVORITE_COMMAND_IDS = [
-  "setup",
+  "setup-station",
   "setup-network",
+  "ethernet-check",
   "wifi-check",
   "cellular-check",
-  "ethernet-check",
   "satellite-check-m",
-  "sid",
-  "version",
   "cell-signal",
+  "wifi-signal",
+  "version",
+  "sid",
   "reboot",
 ];
 
@@ -460,7 +533,7 @@ export const DIAGNOSTIC_BLOCKS: DiagnosticBlock[] = [
     icon: "📶",
     description: "Wireless connection, signal strength, and connectivity",
     light_command_ids: ["wifi-check", "wifi-signal"],
-    heavy_command_ids: ["wifi-check", "wifi-signal"],
+    heavy_command_ids: ["wifi-check", "wifi-signal", "iwconfig", "iwlist-scan"],
   },
   {
     id: "cellular",
