@@ -28,11 +28,13 @@ const BUNDLE_FILES = [
   "connect-local.bin",
 ];
 
-interface Props {
-  onControllerConnected: () => void;
+interface PreflightResult {
+  ping_ok: boolean;
+  port_ok: boolean;
+  detail: string;
 }
 
-export default function SessionTab({ onControllerConnected }: Props) {
+export default function SessionTab() {
   const [bundlePath, setBundlePath] = useState("");
   const [validation, setValidation] = useState<Record<string, boolean> | null>(null);
 
@@ -41,17 +43,25 @@ export default function SessionTab({ onControllerConnected }: Props) {
 
   const [vpnIp, setVpnIp] = useState("");
   const [lastOctet, setLastOctet] = useState("");
+  const [savedOctet, setSavedOctet] = useState("");
   const [ctrlStatus, setCtrlStatus] = useState<ControllerStatus>("disconnected");
   const [ctrlDetail, setCtrlDetail] = useState("");
+
+  const [preflight, setPreflight] = useState<PreflightResult | null>(null);
+  const [preflightRunning, setPreflightRunning] = useState(false);
 
   const vpnPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const ctrlPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const prevCtrlPhaseRef = useRef<string>("disconnected");
+  const prevVpnPhaseRef = useRef<string>("disconnected");
 
-  // Restore last-used bundle folder on mount
+  // Restore last-used bundle folder and VPN octet on mount
   useEffect(() => {
-    const saved = localStorage.getItem("vpn_bundle_path");
-    if (saved) loadFolder(saved);
+    const savedPath = localStorage.getItem("vpn_bundle_path");
+    if (savedPath) loadFolder(savedPath);
+
+    const octet = localStorage.getItem("vpn_last_octet");
+    if (octet) setSavedOctet(octet);
   }, []);
 
   // VPN polling
@@ -85,8 +95,20 @@ export default function SessionTab({ onControllerConnected }: Props) {
   async function pollVpn() {
     try {
       const r = await invoke<{ phase: string; detail: string; lines: string[] }>("poll_vpn");
+      const prev = prevVpnPhaseRef.current;
+      prevVpnPhaseRef.current = r.phase;
       setVpnStatus(r.phase as VpnStatus);
       setVpnDetail(r.detail);
+      // Auto-run preflight once when VPN first becomes connected and IP is already set
+      if (prev !== "connected" && r.phase === "connected") {
+        setVpnIp((ip) => {
+          if (ip) {
+            setPreflight(null);
+            runPreflight(ip);
+          }
+          return ip;
+        });
+      }
     } catch { /* ignore */ }
   }
 
@@ -97,11 +119,18 @@ export default function SessionTab({ onControllerConnected }: Props) {
       prevCtrlPhaseRef.current = r.phase;
       setCtrlStatus(r.phase as ControllerStatus);
       setCtrlDetail(r.detail);
-      // Auto-switch to Console the moment we become connected
-      if (prev !== "connected" && r.phase === "connected") {
-        onControllerConnected();
-      }
     } catch { /* ignore */ }
+  }
+
+  async function runPreflight(ip: string) {
+    if (!ip || preflightRunning) return;
+    setPreflightRunning(true);
+    setPreflight(null);
+    try {
+      const r = await invoke<PreflightResult>("run_preflight", { ip });
+      setPreflight(r);
+    } catch { /* ignore */ }
+    finally { setPreflightRunning(false); }
   }
 
   async function loadFolder(path: string) {
@@ -121,14 +150,18 @@ export default function SessionTab({ onControllerConnected }: Props) {
     } catch { /* cancelled */ }
   }
 
-  function handleVpnIpChange(val: string) {
-    setVpnIp(val);
-    const parts = val.trim().split(".");
-    if (parts.length === 4) {
-      const octet = parts[3];
-      setLastOctet(octet && !isNaN(Number(octet)) ? octet : "");
-    } else {
-      setLastOctet("");
+  function handleOctetChange(raw: string) {
+    const cleaned = raw.replace(/\D/g, "").slice(0, 3);
+    setLastOctet(cleaned);
+    setVpnIp(cleaned ? `10.9.0.${cleaned}` : "");
+    setPreflight(null);
+  }
+
+  function handleOctetBlur() {
+    const n = parseInt(lastOctet, 10);
+    if (!lastOctet || isNaN(n) || n < 1 || n > 254) return;
+    if (vpnStatus === "connected") {
+      runPreflight(vpnIp);
     }
   }
 
@@ -147,10 +180,13 @@ export default function SessionTab({ onControllerConnected }: Props) {
     try { await invoke("stop_vpn"); } catch { /* best effort */ }
     setVpnStatus("disconnected");
     setVpnDetail("");
+    setPreflight(null);
   }
 
   async function connectToController() {
     if (!vpnIp) return;
+    localStorage.setItem("vpn_last_octet", lastOctet);
+    setSavedOctet(lastOctet);
     setCtrlStatus("connecting");
     setCtrlDetail(`Connecting to ${vpnIp}…`);
     prevCtrlPhaseRef.current = "connecting";
@@ -169,9 +205,25 @@ export default function SessionTab({ onControllerConnected }: Props) {
     prevCtrlPhaseRef.current = "disconnected";
   }
 
+  async function launchTerminal() {
+    try {
+      await invoke("open_controller_terminal");
+    } catch (e) {
+      setCtrlDetail(String(e));
+    }
+  }
+
   const allFilesOk = validation !== null && BUNDLE_FILES.every((f) => validation[f] === true);
   const bundleValid = allFilesOk;
-  const canConnect = !!vpnIp && vpnStatus === "connected";
+  const octetNum = parseInt(lastOctet, 10);
+  const octetValid = lastOctet !== "" && !isNaN(octetNum) && octetNum >= 1 && octetNum <= 254;
+  const canConnect = octetValid && vpnStatus === "connected";
+  const showPreflight = vpnStatus === "connected" && octetValid;
+
+  function preflightDotClass(ok: boolean | undefined): string {
+    if (preflight === null) return "idle";
+    return ok ? "ok" : "fail";
+  }
 
   return (
     <div className="tab-content" style={{ alignItems: "center", overflowY: "auto" }}>
@@ -192,17 +244,18 @@ export default function SessionTab({ onControllerConnected }: Props) {
             </button>
           )}
           {validation !== null && (
-            <div className="file-checklist">
-              {BUNDLE_FILES.map((f) => {
-                const ok = validation[f] === true;
-                return (
+            allFilesOk ? (
+              <div className="bundle-ready">✓ Bundle ready</div>
+            ) : (
+              <div className="file-checklist">
+                {BUNDLE_FILES.filter((f) => validation[f] !== true).map((f) => (
                   <div key={f} className="file-check-row">
-                    <span className={`file-check-icon ${ok ? "ok" : "missing"}`}>{ok ? "✓" : "✗"}</span>
-                    <span className="file-name" style={{ color: ok ? undefined : "var(--danger)" }}>{f}</span>
+                    <span className="file-check-icon missing">✗</span>
+                    <span className="file-name" style={{ color: "var(--danger)" }}>{f}</span>
                   </div>
-                );
-              })}
-            </div>
+                ))}
+              </div>
+            )
           )}
         </div>
 
@@ -234,15 +287,54 @@ export default function SessionTab({ onControllerConnected }: Props) {
         {/* Controller */}
         <div className="card">
           <div className="card-title">Controller</div>
-          <div className="field-row" style={{ marginBottom: 10 }}>
+          <div className="field-row" style={{ marginBottom: savedOctet && !lastOctet ? 4 : 10 }}>
             <label>VPN IP</label>
-            <input
-              type="text"
-              placeholder="10.9.0.x"
-              value={vpnIp}
-              onChange={(e) => handleVpnIpChange(e.target.value)}
-            />
+            <div className="ip-input-group">
+              <span className="ip-prefix">10.9.0.</span>
+              <input
+                className="ip-octet-input"
+                type="text"
+                inputMode="numeric"
+                placeholder="x"
+                maxLength={3}
+                value={lastOctet}
+                onChange={(e) => handleOctetChange(e.target.value)}
+                onBlur={handleOctetBlur}
+              />
+            </div>
           </div>
+          {savedOctet && !lastOctet && (
+            <div style={{ marginBottom: 10 }}>
+              <button className="btn-link" onClick={() => handleOctetChange(savedOctet)}>
+                Use last: .{savedOctet}
+              </button>
+            </div>
+          )}
+
+          {/* Pre-flight diagnostics */}
+          {showPreflight && (
+            <div className="preflight-row">
+              <div className="preflight-checks">
+                <span className={`preflight-dot ${preflightDotClass(preflight?.ping_ok)}`}>
+                  Ping
+                </span>
+                <span className={`preflight-dot ${preflightDotClass(preflight?.port_ok)}`}>
+                  Port 22
+                </span>
+                {preflight && (
+                  <span className="preflight-detail">{preflight.detail}</span>
+                )}
+              </div>
+              <button
+                className="btn-link"
+                onClick={() => runPreflight(vpnIp)}
+                disabled={preflightRunning}
+              >
+                {preflightRunning ? "Checking…" : preflight ? "Re-check" : "Check"}
+              </button>
+            </div>
+          )}
+
           <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: ctrlDetail ? 6 : 0 }}>
             <span className={`badge badge-${ctrlStatus === "disconnected" ? "disconnected" : ctrlStatus}`}>
               {CTRL_LABELS[ctrlStatus]}
@@ -266,6 +358,19 @@ export default function SessionTab({ onControllerConnected }: Props) {
           {ctrlDetail && <div className="hint">{ctrlDetail}</div>}
           {!canConnect && (ctrlStatus === "disconnected" || ctrlStatus === "failed") && !!lastOctet && vpnStatus !== "connected" && (
             <div className="hint" style={{ marginTop: 4 }}>Start VPN first.</div>
+          )}
+
+          {/* Launch Controller Terminal */}
+          {ctrlStatus === "connected" && (
+            <div style={{ marginTop: 10 }}>
+              <button
+                className="btn btn-primary"
+                style={{ width: "100%" }}
+                onClick={launchTerminal}
+              >
+                Launch Controller Terminal
+              </button>
+            </div>
           )}
         </div>
 

@@ -10,7 +10,7 @@ import "./components/tabs/tabs.css";
 type Tab = "session" | "console" | "wizard" | "logs";
 
 const TABS: { id: Tab; label: string }[] = [
-  { id: "session", label: "Session" },
+  { id: "session", label: "Connect" },
   { id: "console", label: "Commands" },
   { id: "wizard", label: "Setup Wizard" },
   { id: "logs", label: "Logs" },
@@ -73,7 +73,7 @@ export default function App() {
 
       <main className="app-body">
         <div style={{ display: activeTab === "session" ? "contents" : "none" }}>
-          <SessionTab onControllerConnected={() => setActiveTab("console")} />
+          <SessionTab />
         </div>
         <div style={{ display: activeTab === "console" ? "contents" : "none" }}><CommandsTab /></div>
         <div style={{ display: activeTab === "wizard" ? "contents" : "none" }}><WizardTab /></div>
