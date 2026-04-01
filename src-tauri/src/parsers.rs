@@ -115,7 +115,31 @@ pub fn parse_log_into_state(log: &str, state: &mut DiagnosticState) {
     let ethernet = parse_ethernet(
         find_latest(&latest, &["ethernet-check", "run ethernet diagnostics"]),
         find_latest(&latest, &["ethtool eth0", "run ethernet diagnostics"]),
-        find_latest(&latest, &["ifconfig eth0", "run ethernet diagnostics"]),
+        find_latest(
+            &latest,
+            &[
+                "ifconfig eth0",
+                "ip addr show eth0",
+                "run ethernet diagnostics",
+                "ethernet diags heavy",
+            ],
+        ),
+        find_latest(
+            &latest,
+            &[
+                "cat /proc/net/dev",
+                "run ethernet diagnostics",
+                "ethernet diags heavy",
+            ],
+        ),
+        find_latest(
+            &latest,
+            &[
+                "cat /sys/class/net/eth0/operstate",
+                "run ethernet diagnostics",
+                "ethernet diags heavy",
+            ],
+        ),
     );
 
     let system = parse_system(
@@ -150,8 +174,9 @@ fn find_latest<'a>(latest: &'a HashMap<String, String>, names: &[&str]) -> Optio
 }
 
 fn split_blocks(log: &str) -> Vec<CommandBlock> {
-    let prompt_re = Regex::new(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{4} \[\d+\]# (.+)$")
-        .expect("prompt regex");
+    let prompt_re =
+        Regex::new(r"^(?:\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{4}\s+)?(?:\[\d+\])?#\s+(.+)$")
+            .expect("prompt regex");
 
     let mut blocks = Vec::new();
     let mut current_cmd: Option<String> = None;
@@ -347,9 +372,16 @@ fn parse_satellite(
 fn parse_ethernet(
     ethernet_check: Option<&String>,
     ethtool: Option<&String>,
-    ifconfig: Option<&String>,
+    interface_info: Option<&String>,
+    proc_net_dev: Option<&String>,
+    operstate: Option<&String>,
 ) -> Option<EthernetDiagnostic> {
-    if ethernet_check.is_none() && ethtool.is_none() && ifconfig.is_none() {
+    if ethernet_check.is_none()
+        && ethtool.is_none()
+        && interface_info.is_none()
+        && proc_net_dev.is_none()
+        && operstate.is_none()
+    {
         return None;
     }
 
@@ -359,6 +391,7 @@ fn parse_ethernet(
         .unwrap_or(false);
     let eth_state = ethernet_check
         .and_then(|b| capture_after(b, "Ethernet state:"))
+        .or_else(|| operstate.and_then(|b| parse_single_value(Some(b))))
         .unwrap_or_else(|| "unknown".into());
     let ipv4 = ethernet_check
         .and_then(|b| capture_after(b, "Ethernet supports IPv4?"))
@@ -381,13 +414,23 @@ fn parse_ethernet(
         .and_then(|b| capture_after(b, "Link detected:"))
         .map(|s| s.eq_ignore_ascii_case("yes"));
 
-    let ip_address = ifconfig.and_then(parse_ifconfig_ip);
-    let netmask = ifconfig.and_then(parse_ifconfig_netmask);
-    let rx_errors = ifconfig.and_then(parse_ifconfig_rx_errors).unwrap_or(0);
-    let tx_errors = ifconfig.and_then(parse_ifconfig_tx_errors).unwrap_or(0);
-    let rx_dropped = ifconfig.and_then(parse_ifconfig_rx_dropped).unwrap_or(0);
+    let ip_address = interface_info.and_then(parse_interface_ip);
+    let netmask = interface_info.and_then(parse_interface_netmask);
+    let rx_errors = proc_net_dev
+        .and_then(parse_proc_net_dev_stats)
+        .map(|(rx_err, _, _)| rx_err)
+        .unwrap_or(0);
+    let tx_errors = proc_net_dev
+        .and_then(parse_proc_net_dev_stats)
+        .map(|(_, tx_err, _)| tx_err)
+        .unwrap_or(0);
+    let rx_dropped = proc_net_dev
+        .and_then(parse_proc_net_dev_stats)
+        .map(|(_, _, rx_drop)| rx_drop)
+        .unwrap_or(0);
 
-    let status = if check_result.eq_ignore_ascii_case("failure") || !internet_reachable {
+    let check_failed = check_result.to_ascii_lowercase().starts_with("failure");
+    let status = if check_failed || (!internet_reachable && check_result != "Unknown") {
         DiagStatus::Red
     } else if check_result.eq_ignore_ascii_case("success") {
         DiagStatus::Green
@@ -528,51 +571,50 @@ fn parse_satellite_time(text: &str) -> Option<f64> {
     Some((h * 3600.0) + (m * 60.0) + s)
 }
 
-fn parse_ifconfig_ip(text: &String) -> Option<String> {
+fn parse_interface_ip(text: &String) -> Option<String> {
     let re = Regex::new(r"inet\s+(\d+\.\d+\.\d+\.\d+)").ok()?;
     re.captures(text)
         .and_then(|c| c.get(1))
         .map(|m| m.as_str().to_string())
 }
 
-fn parse_ifconfig_netmask(text: &String) -> Option<String> {
-    let re = Regex::new(r"netmask\s+(\S+)").ok()?;
-    re.captures(text)
-        .and_then(|c| c.get(1))
-        .map(|m| m.as_str().to_string())
-}
-
-fn parse_ifconfig_rx_errors(text: &String) -> Option<u64> {
-    let re =
-        Regex::new(r"RX packets\s+\d+\s+bytes\s+\d+\s+\((?:[^)]*)\)\s*\n\s*RX errors\s+(\d+)").ok();
-    if let Some(re) = re {
-        if let Some(v) = re
-            .captures(text)
-            .and_then(|c| c.get(1))
-            .and_then(|m| m.as_str().parse::<u64>().ok())
-        {
-            return Some(v);
-        }
-    }
-    let fallback = Regex::new(r"RX errors\s+(\d+)").ok()?;
-    fallback
+fn parse_interface_netmask(text: &String) -> Option<String> {
+    let hex_re = Regex::new(r"netmask\s+([0-9a-fx]+)").ok()?;
+    if let Some(v) = hex_re
         .captures(text)
         .and_then(|c| c.get(1))
-        .and_then(|m| m.as_str().parse::<u64>().ok())
+        .map(|m| m.as_str().to_string())
+    {
+        return Some(v);
+    }
+    let cidr_re = Regex::new(r"inet\s+\d+\.\d+\.\d+\.\d+/(\d{1,2})").ok()?;
+    cidr_re
+        .captures(text)
+        .and_then(|c| c.get(1))
+        .map(|m| format!("/{}", m.as_str()))
 }
 
-fn parse_ifconfig_tx_errors(text: &String) -> Option<u64> {
-    let re = Regex::new(r"TX errors\s+(\d+)").ok()?;
-    re.captures(text)
-        .and_then(|c| c.get(1))
-        .and_then(|m| m.as_str().parse::<u64>().ok())
-}
-
-fn parse_ifconfig_rx_dropped(text: &String) -> Option<u64> {
-    let re = Regex::new(r"RX dropped\s+(\d+)").ok()?;
-    re.captures(text)
-        .and_then(|c| c.get(1))
-        .and_then(|m| m.as_str().parse::<u64>().ok())
+fn parse_proc_net_dev_stats(text: &String) -> Option<(u64, u64, u64)> {
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if !trimmed.starts_with("eth0:") {
+            continue;
+        }
+        let rhs = trimmed.trim_start_matches("eth0:").trim();
+        let cols: Vec<&str> = rhs.split_whitespace().collect();
+        if cols.len() < 12 {
+            continue;
+        }
+        // /proc/net/dev: receive bytes, packets, errs, drop ... transmit bytes, packets, errs, drop ...
+        let rx_err = cols.get(2).and_then(|v| v.parse::<u64>().ok()).unwrap_or(0);
+        let rx_drop = cols.get(3).and_then(|v| v.parse::<u64>().ok()).unwrap_or(0);
+        let tx_err = cols
+            .get(10)
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(0);
+        return Some((rx_err, tx_err, rx_drop));
+    }
+    None
 }
 
 fn merge_cellular(
