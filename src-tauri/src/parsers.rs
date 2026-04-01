@@ -67,9 +67,9 @@ pub fn parse_log_into_state(log: &str, state: &mut DiagnosticState) {
     );
 
     let system = parse_system(
-        find_latest(&latest, &["sid", "run system diagnostics"]),
-        find_latest(&latest, &["version", "run system diagnostics"]),
-        find_latest(&latest, &["release", "run system diagnostics"]),
+        latest.get("sid"),
+        latest.get("version"),
+        latest.get("release"),
     );
 
     if wifi.is_some() {
@@ -531,19 +531,19 @@ fn parse_cellular_from_latest(latest: &HashMap<String, String>) -> Option<Cellul
         has_any = true;
     }
 
-    if let Some(text) = find_latest(latest, &["date", "run cellular diagnostics"]) {
+    if let Some(text) = latest.get("date") {
         diag.controller_date = parse_single_value(Some(text));
         has_any = has_any || !text.trim().is_empty();
     }
-    if let Some(text) = find_latest(latest, &["version", "run cellular diagnostics"]) {
+    if let Some(text) = latest.get("version") {
         diag.controller_version = parse_single_value(Some(text));
         has_any = has_any || !text.trim().is_empty();
     }
-    if let Some(text) = find_latest(latest, &["sid", "run cellular diagnostics"]) {
+    if let Some(text) = latest.get("sid") {
         diag.controller_sid = parse_single_value(Some(text));
         has_any = has_any || !text.trim().is_empty();
     }
-    if let Some(text) = find_latest(latest, &["cellular-check", "run cellular diagnostics"]) {
+    if let Some(text) = latest.get("cellular-check") {
         parse_cellular_check_text(text, &mut diag);
         has_any = true;
     }
@@ -559,7 +559,7 @@ fn parse_cellular_from_latest(latest: &HashMap<String, String>) -> Option<Cellul
     ];
     let mut basic_lines: Vec<String> = Vec::new();
     for cmd in basic_cmds {
-        if let Some(text) = find_latest(latest, &[cmd, "run cellular diagnostics"]) {
+        if let Some(text) = latest.get(cmd) {
             has_any = true;
             if let Some(v) = parse_single_value(Some(text)) {
                 basic_lines.push(v);
@@ -569,41 +569,35 @@ fn parse_cellular_from_latest(latest: &HashMap<String, String>) -> Option<Cellul
     if !basic_lines.is_empty() {
         parse_basic_cell_info(&basic_lines.join("\n"), &mut diag);
     }
-    if let Some(text) = find_latest(
-        latest,
-        &["connmanctl technologies", "run cellular diagnostics"],
-    ) {
+    if let Some(text) = latest.get("connmanctl technologies") {
         parse_connman_cellular(text, &mut diag);
         has_any = true;
     }
-    if let Some(text) = find_latest(latest, &["connmanctl services", "run cellular diagnostics"]) {
+    if let Some(text) = latest.get("connmanctl services") {
         parse_connman_cellular(text, &mut diag);
         has_any = true;
     }
-    if let Some(text) = find_latest(latest, &["connmanctl state", "run cellular diagnostics"]) {
+    if let Some(text) = latest.get("connmanctl state") {
         parse_connman_cellular(text, &mut diag);
         has_any = true;
     }
-    if let Some(text) = find_latest(latest, &["ip link show wwan0", "run cellular diagnostics"]) {
+    if let Some(text) = latest.get("ip link show wwan0") {
         parse_wwan_interface(text, &mut diag);
         has_any = true;
     }
-    if let Some(text) = find_latest(latest, &["ip addr show wwan0", "run cellular diagnostics"]) {
+    if let Some(text) = latest.get("ip addr show wwan0") {
         parse_wwan_interface(text, &mut diag);
         has_any = true;
     }
-    if let Some(text) = find_latest(latest, &["ip route", "run cellular diagnostics"]) {
+    if let Some(text) = latest.get("ip route") {
         parse_wwan_interface(text, &mut diag);
         has_any = true;
     }
-    if let Some(text) = find_latest(latest, &["cat /proc/net/dev", "run cellular diagnostics"]) {
+    if let Some(text) = latest.get("cat /proc/net/dev") {
         parse_proc_net_dev(text, &mut diag);
         has_any = true;
     }
-    if let Some(text) = find_latest(
-        latest,
-        &["cell-support --no-ofono --at", "run cellular diagnostics"],
-    ) {
+    if let Some(text) = latest.get("cell-support --no-ofono --at") {
         parse_cell_support_at(text, &mut diag);
         has_any = true;
     }
@@ -972,6 +966,12 @@ fn extract_connman_tech(text: &str, tech: &str) -> Option<String> {
 }
 
 fn determine_wifi_status(diag: &mut WifiDiagnostic) {
+    if diag.check_result == "Unknown" && diag.check_error.is_none() {
+        diag.status = DiagStatus::Unknown;
+        diag.summary = "Partial data".into();
+        return;
+    }
+
     if diag
         .check_error
         .as_deref()
@@ -1457,6 +1457,13 @@ fn parse_cell_support_at(text: &str, diag: &mut CellularDiagnostic) {
 }
 
 fn determine_cellular_status(diag: &mut CellularDiagnostic) {
+    let has_authoritative_check = diag.check_result != "Unknown" || diag.check_error.is_some();
+    if !has_authoritative_check {
+        diag.status = DiagStatus::Unknown;
+        diag.summary = "Partial data".into();
+        return;
+    }
+
     if diag
         .check_error
         .as_deref()

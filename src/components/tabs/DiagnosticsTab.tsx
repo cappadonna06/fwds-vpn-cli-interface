@@ -436,7 +436,10 @@ export default function DiagnosticsTab() {
         <div>
           <h2>System Diagnostics</h2>
           <div className="diag-system-line">
-            SID {system?.sid ?? "—"} · {system?.version ?? "—"} · {system?.release_date ?? "—"}
+            SID {system?.sid ?? "—"}
+          </div>
+          <div className="diag-system-line">
+            {system?.version ?? "—"} · {system?.release_date ?? "—"}
           </div>
           <div className="diag-system-line">System updated {systemUpdatedAt ?? "—"}</div>
         </div>
