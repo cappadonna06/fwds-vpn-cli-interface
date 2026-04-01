@@ -159,6 +159,9 @@ fn split_blocks(log: &str) -> Vec<CommandBlock> {
         r"^(?:\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?[+-]\d{4}\s+)?(?:\[\d+\])?#\s*(.+)$",
     )
     .expect("prompt regex");
+    let prompt_inline_re =
+        Regex::new(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?[+-]\d{4}\s+\[\d+\]#\s*.*$")
+            .expect("inline prompt regex");
     let continuation_re = Regex::new(r"^>\s*(.+)$").expect("continuation regex");
     let ansi_re = Regex::new(r"\x1B\[[0-?]*[ -/]*[@-~]").expect("ansi regex");
 
@@ -168,20 +171,29 @@ fn split_blocks(log: &str) -> Vec<CommandBlock> {
 
     for line in log.lines() {
         let cleaned = ansi_re.replace_all(line, "");
-        let cleaned = cleaned.trim_end_matches('\r');
+        let cleaned = cleaned.trim_matches(|c: char| c == '\r' || c == '\u{0}');
+        let cleaned = cleaned.trim_start();
 
-        if let Some(cap) = prompt_re.captures(cleaned) {
-            if let Some(cmd) = current_cmd.take() {
-                blocks.push(CommandBlock {
-                    command: cmd,
-                    body: current_body.trim().to_string(),
-                });
-                current_body.clear();
+        let prompt_candidate = if prompt_re.is_match(cleaned) {
+            Some(cleaned)
+        } else {
+            prompt_inline_re.find(cleaned).map(|m| m.as_str())
+        };
+
+        if let Some(candidate) = prompt_candidate {
+            if let Some(cap) = prompt_re.captures(candidate) {
+                if let Some(cmd) = current_cmd.take() {
+                    blocks.push(CommandBlock {
+                        command: cmd,
+                        body: current_body.trim().to_string(),
+                    });
+                    current_body.clear();
+                }
+                if let Some(cmd_match) = cap.get(1) {
+                    current_cmd = Some(cmd_match.as_str().trim().to_string());
+                }
+                continue;
             }
-            if let Some(cmd_match) = cap.get(1) {
-                current_cmd = Some(cmd_match.as_str().trim().to_string());
-            }
-            continue;
         }
 
         if let Some(cap) = continuation_re.captures(cleaned) {
@@ -260,6 +272,15 @@ mod tests {
             .map(|w| w.summary.clone())
             .unwrap_or_default();
         assert_eq!(first_summary, second_summary);
+    }
+
+    #[test]
+    fn split_blocks_handles_prompt_glued_to_previous_output() {
+        let log = "Done: Success2026-04-01T10:53:01-0600 [22611067]# ethernet-check\nTesting Ethernet...\nDone: Success\n";
+        let blocks = split_blocks(log);
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].command, "ethernet-check");
+        assert!(blocks[0].body.contains("Done: Success"));
     }
 }
 
