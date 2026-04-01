@@ -76,17 +76,73 @@ pub struct DiagnosticState {
 pub struct WifiDiagnostic {
     pub status: DiagStatus,
     pub summary: String,
-    pub ssid: String,
-    pub strength: u8,
-    pub strength_label: String,
-    pub signal_dbm: Option<i32>,
+
+    pub check_result: String,
+    pub check_error: Option<String>,
+    pub internet_reachable: bool,
+    pub wifi_state: String,
+    pub access_point: Option<String>,
+    pub strength_score: Option<u8>,
+    pub strength_label: Option<String>,
     pub ipv4: bool,
     pub ipv6: bool,
     pub dns_servers: String,
-    pub internet_reachable: bool,
-    pub check_result: String,
-    pub avg_latency_ms: Option<f64>,
-    pub packet_loss_pct: u8,
+    pub check_avg_latency_ms: Option<f64>,
+    pub check_packet_loss_pct: u8,
+
+    pub signal_dbm: Option<i32>,
+    pub signal_dbm_trusted: bool,
+
+    pub interface_exists: bool,
+    pub interface_name: Option<String>,
+    pub interface_type: Option<String>,
+    pub mac_address: Option<String>,
+    pub ssid: Option<String>,
+    pub tx_power_dbm: Option<f64>,
+
+    pub connected: Option<bool>,
+    pub ap_bssid: Option<String>,
+    pub frequency_mhz: Option<u32>,
+    pub tx_bitrate_mbps: Option<f64>,
+    pub link_rx_bytes: Option<u64>,
+    pub link_rx_packets: Option<u64>,
+    pub link_tx_bytes: Option<u64>,
+    pub link_tx_packets: Option<u64>,
+
+    pub station_signal_dbm: Option<i32>,
+    pub station_tx_retries: Option<u64>,
+    pub station_tx_failed: Option<u64>,
+    pub station_tx_bitrate_mbps: Option<f64>,
+
+    pub lower_up_flag: Option<bool>,
+    pub link_state: Option<String>,
+
+    pub ipv4_address: Option<String>,
+    pub ipv4_prefix: Option<u8>,
+
+    pub default_via_wlan0: Option<bool>,
+    pub default_gateway: Option<String>,
+
+    pub connman_wifi_powered: Option<bool>,
+    pub connman_wifi_connected: Option<bool>,
+    pub connman_eth_connected: Option<bool>,
+    pub connman_cell_connected: Option<bool>,
+
+    pub connman_active_service: Option<String>,
+    pub connman_wifi_active: Option<bool>,
+    pub connman_state: Option<String>,
+
+    pub driver: Option<String>,
+    pub driver_version: Option<String>,
+    pub bus_info: Option<String>,
+
+    pub proc_rx_bytes: Option<u64>,
+    pub proc_rx_packets: Option<u64>,
+    pub proc_rx_errs: Option<u64>,
+    pub proc_rx_drop: Option<u64>,
+    pub proc_tx_bytes: Option<u64>,
+    pub proc_tx_packets: Option<u64>,
+    pub proc_tx_errs: Option<u64>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone)]

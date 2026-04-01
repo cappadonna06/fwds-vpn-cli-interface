@@ -23,34 +23,7 @@ pub fn parse_log_into_state(log: &str, state: &mut DiagnosticState) {
         latest.insert(block.command, block.body);
     }
 
-    let mut wifi = parse_wifi_check(find_latest(
-        &latest,
-        &["wifi-check", "run wifi diagnostics"],
-    ));
-    if let Some(dbm) = parse_wifi_signal(find_latest(
-        &latest,
-        &["wifi-signal", "run wifi diagnostics"],
-    )) {
-        if let Some(w) = wifi.as_mut() {
-            w.signal_dbm = Some(dbm);
-        } else {
-            wifi = Some(WifiDiagnostic {
-                status: DiagStatus::Unknown,
-                summary: "Signal sample only".into(),
-                ssid: "—".into(),
-                strength: 0,
-                strength_label: "unknown".into(),
-                signal_dbm: Some(dbm),
-                ipv4: false,
-                ipv6: false,
-                dns_servers: "—".into(),
-                internet_reachable: false,
-                check_result: "Unknown".into(),
-                avg_latency_ms: None,
-                packet_loss_pct: 0,
-            });
-        }
-    }
+    let wifi = parse_wifi(&latest);
 
     let mut cellular = parse_cellular_check(find_latest(
         &latest,
@@ -213,55 +186,273 @@ fn split_blocks(log: &str) -> Vec<CommandBlock> {
     blocks
 }
 
-fn parse_wifi_check(block: Option<&String>) -> Option<WifiDiagnostic> {
-    let text = block?;
-    let ssid = capture_after(text, "Wi-Fi access point:").unwrap_or_else(|| "—".into());
-    let (strength, strength_label) = parse_strength_line(capture_line(text, "Wi-Fi strength:"));
-    let ipv4 = parse_yes_no(capture_after(text, "Wi-Fi supports IPv4?"));
-    let ipv6 = parse_yes_no(capture_after(text, "Wi-Fi supports IPv6?"));
-    let dns_servers = capture_after(text, "Wi-Fi name servers:").unwrap_or_else(|| "—".into());
-    let internet_reachable = capture_after(text, "Internet reachability state:")
-        .map(|s| s.eq_ignore_ascii_case("online"))
-        .unwrap_or(false);
-    let check_result = capture_after(text, "Done:").unwrap_or_else(|| "Unknown".into());
-    let avg_latency_ms = parse_avg_latency(text);
-    let packet_loss_pct = parse_packet_loss(text).unwrap_or(0);
-
-    let status = if check_result.eq_ignore_ascii_case("failure") || !internet_reachable {
-        DiagStatus::Red
-    } else if check_result.eq_ignore_ascii_case("success") && internet_reachable {
-        if strength >= 40 {
-            DiagStatus::Green
-        } else {
-            DiagStatus::Orange
-        }
-    } else {
-        DiagStatus::Unknown
+fn parse_wifi(latest: &HashMap<String, String>) -> Option<WifiDiagnostic> {
+    let mut w = WifiDiagnostic {
+        status: DiagStatus::Unknown,
+        summary: "Incomplete data".into(),
+        check_result: "Unknown".into(),
+        check_error: None,
+        internet_reachable: false,
+        wifi_state: "unknown".into(),
+        access_point: None,
+        strength_score: None,
+        strength_label: None,
+        ipv4: false,
+        ipv6: false,
+        dns_servers: "—".into(),
+        check_avg_latency_ms: None,
+        check_packet_loss_pct: 0,
+        signal_dbm: None,
+        signal_dbm_trusted: false,
+        interface_exists: false,
+        interface_name: None,
+        interface_type: None,
+        mac_address: None,
+        ssid: None,
+        tx_power_dbm: None,
+        connected: None,
+        ap_bssid: None,
+        frequency_mhz: None,
+        tx_bitrate_mbps: None,
+        link_rx_bytes: None,
+        link_rx_packets: None,
+        link_tx_bytes: None,
+        link_tx_packets: None,
+        station_signal_dbm: None,
+        station_tx_retries: None,
+        station_tx_failed: None,
+        station_tx_bitrate_mbps: None,
+        lower_up_flag: None,
+        link_state: None,
+        ipv4_address: None,
+        ipv4_prefix: None,
+        default_via_wlan0: None,
+        default_gateway: None,
+        connman_wifi_powered: None,
+        connman_wifi_connected: None,
+        connman_eth_connected: None,
+        connman_cell_connected: None,
+        connman_active_service: None,
+        connman_wifi_active: None,
+        connman_state: None,
+        driver: None,
+        driver_version: None,
+        bus_info: None,
+        proc_rx_bytes: None,
+        proc_rx_packets: None,
+        proc_rx_errs: None,
+        proc_rx_drop: None,
+        proc_tx_bytes: None,
+        proc_tx_packets: None,
+        proc_tx_errs: None,
     };
 
-    Some(WifiDiagnostic {
-        status,
-        summary: format!("{} · {}/100 · {}", ssid, strength, strength_label),
-        ssid,
-        strength,
-        strength_label,
-        signal_dbm: None,
-        ipv4,
-        ipv6,
-        dns_servers,
-        internet_reachable,
-        check_result,
-        avg_latency_ms,
-        packet_loss_pct,
-    })
-}
+    let wifi_check = find_latest(latest, &["wifi-check", "wifi diagnostics"]);
+    let wifi_signal = find_latest(latest, &["wifi-signal", "wifi diagnostics"]);
+    let iw_dev = find_latest(latest, &["iw dev", "wifi diagnostics"]);
+    let iw_info = find_latest(latest, &["iw dev wlan0 info", "wifi diagnostics"]);
+    let iw_link = find_latest(latest, &["iw dev wlan0 link", "wifi diagnostics"]);
+    let iw_station = find_latest(latest, &["iw dev wlan0 station dump", "wifi diagnostics"]);
+    let ip_link = find_latest(latest, &["ip link show wlan0", "wifi diagnostics"]);
+    let ip_addr = find_latest(latest, &["ip addr show wlan0", "wifi diagnostics"]);
+    let ip_route = find_latest(latest, &["ip route", "wifi diagnostics"]);
+    let conn_tech = find_latest(latest, &["connmanctl technologies", "wifi diagnostics"]);
+    let conn_services = find_latest(latest, &["connmanctl services", "wifi diagnostics"]);
+    let conn_state = find_latest(latest, &["connmanctl state", "wifi diagnostics"]);
+    let ethtool_driver = find_latest(latest, &["ethtool -i wlan0", "wifi diagnostics"]);
+    let proc_net = find_latest(latest, &["cat /proc/net/dev", "wifi diagnostics"]);
 
-fn parse_wifi_signal(block: Option<&String>) -> Option<i32> {
-    let text = block?;
-    let re = Regex::new(r"signal strength:\s*(-?\d+)\s*dBm").ok()?;
-    re.captures(text)
-        .and_then(|c| c.get(1))
-        .and_then(|v| v.as_str().parse::<i32>().ok())
+    if let Some(text) = wifi_check {
+        w.internet_reachable = capture_after(text, "Internet reachability state:")
+            .map(|v| v.eq_ignore_ascii_case("online"))
+            .unwrap_or(false);
+        w.wifi_state = capture_after(text, "Wi-Fi state:").unwrap_or_else(|| "unknown".into());
+        w.access_point = capture_after(text, "Wi-Fi access point:");
+        let (score, label) = parse_strength_line(capture_line(text, "Wi-Fi strength:"));
+        if score > 0 {
+            w.strength_score = Some(score);
+            w.strength_label = Some(label);
+        }
+        w.ipv4 = parse_yes_no(capture_after(text, "Wi-Fi supports IPv4?"));
+        w.ipv6 = parse_yes_no(capture_after(text, "Wi-Fi supports IPv6?"));
+        w.dns_servers = capture_after(text, "Wi-Fi name servers:").unwrap_or_else(|| "—".into());
+        if let Some(done) = capture_after(text, "Done:") {
+            if done.to_ascii_lowercase().starts_with("success") {
+                w.check_result = "Success".into();
+            } else if done.to_ascii_lowercase().starts_with("failure") {
+                w.check_result = "Failure".into();
+                w.check_error = Some(done.trim_start_matches("Failure:").trim().to_string());
+            } else {
+                w.check_result = done;
+            }
+        }
+        w.check_avg_latency_ms = parse_avg_latency(text);
+        w.check_packet_loss_pct = parse_packet_loss(text).unwrap_or(0);
+    }
+
+    if let Some(text) = wifi_signal {
+        w.signal_dbm = parse_signal_dbm(text);
+    }
+    if let Some(text) = iw_dev {
+        w.interface_exists = text.contains("Interface wlan0");
+        w.interface_name = capture_after(text, "Interface");
+        w.mac_address = capture_after(text, "addr");
+        w.ssid = capture_after(text, "ssid");
+        w.interface_type = capture_after(text, "type");
+        w.tx_power_dbm = capture_after(text, "txpower").and_then(|v| {
+            v.split_whitespace()
+                .next()
+                .and_then(|n| n.parse::<f64>().ok())
+        });
+    }
+    if let Some(text) = iw_info {
+        w.interface_exists = true;
+        w.interface_name = w
+            .interface_name
+            .or_else(|| capture_after(text, "Interface"));
+        w.interface_type = w.interface_type.or_else(|| capture_after(text, "type"));
+        w.mac_address = w.mac_address.or_else(|| capture_after(text, "addr"));
+        w.ssid = w.ssid.or_else(|| capture_after(text, "ssid"));
+    }
+    if let Some(text) = iw_link {
+        if text.contains("Not connected") {
+            w.connected = Some(false);
+        } else {
+            w.connected = Some(true);
+            w.ap_bssid = extract_regex(text, r"Connected to ([0-9a-f:]{17})");
+            w.ssid = w.ssid.or_else(|| capture_after(text, "SSID:"));
+            w.frequency_mhz = extract_regex(text, r"freq:\s*([0-9.]+)")
+                .and_then(|v| v.parse::<f64>().ok())
+                .map(|f| f.round() as u32);
+            w.link_rx_bytes =
+                extract_regex(text, r"RX:\s*(\d+)\s+bytes").and_then(|v| v.parse::<u64>().ok());
+            w.link_rx_packets = extract_regex(text, r"RX:\s*\d+\s+bytes\s+\((\d+)\s+packets\)")
+                .and_then(|v| v.parse::<u64>().ok());
+            w.link_tx_bytes =
+                extract_regex(text, r"TX:\s*(\d+)\s+bytes").and_then(|v| v.parse::<u64>().ok());
+            w.link_tx_packets = extract_regex(text, r"TX:\s*\d+\s+bytes\s+\((\d+)\s+packets\)")
+                .and_then(|v| v.parse::<u64>().ok());
+            if w.signal_dbm.is_none() {
+                w.signal_dbm = extract_regex(text, r"signal:\s*(-?\d+)\s*dBm")
+                    .and_then(|v| v.parse::<i32>().ok());
+            }
+            w.tx_bitrate_mbps = extract_regex(text, r"tx bitrate:\s*([0-9.]+)\s*MBit/s")
+                .and_then(|v| v.parse::<f64>().ok());
+        }
+    }
+    if let Some(text) = iw_station {
+        w.station_signal_dbm =
+            extract_regex(text, r"signal:\s*(-?\d+)\s*dBm").and_then(|v| v.parse::<i32>().ok());
+        w.station_tx_retries =
+            extract_regex(text, r"tx retries:\s*(\d+)").and_then(|v| v.parse::<u64>().ok());
+        w.station_tx_failed =
+            extract_regex(text, r"tx failed:\s*(\d+)").and_then(|v| v.parse::<u64>().ok());
+        w.station_tx_bitrate_mbps = extract_regex(text, r"tx bitrate:\s*([0-9.]+)\s*MBit/s")
+            .and_then(|v| v.parse::<f64>().ok());
+    }
+    if let Some(text) = ip_link {
+        let line = text.lines().next().unwrap_or_default();
+        w.lower_up_flag = Some(line.contains("LOWER_UP"));
+        w.link_state = extract_regex(line, r"state\s+([A-Z]+)");
+    }
+    if let Some(text) = ip_addr {
+        let re = Regex::new(r"inet\s+(\d+\.\d+\.\d+\.\d+)/(\d{1,2})").ok();
+        if let Some(re) = re {
+            if let Some(c) = re.captures(text) {
+                w.ipv4_address = c.get(1).map(|m| m.as_str().to_string());
+                w.ipv4_prefix = c.get(2).and_then(|m| m.as_str().parse::<u8>().ok());
+            }
+        }
+    }
+    if let Some(text) = ip_route {
+        let mut default_gateway = None;
+        let mut default_via_wlan0 = false;
+        for line in text.lines() {
+            let line = line.trim();
+            if line.starts_with("default via ") {
+                if let Some(gw) = extract_regex(line, r"default via (\S+)") {
+                    if line.contains(" dev wlan0") {
+                        default_via_wlan0 = true;
+                        default_gateway = Some(gw);
+                        break;
+                    } else if default_gateway.is_none() {
+                        default_gateway = Some(gw);
+                    }
+                }
+            }
+        }
+        w.default_via_wlan0 = Some(default_via_wlan0);
+        w.default_gateway = default_gateway;
+    }
+    if let Some(text) = conn_tech {
+        let wifi_block = extract_connman_tech(text, "wifi");
+        w.connman_wifi_powered = wifi_block
+            .as_deref()
+            .and_then(|b| extract_regex(b, r"Powered = (True|False)"))
+            .map(|v| v == "True");
+        w.connman_wifi_connected = wifi_block
+            .as_deref()
+            .and_then(|b| extract_regex(b, r"Connected = (True|False)"))
+            .map(|v| v == "True");
+        let eth_block = extract_connman_tech(text, "ethernet");
+        w.connman_eth_connected = eth_block
+            .as_deref()
+            .and_then(|b| extract_regex(b, r"Connected = (True|False)"))
+            .map(|v| v == "True");
+        let cell_block = extract_connman_tech(text, "cellular");
+        w.connman_cell_connected = cell_block
+            .as_deref()
+            .and_then(|b| extract_regex(b, r"Connected = (True|False)"))
+            .map(|v| v == "True");
+    }
+    if let Some(text) = conn_services {
+        for line in text.lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with("*AO ") {
+                let active = trimmed.trim_start_matches("*AO ").to_string();
+                w.connman_active_service =
+                    Some(active.split_whitespace().next().unwrap_or("").to_string());
+                w.connman_wifi_active = Some(trimmed.contains("wifi_"));
+                break;
+            }
+        }
+        if w.connman_wifi_active.is_none() {
+            w.connman_wifi_active = Some(false);
+        }
+    }
+    if let Some(text) = conn_state {
+        w.connman_state = extract_regex(text, r"State = (\w+)");
+    }
+    if let Some(text) = ethtool_driver {
+        w.driver = capture_after(text, "driver:");
+        w.driver_version = capture_after(text, "version:");
+        w.bus_info = capture_after(text, "bus-info:");
+    }
+    if let Some(text) = proc_net {
+        for line in text.lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with("wlan0:") {
+                let rhs = trimmed.trim_start_matches("wlan0:").trim();
+                let cols: Vec<&str> = rhs.split_whitespace().collect();
+                if cols.len() >= 11 {
+                    w.proc_rx_bytes = cols.first().and_then(|v| v.parse::<u64>().ok());
+                    w.proc_rx_packets = cols.get(1).and_then(|v| v.parse::<u64>().ok());
+                    w.proc_rx_errs = cols.get(2).and_then(|v| v.parse::<u64>().ok());
+                    w.proc_rx_drop = cols.get(3).and_then(|v| v.parse::<u64>().ok());
+                    w.proc_tx_bytes = cols.get(8).and_then(|v| v.parse::<u64>().ok());
+                    w.proc_tx_packets = cols.get(9).and_then(|v| v.parse::<u64>().ok());
+                    w.proc_tx_errs = cols.get(10).and_then(|v| v.parse::<u64>().ok());
+                }
+            }
+        }
+    }
+
+    w.signal_dbm_trusted = w.connected == Some(true)
+        || w.connman_wifi_connected == Some(true)
+        || (w.check_result == "Success" && w.wifi_state == "online");
+
+    determine_wifi_status(&mut w);
+    Some(w)
 }
 
 fn parse_cellular_check(block: Option<&String>) -> Option<CellularDiagnostic> {
@@ -531,6 +722,139 @@ fn parse_packet_loss(text: &str) -> Option<u8> {
     re.captures(text)
         .and_then(|c| c.get(1))
         .and_then(|m| m.as_str().parse::<u8>().ok())
+}
+
+fn parse_signal_dbm(text: &str) -> Option<i32> {
+    extract_regex(text, r"signal strength:\s*(-?\d+)\s*dBm").and_then(|v| v.parse::<i32>().ok())
+}
+
+fn extract_regex(text: &str, pattern: &str) -> Option<String> {
+    let re = Regex::new(pattern).ok()?;
+    re.captures(text)
+        .and_then(|c| c.get(1))
+        .map(|m| m.as_str().to_string())
+}
+
+fn extract_connman_tech(text: &str, tech: &str) -> Option<String> {
+    let marker = format!("/net/connman/technology/{tech}");
+    let mut out = String::new();
+    let mut active = false;
+    for line in text.lines() {
+        if line.starts_with("/net/connman/technology/") {
+            if active {
+                break;
+            }
+            active = line.trim() == marker;
+            if active {
+                out.push_str(line);
+                out.push('\n');
+            }
+            continue;
+        }
+        if active {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    if out.is_empty() {
+        None
+    } else {
+        Some(out)
+    }
+}
+
+fn determine_wifi_status(diag: &mut WifiDiagnostic) {
+    if diag
+        .check_error
+        .as_deref()
+        .map(|e| e.contains("-65553"))
+        .unwrap_or(false)
+        || diag.connman_wifi_powered == Some(false)
+    {
+        diag.status = DiagStatus::Red;
+        diag.summary = "Disabled — Wi-Fi technology not enabled".into();
+        return;
+    }
+
+    if diag
+        .check_error
+        .as_deref()
+        .map(|e| e.contains("-65554"))
+        .unwrap_or(false)
+        || diag.connected == Some(false)
+        || (diag.connman_wifi_connected == Some(false) && diag.connman_wifi_powered == Some(true))
+    {
+        diag.status = DiagStatus::Red;
+        diag.summary = "Not connected — Wi-Fi offline or association failed".into();
+        return;
+    }
+
+    if diag.link_state.as_deref() == Some("DOWN") {
+        diag.status = DiagStatus::Red;
+        diag.summary = "Interface down — wlan0 not ready".into();
+        return;
+    }
+
+    if diag.connected == Some(true) && diag.ipv4_address.is_none() {
+        diag.status = DiagStatus::Orange;
+        diag.summary = "Connected — no IP assigned (DHCP failure?)".into();
+        return;
+    }
+
+    if let Some(dbm) = diag.signal_dbm {
+        if diag.signal_dbm_trusted && dbm <= -75 {
+            let ssid = diag
+                .ssid
+                .clone()
+                .or(diag.access_point.clone())
+                .unwrap_or_else(|| "Wi-Fi".into());
+            diag.status = DiagStatus::Orange;
+            diag.summary = format!("{ssid} · weak signal ({dbm} dBm)");
+            return;
+        }
+    }
+
+    if diag.check_packet_loss_pct >= 20 || diag.station_tx_failed.unwrap_or(0) > 0 {
+        let ssid = diag
+            .ssid
+            .clone()
+            .or(diag.access_point.clone())
+            .unwrap_or_else(|| "Wi-Fi".into());
+        diag.status = DiagStatus::Orange;
+        diag.summary = format!("{ssid} · unstable link");
+        return;
+    }
+
+    if diag.check_result == "Success" && diag.internet_reachable {
+        let ssid = diag
+            .ssid
+            .clone()
+            .or(diag.access_point.clone())
+            .unwrap_or_else(|| "Wi-Fi".into());
+        let signal = if diag.signal_dbm_trusted {
+            diag.signal_dbm
+                .map(|v| format!("{v} dBm"))
+                .unwrap_or_else(|| "unknown signal".into())
+        } else {
+            "unknown signal".into()
+        };
+        let bitrate = diag
+            .tx_bitrate_mbps
+            .or(diag.station_tx_bitrate_mbps)
+            .map(|v| format!("{v:.1} Mbps"))
+            .unwrap_or_else(|| "unknown rate".into());
+        let preferred = if diag.connman_wifi_active == Some(true) {
+            " · preferred"
+        } else {
+            ""
+        };
+        diag.status = DiagStatus::Green;
+        diag.summary = format!("{ssid} · {signal} · {bitrate}{preferred}");
+        return;
+    }
+
+    diag.status = DiagStatus::Unknown;
+    diag.summary = "Incomplete data".into();
 }
 
 fn parse_single_value(block: Option<&String>) -> Option<String> {

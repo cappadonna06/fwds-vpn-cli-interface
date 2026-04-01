@@ -6,17 +6,50 @@ type DiagStatus = "green" | "orange" | "red" | "unknown";
 interface WifiDiagnostic {
   status: DiagStatus;
   summary: string;
-  ssid: string;
-  strength: number;
-  strength_label: string;
-  signal_dbm?: number | null;
+  check_result: string;
+  check_error?: string | null;
+  internet_reachable: boolean;
+  wifi_state: string;
+  access_point?: string | null;
+  strength_score?: number | null;
+  strength_label?: string | null;
   ipv4: boolean;
   ipv6: boolean;
   dns_servers: string;
-  internet_reachable: boolean;
-  check_result: string;
-  avg_latency_ms?: number | null;
-  packet_loss_pct: number;
+  check_avg_latency_ms?: number | null;
+  check_packet_loss_pct: number;
+  signal_dbm?: number | null;
+  signal_dbm_trusted: boolean;
+  interface_exists: boolean;
+  interface_name?: string | null;
+  interface_type?: string | null;
+  mac_address?: string | null;
+  ssid?: string | null;
+  tx_power_dbm?: number | null;
+  connected?: boolean | null;
+  ap_bssid?: string | null;
+  frequency_mhz?: number | null;
+  tx_bitrate_mbps?: number | null;
+  station_tx_retries?: number | null;
+  station_tx_failed?: number | null;
+  station_tx_bitrate_mbps?: number | null;
+  lower_up_flag?: boolean | null;
+  link_state?: string | null;
+  ipv4_address?: string | null;
+  ipv4_prefix?: number | null;
+  default_via_wlan0?: boolean | null;
+  default_gateway?: string | null;
+  connman_wifi_powered?: boolean | null;
+  connman_wifi_connected?: boolean | null;
+  connman_active_service?: string | null;
+  connman_wifi_active?: boolean | null;
+  connman_state?: string | null;
+  driver?: string | null;
+  proc_rx_bytes?: number | null;
+  proc_rx_packets?: number | null;
+  proc_rx_drop?: number | null;
+  proc_tx_bytes?: number | null;
+  proc_tx_packets?: number | null;
 }
 
 interface CellularDiagnostic {
@@ -100,6 +133,52 @@ function fmtBool(v: boolean | null | undefined): string {
 function fmtNum(v: number | null | undefined, suffix = ""): string {
   if (v === null || v === undefined || Number.isNaN(v)) return "—";
   return `${v}${suffix}`;
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function buildWifiRows(wifi?: WifiDiagnostic | null): { label: string; value: string }[] {
+  if (!wifi) return [];
+  const rows: { label: string; value: string }[] = [];
+  rows.push({ label: "Check result", value: wifi.check_result || "—" });
+  if (wifi.check_error) rows.push({ label: "Error", value: wifi.check_error });
+  rows.push({ label: "Internet", value: wifi.internet_reachable ? "Online" : "Offline" });
+  rows.push({ label: "State", value: wifi.wifi_state || "—" });
+  rows.push({ label: "SSID", value: wifi.ssid || wifi.access_point || "—" });
+  rows.push({ label: "Connected", value: wifi.connected === true ? "Yes" : wifi.connected === false ? "No" : "—" });
+  if (wifi.ap_bssid) rows.push({ label: "AP BSSID", value: wifi.ap_bssid });
+  if (wifi.signal_dbm !== null && wifi.signal_dbm !== undefined) {
+    rows.push({ label: "Signal", value: wifi.signal_dbm_trusted ? `${wifi.signal_dbm} dBm` : `${wifi.signal_dbm} dBm (untrusted)` });
+  }
+  if (wifi.strength_score !== null && wifi.strength_score !== undefined) {
+    rows.push({ label: "Strength", value: `${wifi.strength_score}/100${wifi.strength_label ? ` (${wifi.strength_label})` : ""}` });
+  }
+  if (wifi.frequency_mhz) rows.push({ label: "Frequency", value: `${wifi.frequency_mhz} MHz` });
+  if (wifi.tx_bitrate_mbps !== null && wifi.tx_bitrate_mbps !== undefined) rows.push({ label: "TX bitrate", value: `${wifi.tx_bitrate_mbps.toFixed(1)} Mbps` });
+  rows.push({ label: "IP address", value: wifi.ipv4_address ? `${wifi.ipv4_address}/${wifi.ipv4_prefix ?? ""}` : "—" });
+  rows.push({ label: "IPv4", value: wifi.ipv4 ? "Yes" : "No" });
+  rows.push({ label: "IPv6", value: wifi.ipv6 ? "Yes" : "No" });
+  if (wifi.mac_address) rows.push({ label: "MAC", value: wifi.mac_address });
+  if (wifi.driver) rows.push({ label: "Driver", value: wifi.driver });
+  rows.push({ label: "Default route", value: wifi.default_via_wlan0 === true ? "via wlan0 ✓" : wifi.default_gateway ? `via ${wifi.default_gateway} (not wlan0)` : "—" });
+  rows.push({ label: "ConnMan Wi-Fi", value: wifi.connman_wifi_connected === true ? "Connected" : wifi.connman_wifi_powered === true ? "Powered, not connected" : wifi.connman_wifi_powered === false ? "Disabled" : "—" });
+  rows.push({ label: "Active service", value: wifi.connman_active_service || "—" });
+  rows.push({ label: "Network state", value: wifi.connman_state || "—" });
+  if (wifi.dns_servers) rows.push({ label: "DNS", value: wifi.dns_servers });
+  if (wifi.check_avg_latency_ms !== null && wifi.check_avg_latency_ms !== undefined) rows.push({ label: "Latency (avg)", value: `${wifi.check_avg_latency_ms.toFixed(1)} ms` });
+  rows.push({ label: "Packet loss", value: `${wifi.check_packet_loss_pct}%` });
+  if (wifi.station_tx_retries !== null && wifi.station_tx_retries !== undefined) rows.push({ label: "TX retries", value: String(wifi.station_tx_retries) });
+  if (wifi.station_tx_failed !== null && wifi.station_tx_failed !== undefined) rows.push({ label: "TX failed", value: String(wifi.station_tx_failed) });
+  if (wifi.proc_rx_bytes && wifi.proc_rx_bytes > 0) {
+    rows.push({ label: "RX", value: `${wifi.proc_rx_packets ?? 0} pkts / ${formatBytes(wifi.proc_rx_bytes)}` });
+    rows.push({ label: "TX", value: `${wifi.proc_tx_packets ?? 0} pkts / ${formatBytes(wifi.proc_tx_bytes ?? 0)}` });
+  }
+  if (wifi.proc_rx_drop && wifi.proc_rx_drop > 0) rows.push({ label: "RX dropped", value: String(wifi.proc_rx_drop) });
+  return rows;
 }
 
 function DiagCard({ title, icon, status, summary, rows }: DiagCardProps) {
@@ -192,17 +271,7 @@ export default function DiagnosticsTab() {
             icon="🌐"
             status={wifi?.status ?? "unknown"}
             summary={wifi?.summary ?? "Run wifi-check / wifi diagnostics to populate"}
-            rows={expanded.wifi ? [
-              { label: "SSID", value: wifi?.ssid ?? "—" },
-              { label: "Signal", value: wifi ? `${wifi.strength}/100 (${wifi.strength_label})` : "—" },
-              ...(wifi?.signal_dbm !== null && wifi?.signal_dbm !== undefined ? [{ label: "Signal (dBm)", value: `${wifi.signal_dbm} dBm` }] : []),
-              { label: "IPv4", value: fmtBool(wifi?.ipv4) },
-              { label: "IPv6", value: fmtBool(wifi?.ipv6) },
-              { label: "DNS", value: wifi?.dns_servers ?? "—" },
-              ...(wifi?.avg_latency_ms !== null && wifi?.avg_latency_ms !== undefined ? [{ label: "Latency (avg)", value: `${wifi.avg_latency_ms.toFixed(1)} ms` }] : []),
-              { label: "Packet loss", value: wifi ? `${wifi.packet_loss_pct}%` : "—" },
-              { label: "Check result", value: wifi?.check_result ?? "—" },
-            ] : []}
+            rows={expanded.wifi ? buildWifiRows(wifi) : []}
           />
         </div>
 

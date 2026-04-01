@@ -230,10 +230,10 @@ export const COMMANDS: ControllerCommand[] = [
     label: "wifi-check",
     command: "wifi-check",
     category: "diagnostic",
-    description: "Test and confirm Wi-Fi connectivity.",
+    description: "System-level Wi-Fi status and connectivity test.",
     reboot_required: false,
     guard: "none",
-    est_seconds: 10,
+    est_seconds: 12,
     when_to_run: "After setup-wifi or when Wi-Fi connectivity is in question.",
     what_to_look_for: [
       "✓ wifi-check: Success at the end of output",
@@ -389,18 +389,141 @@ export const COMMANDS: ControllerCommand[] = [
     id: "wifi-signal",
     label: "wifi-signal",
     command: "wifi-signal",
-    category: "info",
-    description: "Display Wi-Fi signal strength.",
+    category: "diagnostic",
+    description: "Current Wi-Fi RSSI in dBm.",
     reboot_required: false,
     guard: "none",
-    est_seconds: 2,
-    when_to_run: "Quick check of Wi-Fi signal strength.",
-    what_to_look_for: [
-      "> 70 is good",
-      "40–70 is acceptable",
-      "< 40 investigate antenna or distance",
-    ],
-    related_command_ids: ["wifi-check"],
+    est_seconds: 1,
+  },
+  {
+    id: "iw-dev",
+    label: "iw dev",
+    command: "iw dev",
+    category: "diagnostic",
+    description: "Wireless interface, SSID, mode, and tx power.",
+    reboot_required: false,
+    guard: "none",
+    est_seconds: 1,
+  },
+  {
+    id: "iw-wlan0-info",
+    label: "iw dev wlan0 info",
+    command: "iw dev wlan0 info",
+    category: "diagnostic",
+    description: "wlan0 interface details.",
+    reboot_required: false,
+    guard: "none",
+    est_seconds: 1,
+  },
+  {
+    id: "iw-wlan0-link",
+    label: "iw dev wlan0 link",
+    command: "iw dev wlan0 link",
+    category: "diagnostic",
+    description: "Current AP, frequency, signal, bitrate, RX/TX counters.",
+    reboot_required: false,
+    guard: "none",
+    est_seconds: 1,
+  },
+  {
+    id: "iw-wlan0-station-dump",
+    label: "iw dev wlan0 station dump",
+    command: "iw dev wlan0 station dump",
+    category: "diagnostic",
+    description: "Retries, failures, signal, tx bitrate.",
+    reboot_required: false,
+    guard: "none",
+    est_seconds: 1,
+  },
+  {
+    id: "ip-link-wlan0",
+    label: "ip link show wlan0",
+    command: "ip link show wlan0",
+    category: "diagnostic",
+    description: "Interface flags — UP / LOWER_UP / DOWN.",
+    reboot_required: false,
+    guard: "none",
+    est_seconds: 1,
+  },
+  {
+    id: "ip-addr-wlan0",
+    label: "ip addr show wlan0",
+    command: "ip addr show wlan0",
+    category: "diagnostic",
+    description: "IP address assignment on wlan0.",
+    reboot_required: false,
+    guard: "none",
+    est_seconds: 1,
+  },
+  {
+    id: "ip-route",
+    label: "ip route",
+    command: "ip route",
+    category: "diagnostic",
+    description: "Routing table — shows default route.",
+    reboot_required: false,
+    guard: "none",
+    est_seconds: 1,
+  },
+  {
+    id: "cat-resolv-conf",
+    label: "cat /etc/resolv.conf",
+    command: "cat /etc/resolv.conf",
+    category: "diagnostic",
+    description: "DNS config (ConnMan proxy).",
+    reboot_required: false,
+    guard: "none",
+    est_seconds: 1,
+  },
+  {
+    id: "connmanctl-technologies",
+    label: "connmanctl technologies",
+    command: "connmanctl technologies",
+    category: "diagnostic",
+    description: "ConnMan technology status.",
+    reboot_required: false,
+    guard: "none",
+    est_seconds: 1,
+  },
+  {
+    id: "connmanctl-services",
+    label: "connmanctl services",
+    command: "connmanctl services",
+    category: "diagnostic",
+    description: "ConnMan active services.",
+    reboot_required: false,
+    guard: "none",
+    est_seconds: 1,
+  },
+  {
+    id: "connmanctl-state",
+    label: "connmanctl state",
+    command: "connmanctl state",
+    category: "diagnostic",
+    description: "Global ConnMan state.",
+    reboot_required: false,
+    guard: "none",
+    est_seconds: 1,
+  },
+  {
+    id: "ethtool-driver-wlan0",
+    label: "ethtool -i wlan0",
+    command: "ethtool -i wlan0",
+    category: "diagnostic",
+    description: "Wi-Fi driver info.",
+    reboot_required: false,
+    guard: "none",
+    est_seconds: 1,
+  },
+  {
+    id: "proc-net-dev",
+    label: "cat /proc/net/dev",
+    command: "cat /proc/net/dev",
+    category: "diagnostic",
+    description: "Traffic baseline for all interfaces.",
+    reboot_required: false,
+    guard: "none",
+    est_seconds: 1,
   },
   {
     id: "cell-imei",
@@ -577,10 +700,64 @@ echo "===== ETH DIAGNOSTICS END ====="`,
     id: "wifi",
     label: "Wi-Fi",
     icon: "📶",
-    description: "Wireless connection, signal strength, and interface details. Verifies the controller is associated to the correct SSID, reports signal quality, and lists visible networks.",
-    when_to_run: "After setup-wifi or when Wi-Fi connectivity or signal quality is in question.",
+    description: "Full Wi-Fi diagnostic suite — wrapper, association, interface, routing, ConnMan, and stats",
     light_command_ids: ["wifi-check", "wifi-signal"],
-    heavy_command_ids: ["wifi-check", "wifi-signal", "iwconfig", "iwlist-scan"],
+    heavy_command_ids: [
+      "wifi-check",
+      "wifi-signal",
+      "iw-dev",
+      "iw-wlan0-info",
+      "iw-wlan0-link",
+      "iw-wlan0-station-dump",
+      "ip-link-wlan0",
+      "ip-addr-wlan0",
+      "ip-route",
+      "cat-resolv-conf",
+      "connmanctl-technologies",
+      "connmanctl-services",
+      "connmanctl-state",
+      "ethtool-driver-wlan0",
+      "proc-net-dev",
+    ],
+    heavy_script: `(
+echo "===== WIFI DIAGNOSTICS START ====="
+
+echo ""
+echo "--- FRONTLINE ---"
+wifi-check
+wifi-signal
+
+echo ""
+echo "--- IW ---"
+iw dev
+iw dev wlan0 info
+iw dev wlan0 link
+iw dev wlan0 station dump
+
+echo ""
+echo "--- INTERFACE ---"
+ip link show wlan0
+ip addr show wlan0
+
+echo ""
+echo "--- ROUTING / DNS ---"
+ip route
+cat /etc/resolv.conf
+
+echo ""
+echo "--- CONNMAN ---"
+connmanctl technologies
+connmanctl services
+connmanctl state
+
+echo ""
+echo "--- DRIVER / STATS ---"
+ethtool -i wlan0
+cat /proc/net/dev
+
+echo ""
+echo "===== WIFI DIAGNOSTICS END ====="
+)`,
   },
   {
     id: "cellular",
