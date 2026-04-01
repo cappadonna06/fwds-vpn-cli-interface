@@ -32,6 +32,8 @@ struct InnerState {
     shell_phase: String, // disconnected | connecting | connected | failed
     shell_detail: String,
     controller_ip: Option<String>,
+    local_serial_device: Option<String>,
+    connection_mode: String, // vpn | local
     shell_logs: Vec<String>,
     shell_log_cursor: usize, // how many lines ConsoleTab has already consumed
     // True when the last stdout flush was a wizard prompt waiting for input.
@@ -181,6 +183,18 @@ fn log_file_path(ip: &str) -> PathBuf {
         .join(filename)
 }
 
+fn local_serial_log_file(device: &str) -> PathBuf {
+    let date = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let safe = device
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect::<String>();
+    let filename = format!("fwds-serial-{}-{}.txt", safe, date);
+    dirs::desktop_dir()
+        .unwrap_or_else(|| PathBuf::from("~/Desktop"))
+        .join(filename)
+}
+
 fn diagnostic_store_path() -> PathBuf {
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
@@ -300,6 +314,7 @@ fn connect_controller(ip: String, state: State<'_, AppState>) -> Result<(), Stri
         inner.shell_phase = "connecting".into();
         inner.shell_detail = format!("Connecting to root@{ip}…");
         inner.controller_ip = Some(ip.clone());
+        inner.connection_mode = "vpn".into();
     }
 
     let station_key = home_ssh_dir().join("station");
@@ -717,7 +732,9 @@ fn run_preflight(ip: String) -> Result<serde_json::Value, String> {
 #[tauri::command]
 fn open_controller_terminal(state: State<'_, AppState>) -> Result<(), String> {
     let ip = {
-        let inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
+        let mut inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
+        inner.connection_mode = "vpn".into();
+        inner.local_serial_device = None;
         inner
             .controller_ip
             .clone()
@@ -773,6 +790,62 @@ fn open_controller_terminal(state: State<'_, AppState>) -> Result<(), String> {
     }
 }
 
+#[tauri::command]
+fn list_serial_devices() -> Result<Vec<String>, String> {
+    let entries = fs::read_dir("/dev").map_err(|e| format!("Failed to read /dev: {e}"))?;
+    let mut devices = Vec::new();
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name.starts_with("cu.") {
+            devices.push(format!("/dev/{name}"));
+        }
+    }
+    devices.sort();
+    Ok(devices)
+}
+
+#[tauri::command]
+fn open_local_serial_terminal(device: String, state: State<'_, AppState>) -> Result<(), String> {
+    if device.trim().is_empty() {
+        return Err("Serial device is required".into());
+    }
+
+    {
+        let mut inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
+        inner.connection_mode = "local".into();
+        inner.local_serial_device = Some(device.clone());
+    }
+
+    let log_path = local_serial_log_file(&device);
+    let command = format!(
+        "clear; script -q {} minicom -D {} -b 115200; exit",
+        shell_quote(&log_path.to_string_lossy()),
+        shell_quote(&device),
+    );
+    let script = format!(
+        "tell application \"Terminal\"\nactivate\ndo script {}\nend tell",
+        applescript_string_literal(&command)
+    );
+
+    let out = Command::new("osascript")
+        .arg("-e")
+        .arg(&script)
+        .output()
+        .map_err(|e| format!("Failed to open Terminal: {e}"))?;
+
+    if out.status.success() {
+        Ok(())
+    } else {
+        let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        Err(if stderr.is_empty() {
+            "Terminal launch failed.".into()
+        } else {
+            format!("Failed to open Terminal: {stderr}")
+        })
+    }
+}
+
 /// Lightweight status for the Session tab — does NOT advance the ConsoleTab cursor.
 #[tauri::command]
 fn get_controller_status(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
@@ -791,6 +864,8 @@ fn get_app_state(state: State<'_, AppState>) -> Result<serde_json::Value, String
         "vpn_phase": inner.vpn_phase,
         "shell_phase": inner.shell_phase,
         "controller_ip": inner.controller_ip,
+        "connection_mode": inner.connection_mode,
+        "local_serial_device": inner.local_serial_device,
     }))
 }
 
@@ -823,16 +898,22 @@ fn merge_non_empty_cards(base: &mut DiagnosticState, incoming: &DiagnosticState)
 
 #[tauri::command]
 fn start_log_watcher(state: State<'_, AppState>) -> Result<(), String> {
-    let ip = {
+    let (controller_key, log_path) = {
         let inner = state.inner.lock().map_err(|_| "lock poisoned")?;
-        inner
-            .controller_ip
-            .clone()
-            .ok_or_else(|| "No controller IP — connect first".to_string())?
+        if inner.connection_mode == "local" {
+            let device = inner
+                .local_serial_device
+                .clone()
+                .ok_or_else(|| "No local serial device selected".to_string())?;
+            (format!("serial:{device}"), local_serial_log_file(&device))
+        } else {
+            let ip = inner
+                .controller_ip
+                .clone()
+                .ok_or_else(|| "No controller IP — connect first".to_string())?;
+            (ip.clone(), log_file_path(&ip))
+        }
     };
-
-    let log_path = log_file_path(&ip);
-    let controller_key = ip.clone();
     let diag_arc = state.diagnostic_state.clone();
     let store_arc = state.diagnostic_store.clone();
 
@@ -1471,6 +1552,8 @@ pub fn run() {
             disconnect_controller,
             run_preflight,
             open_controller_terminal,
+            list_serial_devices,
+            open_local_serial_terminal,
             get_app_state,
             start_log_watcher,
             get_diagnostic_state,

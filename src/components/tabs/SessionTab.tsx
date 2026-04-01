@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 
 type VpnStatus = "disconnected" | "connecting" | "connected" | "failed";
 type ControllerStatus = "disconnected" | "connecting" | "connected" | "failed";
+type ConnectionMode = "vpn" | "local";
 
 const VPN_LABELS: Record<VpnStatus, string> = {
   disconnected: "Disconnected",
@@ -35,6 +36,7 @@ interface PreflightResult {
 }
 
 export default function SessionTab() {
+  const [connectionMode, setConnectionMode] = useState<ConnectionMode>("vpn");
   const [bundlePath, setBundlePath] = useState("");
   const [validation, setValidation] = useState<Record<string, boolean> | null>(null);
 
@@ -49,6 +51,9 @@ export default function SessionTab() {
 
   const [preflight, setPreflight] = useState<PreflightResult | null>(null);
   const [preflightRunning, setPreflightRunning] = useState(false);
+  const [serialDevice, setSerialDevice] = useState("");
+  const [serialDevices, setSerialDevices] = useState<string[]>([]);
+  const [serialDetail, setSerialDetail] = useState("");
 
   const vpnPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const ctrlPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -62,6 +67,9 @@ export default function SessionTab() {
 
     const octet = localStorage.getItem("vpn_last_octet");
     if (octet) setSavedOctet(octet);
+
+    const savedSerial = localStorage.getItem("local_serial_device");
+    if (savedSerial) setSerialDevice(savedSerial);
   }, []);
 
   // VPN polling
@@ -115,7 +123,6 @@ export default function SessionTab() {
   async function pollController() {
     try {
       const r = await invoke<{ phase: string; detail: string }>("get_controller_status");
-      const prev = prevCtrlPhaseRef.current;
       prevCtrlPhaseRef.current = r.phase;
       setCtrlStatus(r.phase as ControllerStatus);
       setCtrlDetail(r.detail);
@@ -213,6 +220,27 @@ export default function SessionTab() {
     }
   }
 
+  async function detectSerialDevices() {
+    try {
+      const devices = await invoke<string[]>("list_serial_devices");
+      setSerialDevices(devices);
+      setSerialDetail(devices.length ? `Found ${devices.length} device(s)` : "No serial devices found.");
+    } catch (e) {
+      setSerialDetail(String(e));
+    }
+  }
+
+  async function launchLocalSerialTerminal() {
+    if (!serialDevice) return;
+    try {
+      localStorage.setItem("local_serial_device", serialDevice);
+      await invoke("open_local_serial_terminal", { device: serialDevice });
+      setSerialDetail(`Launched minicom on ${serialDevice}`);
+    } catch (e) {
+      setSerialDetail(String(e));
+    }
+  }
+
   const allFilesOk = validation !== null && BUNDLE_FILES.every((f) => validation[f] === true);
   const bundleValid = allFilesOk;
   const octetNum = parseInt(lastOctet, 10);
@@ -287,6 +315,16 @@ export default function SessionTab() {
         {/* Controller */}
         <div className="card">
           <div className="card-title">Controller</div>
+          <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+            <button className={`btn ${connectionMode === "vpn" ? "btn-primary" : "btn-secondary"}`} onClick={() => setConnectionMode("vpn")}>
+              VPN / SSH
+            </button>
+            <button className={`btn ${connectionMode === "local" ? "btn-primary" : "btn-secondary"}`} onClick={() => setConnectionMode("local")}>
+              Local Serial
+            </button>
+          </div>
+          {connectionMode === "vpn" && (
+            <>
           <div className="field-row" style={{ marginBottom: savedOctet && !lastOctet ? 4 : 10 }}>
             <label>VPN IP</label>
             <div className="ip-input-group">
@@ -371,6 +409,36 @@ export default function SessionTab() {
                 Launch Controller Terminal
               </button>
             </div>
+          )}
+            </>
+          )}
+          {connectionMode === "local" && (
+            <>
+              <div className="field-row">
+                <label>Serial</label>
+                <input
+                  value={serialDevice}
+                  onChange={(e) => setSerialDevice(e.target.value)}
+                  placeholder="/dev/cu.usbserial-XXXX"
+                />
+              </div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button className="btn btn-secondary" onClick={detectSerialDevices}>
+                  Detect Devices
+                </button>
+                <button className="btn btn-primary" disabled={!serialDevice} onClick={launchLocalSerialTerminal}>
+                  Launch Serial Terminal
+                </button>
+              </div>
+              {serialDevices.length > 0 && (
+                <div style={{ marginTop: 8, fontSize: 12, color: "var(--text-secondary)" }}>
+                  {serialDevices.slice(0, 5).map((d) => (
+                    <div key={d}>{d}</div>
+                  ))}
+                </div>
+              )}
+              {serialDetail && <div className="hint" style={{ marginTop: 8 }}>{serialDetail}</div>}
+            </>
           )}
         </div>
 
