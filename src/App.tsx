@@ -4,15 +4,17 @@ import SessionTab from "./components/tabs/SessionTab";
 import CommandsTab from "./components/tabs/CommandsTab";
 import WizardTab from "./components/tabs/WizardTab";
 import LogsTab from "./components/tabs/LogsTab";
+import DiagnosticsTab from "./components/tabs/DiagnosticsTab";
 import "./App.css";
 import "./components/tabs/tabs.css";
 
-type Tab = "session" | "console" | "wizard" | "logs";
+type Tab = "session" | "console" | "wizard" | "logs" | "diagnostics";
 
 const TABS: { id: Tab; label: string }[] = [
   { id: "session", label: "Connect" },
   { id: "console", label: "Commands" },
   { id: "wizard", label: "Setup Wizard" },
+  { id: "diagnostics", label: "Diagnostics" },
   { id: "logs", label: "Logs" },
 ];
 
@@ -41,6 +43,18 @@ export default function App() {
     fetchStatus();
     const id = setInterval(fetchStatus, 2000);
     return () => clearInterval(id);
+  }, []);
+
+  // Stop the log watcher when the window closes
+  useEffect(() => {
+    let cleanup: (() => void) | undefined;
+    import("@tauri-apps/api/window").then(({ getCurrentWindow }) => {
+      const unlisten = getCurrentWindow().onCloseRequested(() => {
+        invoke("stop_log_watcher").catch(() => {});
+      });
+      cleanup = () => { unlisten.then((fn) => fn()); };
+    });
+    return () => { cleanup?.(); };
   }, []);
 
   return (
@@ -77,6 +91,7 @@ export default function App() {
         </div>
         <div style={{ display: activeTab === "console" ? "contents" : "none" }}><CommandsTab /></div>
         <div style={{ display: activeTab === "wizard" ? "contents" : "none" }}><WizardTab /></div>
+        <div style={{ display: activeTab === "diagnostics" ? "contents" : "none" }}><DiagnosticsTab /></div>
         <div style={{ display: activeTab === "logs" ? "contents" : "none" }}><LogsTab /></div>
       </main>
     </div>

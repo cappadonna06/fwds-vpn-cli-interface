@@ -2,10 +2,13 @@ use std::fs;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 use tauri::State;
+
+mod parsers;
 
 // ── State ─────────────────────────────────────────────────────────────────────
 
@@ -47,6 +50,118 @@ struct InnerState {
 
 struct AppState {
     inner: Arc<Mutex<InnerState>>,
+    diagnostic_state: Arc<Mutex<DiagnosticState>>,
+    watcher_active: Arc<AtomicBool>,
+}
+
+// ── Diagnostic state ──────────────────────────────────────────────────────────
+
+#[derive(serde::Serialize, Clone, Default, Debug)]
+#[serde(rename_all = "lowercase")]
+pub enum DiagStatus {
+    #[default]
+    Unknown,
+    Green,
+    Orange,
+    Red,
+}
+
+#[derive(serde::Serialize, Clone, Default)]
+pub struct DiagnosticState {
+    pub wifi: Option<WifiDiagnostic>,
+    pub cellular: Option<CellularDiagnostic>,
+    pub satellite: Option<SatelliteDiagnostic>,
+    pub ethernet: Option<EthernetDiagnostic>,
+    pub system: Option<SystemDiagnostic>,
+    pub last_updated: Option<String>,
+}
+
+#[derive(serde::Serialize, Clone)]
+pub struct WifiDiagnostic {
+    pub status: DiagStatus,
+    pub summary: String,
+    pub ssid: String,
+    pub strength: u8,
+    pub strength_label: String,
+    pub signal_dbm: Option<i32>,
+    pub ipv4: bool,
+    pub ipv6: bool,
+    pub dns_servers: String,
+    pub internet_reachable: bool,
+    pub check_result: String,
+    pub avg_latency_ms: Option<f64>,
+    pub packet_loss_pct: u8,
+}
+
+#[derive(serde::Serialize, Clone)]
+pub struct CellularDiagnostic {
+    pub status: DiagStatus,
+    pub summary: String,
+    pub provider: String,
+    pub provider_code: String,
+    pub strength: u8,
+    pub strength_label: String,
+    pub ipv4: bool,
+    pub ipv6: bool,
+    pub dns_servers: String,
+    pub internet_reachable: bool,
+    pub check_result: String,
+    pub avg_latency_ms: Option<f64>,
+    pub packet_loss_pct: u8,
+    pub imei: Option<String>,
+    pub iccid: Option<String>,
+    pub apn: Option<String>,
+    pub cell_status: Option<String>,
+}
+
+#[derive(serde::Serialize, Clone)]
+pub struct SatelliteDiagnostic {
+    pub status: DiagStatus,
+    pub summary: String,
+    pub enabled: bool,
+    pub loopback_passed: Option<bool>,
+    pub loopback_time_secs: Option<f64>,
+    pub imei: Option<String>,
+}
+
+#[derive(serde::Serialize, Clone)]
+pub struct EthernetDiagnostic {
+    pub status: DiagStatus,
+    pub summary: String,
+    pub internet_reachable: bool,
+    pub eth_state: String,
+    pub ipv4: bool,
+    pub ipv6: bool,
+    pub dns_servers: String,
+    pub ip_address: Option<String>,
+    pub netmask: Option<String>,
+    pub speed: Option<String>,
+    pub duplex: Option<String>,
+    pub link_detected: Option<bool>,
+    pub rx_errors: u64,
+    pub tx_errors: u64,
+    pub rx_dropped: u64,
+    pub check_result: String,
+    pub flap_count: u32,
+}
+
+#[derive(serde::Serialize, Clone)]
+pub struct SystemDiagnostic {
+    pub sid: Option<String>,
+    pub version: Option<String>,
+    pub release_date: Option<String>,
+}
+
+// ── Log file path helper ──────────────────────────────────────────────────────
+
+fn log_file_path(ip: &str) -> PathBuf {
+    let date = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let filename = format!("fwds-{}-{}.txt", ip, date);
+    dirs::desktop_dir()
+        .unwrap_or_else(|| {
+            PathBuf::from(std::env::var("HOME").unwrap_or_default()).join("Desktop")
+        })
+        .join(filename)
 }
 
 const REQUIRED_FILES: &[&str] = &[
@@ -1107,6 +1222,92 @@ fn debug_escape(s: &str) -> String {
     out
 }
 
+// ── Diagnostic log watcher commands ──────────────────────────────────────────
+
+#[tauri::command]
+fn start_log_watcher(state: State<'_, AppState>) -> Result<(), String> {
+    let ip = {
+        let inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
+        inner
+            .controller_ip
+            .clone()
+            .ok_or("No controller IP — connect first")?
+    };
+
+    let log_path = log_file_path(&ip);
+    let diag_arc = state.diagnostic_state.clone();
+
+    // Stop any existing watcher
+    state.watcher_active.store(false, Ordering::Relaxed);
+
+    // Signal the new watcher as active and clone the flag for the thread
+    state.watcher_active.store(true, Ordering::Relaxed);
+    let active_flag = state.watcher_active.clone();
+
+    thread::spawn(move || {
+        // Wait up to 10s for log file to appear
+        let mut waited = 0u32;
+        while !log_path.exists() && waited < 10 {
+            if !active_flag.load(Ordering::Relaxed) {
+                return;
+            }
+            thread::sleep(Duration::from_secs(1));
+            waited += 1;
+        }
+        if !log_path.exists() {
+            return;
+        }
+
+        let mut file = match std::fs::File::open(&log_path) {
+            Ok(f) => f,
+            Err(_) => return,
+        };
+        let _ = file.seek(std::io::SeekFrom::Start(0));
+
+        let mut buffer = String::new();
+        loop {
+            if !active_flag.load(Ordering::Relaxed) {
+                break;
+            }
+            let mut chunk = String::new();
+            match file.read_to_string(&mut chunk) {
+                Ok(0) => {
+                    thread::sleep(Duration::from_millis(500));
+                }
+                Ok(_) => {
+                    buffer.push_str(&chunk);
+                    if let Ok(mut diag) = diag_arc.lock() {
+                        parsers::parse_log_into_state(&buffer, &mut diag);
+                        diag.last_updated =
+                            Some(chrono::Local::now().format("%H:%M:%S").to_string());
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+    });
+
+    Ok(())
+}
+
+#[tauri::command]
+fn get_diagnostic_state(state: State<'_, AppState>) -> Result<DiagnosticState, String> {
+    let diag = state
+        .diagnostic_state
+        .lock()
+        .map_err(|_| "state lock poisoned")?;
+    Ok(diag.clone())
+}
+
+#[tauri::command]
+fn stop_log_watcher(state: State<'_, AppState>) -> Result<(), String> {
+    state.watcher_active.store(false, Ordering::Relaxed);
+    if let Ok(mut diag) = state.diagnostic_state.lock() {
+        *diag = DiagnosticState::default();
+    }
+    Ok(())
+}
+
 fn kill_shell(inner: &mut InnerState) {
     inner.shell_stdin = None;
     if let Some(mut child) = inner.shell_child.take() {
@@ -1139,6 +1340,8 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .manage(AppState {
             inner: Arc::new(Mutex::new(InnerState::default())),
+            diagnostic_state: Arc::new(Mutex::new(DiagnosticState::default())),
+            watcher_active: Arc::new(AtomicBool::new(false)),
         })
         .invoke_handler(tauri::generate_handler![
             select_vpn_folder,
@@ -1156,6 +1359,9 @@ pub fn run() {
             run_preflight,
             open_controller_terminal,
             get_app_state,
+            start_log_watcher,
+            get_diagnostic_state,
+            stop_log_watcher,
         ])
         .setup(|_app| Ok(()))
         .run(tauri::generate_context!())
