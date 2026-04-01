@@ -72,6 +72,19 @@ export default function WizardTab() {
   const canStartWizard = config.customer_name.trim() && preflightComplete;
   const sections = buildReferenceSections(config);
 
+  // Map parse warnings to the section they belong to so they render inline
+  const sectionWarnings: Record<string, string[]> = {};
+  for (const w of warnings) {
+    let id: string | null = null;
+    if (/zone/i.test(w))              id = "zone-names";
+    else if (/HHC type/i.test(w))     id = "setup-system";
+    else if (/customer name/i.test(w)) id = "setup-station";
+    if (id) {
+      if (!sectionWarnings[id]) sectionWarnings[id] = [];
+      sectionWarnings[id].push(w);
+    }
+  }
+
   function copyValue(value: string, id: string) {
     navigator.clipboard.writeText(value);
     setCopiedId(id);
@@ -422,6 +435,11 @@ export default function WizardTab() {
             {section.sectionHelper && expandedSections.has(section.id) && (
               <div className="ref-helper-text">{section.sectionHelper}</div>
             )}
+
+            {/* Section-level warnings from parse (e.g. default zone map) */}
+            {sectionWarnings[section.id]?.map((w, i) => (
+              <div key={i} className="ref-section-warning">⚠ {w}</div>
+            ))}
 
             {/* Prompt rows */}
             {section.rows.length > 0 && (

@@ -1470,6 +1470,18 @@
   font-style: italic;
 }
 
+.ref-section-warning {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--warning);
+  background: color-mix(in srgb, var(--warning) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--warning) 30%, transparent);
+  border-radius: 4px;
+  padding: 8px 12px;
+  margin-top: 6px;
+  line-height: 1.5;
+}
+
 /* ── Rows ── */
 
 .ref-rows {
