@@ -835,6 +835,7 @@ fn open_controller_terminal(state: State<'_, AppState>) -> Result<(), String> {
         .map_err(|e| format!("Failed to open Terminal: {e}"))?;
 
     if out.status.success() {
+        start_log_watcher_internal(&state)?;
         Ok(())
     } else {
         let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
@@ -891,6 +892,7 @@ fn open_local_serial_terminal(device: String, state: State<'_, AppState>) -> Res
         .map_err(|e| format!("Failed to open Terminal: {e}"))?;
 
     if out.status.success() {
+        start_log_watcher_internal(&state)?;
         Ok(())
     } else {
         let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
@@ -952,8 +954,7 @@ fn merge_non_empty_cards(base: &mut DiagnosticState, incoming: &DiagnosticState)
     base.last_updated = incoming.last_updated.clone().or(base.last_updated.clone());
 }
 
-#[tauri::command]
-fn start_log_watcher(state: State<'_, AppState>) -> Result<(), String> {
+fn start_log_watcher_internal(state: &AppState) -> Result<(), String> {
     let (controller_key, log_path) = {
         let inner = state.inner.lock().map_err(|_| "lock poisoned")?;
         if inner.connection_mode == "local" {
@@ -1053,6 +1054,11 @@ fn start_log_watcher(state: State<'_, AppState>) -> Result<(), String> {
     });
 
     Ok(())
+}
+
+#[tauri::command]
+fn start_log_watcher(state: State<'_, AppState>) -> Result<(), String> {
+    start_log_watcher_internal(&state)
 }
 
 #[tauri::command]
