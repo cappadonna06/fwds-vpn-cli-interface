@@ -817,6 +817,7 @@ fn parse_ethernet(
 
     let summary = match status {
         DiagStatus::Green => "Ethernet passing".to_string(),
+        DiagStatus::Grey => "Ethernet inactive".to_string(),
         DiagStatus::Red => "Ethernet needs attention".to_string(),
         DiagStatus::Orange => "Ethernet warning".to_string(),
         DiagStatus::Unknown => "No data yet".to_string(),
