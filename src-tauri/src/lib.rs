@@ -911,7 +911,7 @@ fn disconnect_local_controller(state: State<'_, AppState>) -> Result<(), String>
         inner.local_serial_device = None;
         inner.connection_mode = "local".into();
     }
-    stop_log_watcher(state)?;
+    stop_log_watcher(&state)?;
     if let Ok(mut diag) = state.diagnostic_state.lock() {
         *diag = DiagnosticState::default();
     }
@@ -1089,7 +1089,7 @@ fn clear_diagnostic_state(state: State<'_, AppState>) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn stop_log_watcher(state: State<'_, AppState>) -> Result<(), String> {
+fn stop_log_watcher(state: &State<'_, AppState>) -> Result<(), String> {
     if let Ok(mut watcher) = state.log_watcher_kill.lock() {
         if let Some(existing) = watcher.take() {
             existing.store(true, Ordering::Relaxed);
