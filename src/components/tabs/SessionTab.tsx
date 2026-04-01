@@ -215,6 +215,7 @@ export default function SessionTab() {
   async function launchTerminal() {
     try {
       await invoke("open_controller_terminal");
+      await invoke("start_log_watcher").catch(() => {});
     } catch (e) {
       setCtrlDetail(String(e));
     }
@@ -235,6 +236,7 @@ export default function SessionTab() {
     try {
       localStorage.setItem("local_serial_device", serialDevice);
       await invoke("open_local_serial_terminal", { device: serialDevice });
+      await invoke("start_log_watcher").catch(() => {});
       setSerialDetail(`Launched minicom on ${serialDevice}`);
     } catch (e) {
       setSerialDetail(String(e));
@@ -440,6 +442,16 @@ export default function SessionTab() {
               {serialDetail && <div className="hint" style={{ marginTop: 8 }}>{serialDetail}</div>}
             </>
           )}
+          <div style={{ marginTop: 10 }}>
+            <button
+              className="btn btn-secondary"
+              style={{ width: "100%" }}
+              onClick={() => navigator.clipboard.writeText("sid\nversion\nrelease").catch(() => {})}
+              title="Copy startup identity commands"
+            >
+              Copy Session Bootstrap (SID / Version / Release)
+            </button>
+          </div>
         </div>
 
       </div>

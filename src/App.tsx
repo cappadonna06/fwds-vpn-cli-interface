@@ -23,6 +23,8 @@ interface AppStatus {
   vpn_phase: string;
   shell_phase: string;
   controller_ip: string | null;
+  connection_mode?: string;
+  local_serial_device?: string | null;
 }
 
 export default function App() {
@@ -87,8 +89,11 @@ export default function App() {
           {appStatus.vpn_phase !== "disconnected" && (
             <span className={`badge badge-${appStatus.vpn_phase}`}>VPN</span>
           )}
-          {appStatus.shell_phase === "connected" && appStatus.controller_ip && (
-            <span className="badge badge-connected">{appStatus.controller_ip}</span>
+          {appStatus.connection_mode === "local" && appStatus.local_serial_device && (
+            <span className="badge badge-connected">SERIAL {appStatus.local_serial_device}</span>
+          )}
+          {appStatus.connection_mode !== "local" && appStatus.controller_ip && (
+            <span className="badge badge-connected">CTRL {appStatus.controller_ip}</span>
           )}
         </div>
       </header>

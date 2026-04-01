@@ -178,6 +178,7 @@ export default function DiagnosticsTab() {
         <div className="diag-empty">
           <div>ℹ No data collected this session yet.</div>
           <div>Showing known diagnostics; run command blocks to refresh cards.</div>
+          <div>Tip: run <code>sid</code>, <code>version</code>, and <code>release</code> at session start.</div>
         </div>
       )}
 
