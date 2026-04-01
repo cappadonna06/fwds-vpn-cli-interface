@@ -1649,3 +1649,118 @@
   color: var(--text-secondary);
   cursor: pointer;
 }
+
+.diag-page {
+  height: 100%;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.diag-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+}
+
+.diag-system-line {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.diag-updated {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.diag-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+@media (max-width: 960px) {
+  .diag-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.diag-card {
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 12px;
+}
+
+.diag-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.diag-card-status {
+  margin-top: 4px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.diag-card-summary {
+  margin-top: 6px;
+  color: var(--text-primary);
+  font-size: 13px;
+}
+
+.diag-card-divider {
+  margin: 8px 0;
+  border-top: 1px solid var(--border);
+}
+
+.diag-row {
+  display: grid;
+  grid-template-columns: 130px 1fr;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.diag-row-label {
+  color: var(--text-muted);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.diag-row-value {
+  color: var(--text-primary);
+  font-size: 12px;
+  word-break: break-word;
+}
+
+.diag-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.diag-status-green { background: var(--success); }
+.diag-status-orange { background: var(--warning); }
+.diag-status-red { background: var(--danger); }
+.diag-status-unknown { background: var(--text-muted); }
+
+.diag-empty {
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 16px;
+  color: var(--text-secondary);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.diag-card-unknown {
+  opacity: 0.5;
+}

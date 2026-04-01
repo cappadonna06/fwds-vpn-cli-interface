@@ -2,10 +2,15 @@ use std::fs;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 use tauri::State;
+
+mod parsers;
+
+use parsers::parse_log_into_state;
 
 // ── State ─────────────────────────────────────────────────────────────────────
 
@@ -16,14 +21,14 @@ struct InnerState {
     managed_openvpn_log_path: Option<String>,
     managed_openvpn_log_offset: u64,
     managed_openvpn_stage_dir: Option<String>,
-    vpn_phase: String,    // disconnected | connecting | connected | failed
+    vpn_phase: String, // disconnected | connecting | connected | failed
     vpn_detail: String,
     vpn_logs: Vec<String>,
 
     // Controller shell (SSH session)
     shell_child: Option<Child>,
     shell_stdin: Option<ChildStdin>,
-    shell_phase: String,  // disconnected | connecting | connected | failed
+    shell_phase: String, // disconnected | connecting | connected | failed
     shell_detail: String,
     controller_ip: Option<String>,
     shell_logs: Vec<String>,
@@ -47,6 +52,104 @@ struct InnerState {
 
 struct AppState {
     inner: Arc<Mutex<InnerState>>,
+    diagnostic_state: Arc<Mutex<DiagnosticState>>,
+    log_watcher_kill: Arc<Mutex<Option<Arc<AtomicBool>>>>,
+}
+
+#[derive(serde::Serialize, Clone, Default)]
+pub struct DiagnosticState {
+    pub wifi: Option<WifiDiagnostic>,
+    pub cellular: Option<CellularDiagnostic>,
+    pub satellite: Option<SatelliteDiagnostic>,
+    pub ethernet: Option<EthernetDiagnostic>,
+    pub system: Option<SystemDiagnostic>,
+    pub last_updated: Option<String>,
+}
+
+#[derive(serde::Serialize, Clone)]
+pub struct WifiDiagnostic {
+    pub status: DiagStatus,
+    pub summary: String,
+    pub ssid: String,
+    pub strength: u8,
+    pub strength_label: String,
+    pub signal_dbm: Option<i32>,
+    pub ipv4: bool,
+    pub ipv6: bool,
+    pub dns_servers: String,
+    pub internet_reachable: bool,
+    pub check_result: String,
+    pub avg_latency_ms: Option<f64>,
+    pub packet_loss_pct: u8,
+}
+
+#[derive(serde::Serialize, Clone)]
+pub struct CellularDiagnostic {
+    pub status: DiagStatus,
+    pub summary: String,
+    pub provider: String,
+    pub provider_code: String,
+    pub strength: u8,
+    pub strength_label: String,
+    pub ipv4: bool,
+    pub ipv6: bool,
+    pub dns_servers: String,
+    pub internet_reachable: bool,
+    pub check_result: String,
+    pub avg_latency_ms: Option<f64>,
+    pub packet_loss_pct: u8,
+    pub imei: Option<String>,
+    pub iccid: Option<String>,
+    pub apn: Option<String>,
+    pub cell_status: Option<String>,
+}
+
+#[derive(serde::Serialize, Clone)]
+pub struct SatelliteDiagnostic {
+    pub status: DiagStatus,
+    pub summary: String,
+    pub enabled: bool,
+    pub loopback_passed: Option<bool>,
+    pub loopback_time_secs: Option<f64>,
+    pub imei: Option<String>,
+}
+
+#[derive(serde::Serialize, Clone)]
+pub struct EthernetDiagnostic {
+    pub status: DiagStatus,
+    pub summary: String,
+    pub internet_reachable: bool,
+    pub eth_state: String,
+    pub ipv4: bool,
+    pub ipv6: bool,
+    pub dns_servers: String,
+    pub ip_address: Option<String>,
+    pub netmask: Option<String>,
+    pub speed: Option<String>,
+    pub duplex: Option<String>,
+    pub link_detected: Option<bool>,
+    pub rx_errors: u64,
+    pub tx_errors: u64,
+    pub rx_dropped: u64,
+    pub check_result: String,
+    pub flap_count: u32,
+}
+
+#[derive(serde::Serialize, Clone)]
+pub struct SystemDiagnostic {
+    pub sid: Option<String>,
+    pub version: Option<String>,
+    pub release_date: Option<String>,
+}
+
+#[derive(serde::Serialize, Clone, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum DiagStatus {
+    #[default]
+    Unknown,
+    Green,
+    Orange,
+    Red,
 }
 
 const REQUIRED_FILES: &[&str] = &[
@@ -60,6 +163,14 @@ const REQUIRED_FILES: &[&str] = &[
 ];
 
 // ── Commands ──────────────────────────────────────────────────────────────────
+
+fn log_file_path(ip: &str) -> PathBuf {
+    let date = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let filename = format!("fwds-{}-{}.txt", ip, date);
+    dirs::desktop_dir()
+        .unwrap_or_else(|| PathBuf::from("~/Desktop"))
+        .join(filename)
+}
 
 #[tauri::command]
 async fn select_vpn_folder(app: tauri::AppHandle) -> Result<String, String> {
@@ -100,7 +211,10 @@ fn start_vpn(folder: String, state: State<'_, AppState>) -> Result<(), String> {
     inner.managed_openvpn_stage_dir = Some(stage_dir.to_string_lossy().into_owned());
     inner.vpn_phase = "connecting".into();
     inner.vpn_detail = "OpenVPN starting with administrator privileges".into();
-    push_vpn_log(&mut inner, format!("Staged bundle → {}", stage_dir.display()));
+    push_vpn_log(
+        &mut inner,
+        format!("Staged bundle → {}", stage_dir.display()),
+    );
     push_vpn_log(&mut inner, format!("OpenVPN PID: {pid}"));
     push_vpn_log(&mut inner, format!("Log file: {}", log_path.display()));
     Ok(())
@@ -173,12 +287,18 @@ fn connect_controller(ip: String, state: State<'_, AppState>) -> Result<(), Stri
             "-tt",
             "-i",
             &station_key.to_string_lossy(),
-            "-o", "LogLevel=ERROR",
-            "-o", "StrictHostKeyChecking=no",
-            "-o", "UserKnownHostsFile=/dev/null",
-            "-o", "ServerAliveInterval=15",
-            "-o", "ServerAliveCountMax=3",
-            "-o", "KexAlgorithms=ecdh-sha2-nistp521",
+            "-o",
+            "LogLevel=ERROR",
+            "-o",
+            "StrictHostKeyChecking=no",
+            "-o",
+            "UserKnownHostsFile=/dev/null",
+            "-o",
+            "ServerAliveInterval=15",
+            "-o",
+            "ServerAliveCountMax=3",
+            "-o",
+            "KexAlgorithms=ecdh-sha2-nistp521",
             &format!("root@{ip}"),
         ])
         .stdin(Stdio::piped())
@@ -220,9 +340,17 @@ fn connect_controller(ip: String, state: State<'_, AppState>) -> Result<(), Stri
                 let mut buf = [0u8; 4096];
                 loop {
                     match stdout.read(&mut buf) {
-                        Ok(0) => { let _ = tx.send(None); break; }
-                        Ok(n) => { let _ = tx.send(Some(buf[..n].to_vec())); }
-                        Err(_) => { let _ = tx.send(None); break; }
+                        Ok(0) => {
+                            let _ = tx.send(None);
+                            break;
+                        }
+                        Ok(n) => {
+                            let _ = tx.send(Some(buf[..n].to_vec()));
+                        }
+                        Err(_) => {
+                            let _ = tx.send(None);
+                            break;
+                        }
                     }
                 }
             });
@@ -271,7 +399,9 @@ fn connect_controller(ip: String, state: State<'_, AppState>) -> Result<(), Stri
                             partial = partial[pos + 1..].to_string();
                             // Skip empty lines but preserve after_timeout_flush —
                             // empty echo = user pressed Enter to accept default.
-                            if line.is_empty() { continue; }
+                            if line.is_empty() {
+                                continue;
+                            }
 
                             if let Ok(mut inner) = arc2.lock() {
                                 // On first shell connection: silently widen the PTY so
@@ -347,7 +477,11 @@ fn connect_controller(ip: String, state: State<'_, AppState>) -> Result<(), Stri
 
                             let raw_full = if pending_is_wizard {
                                 let p = pending_prompt.take().unwrap();
-                                if fragment.is_empty() { p } else { format!("{}{}", p, fragment) }
+                                if fragment.is_empty() {
+                                    p
+                                } else {
+                                    format!("{}{}", p, fragment)
+                                }
                             } else {
                                 // Plain partial, no matching wizard prompt
                                 let _ = pending_prompt.take();
@@ -462,7 +596,9 @@ fn send_interrupt(state: State<'_, AppState>) -> Result<(), String> {
     let Some(stdin) = inner.shell_stdin.as_mut() else {
         return Err("No active controller shell".into());
     };
-    stdin.write_all(b"\x03").map_err(|e| format!("Failed to send interrupt: {e}"))?;
+    stdin
+        .write_all(b"\x03")
+        .map_err(|e| format!("Failed to send interrupt: {e}"))?;
     stdin.flush().map_err(|e| format!("Failed to flush: {e}"))?;
     Ok(())
 }
@@ -492,7 +628,9 @@ fn send_input(text: String, state: State<'_, AppState>) -> Result<(), String> {
         // Send Ctrl+A (beginning-of-line) + Ctrl+K (kill-to-end) to clear the
         // editable readline pre-fill BEFORE typing the new value.
         // Choice prompts like "[Y]?" skip this and receive the raw answer.
-        stdin.write_all(b"\x01\x0b").map_err(|e| format!("Failed to clear prefill: {e}"))?;
+        stdin
+            .write_all(b"\x01\x0b")
+            .map_err(|e| format!("Failed to clear prefill: {e}"))?;
     }
     stdin
         .write_all(text.as_bytes())
@@ -500,9 +638,7 @@ fn send_input(text: String, state: State<'_, AppState>) -> Result<(), String> {
     stdin
         .write_all(b"\n")
         .map_err(|e| format!("Failed to write newline: {e}"))?;
-    stdin
-        .flush()
-        .map_err(|e| format!("Failed to flush: {e}"))?;
+    stdin.flush().map_err(|e| format!("Failed to flush: {e}"))?;
     Ok(())
 }
 
@@ -533,9 +669,9 @@ fn run_preflight(ip: String) -> Result<serde_json::Value, String> {
         .unwrap_or(false);
 
     let detail = match (ping_ok, port_ok) {
-        (true, true)   => format!("{ip} reachable, port 22 open"),
-        (true, false)  => format!("{ip} reachable but port 22 closed"),
-        (false, true)  => format!("{ip} ping failed, port 22 open"),
+        (true, true) => format!("{ip} reachable, port 22 open"),
+        (true, false) => format!("{ip} reachable but port 22 closed"),
+        (false, true) => format!("{ip} ping failed, port 22 open"),
         (false, false) => format!("{ip} unreachable"),
     };
 
@@ -628,6 +764,97 @@ fn get_app_state(state: State<'_, AppState>) -> Result<serde_json::Value, String
     }))
 }
 
+#[tauri::command]
+fn start_log_watcher(state: State<'_, AppState>) -> Result<(), String> {
+    let ip = {
+        let inner = state.inner.lock().map_err(|_| "lock poisoned")?;
+        inner
+            .controller_ip
+            .clone()
+            .ok_or_else(|| "No controller IP — connect first".to_string())?
+    };
+
+    let log_path = log_file_path(&ip);
+    let diag_arc = state.diagnostic_state.clone();
+
+    let kill_flag = Arc::new(AtomicBool::new(false));
+    {
+        let mut watcher = state
+            .log_watcher_kill
+            .lock()
+            .map_err(|_| "lock poisoned".to_string())?;
+        if let Some(existing) = watcher.take() {
+            existing.store(true, Ordering::Relaxed);
+        }
+        *watcher = Some(kill_flag.clone());
+    }
+
+    thread::spawn(move || {
+        let mut waited = 0;
+        while !log_path.exists() && waited < 10 {
+            if kill_flag.load(Ordering::Relaxed) {
+                return;
+            }
+            thread::sleep(Duration::from_secs(1));
+            waited += 1;
+        }
+        if !log_path.exists() {
+            return;
+        }
+
+        let mut file = match std::fs::File::open(&log_path) {
+            Ok(f) => f,
+            Err(_) => return,
+        };
+
+        let _ = file.seek(SeekFrom::Start(0));
+
+        let mut buffer = String::new();
+        loop {
+            if kill_flag.load(Ordering::Relaxed) {
+                break;
+            }
+
+            let mut chunk = String::new();
+            match file.read_to_string(&mut chunk) {
+                Ok(0) => thread::sleep(Duration::from_millis(500)),
+                Ok(_) => {
+                    buffer.push_str(&chunk);
+                    if let Ok(mut diag) = diag_arc.lock() {
+                        parse_log_into_state(&buffer, &mut diag);
+                        diag.last_updated =
+                            Some(chrono::Local::now().format("%H:%M:%S").to_string());
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+    });
+
+    Ok(())
+}
+
+#[tauri::command]
+fn get_diagnostic_state(state: State<'_, AppState>) -> Result<DiagnosticState, String> {
+    let diag = state.diagnostic_state.lock().map_err(|_| "lock poisoned")?;
+    Ok(diag.clone())
+}
+
+#[tauri::command]
+fn stop_log_watcher(state: State<'_, AppState>) -> Result<(), String> {
+    if let Ok(mut watcher) = state.log_watcher_kill.lock() {
+        if let Some(existing) = watcher.take() {
+            existing.store(true, Ordering::Relaxed);
+        }
+    }
+
+    if let Ok(mut diag) = state.diagnostic_state.lock() {
+        *diag = DiagnosticState::default();
+    }
+
+    Ok(())
+}
+
 // ── VPN helpers ───────────────────────────────────────────────────────────────
 
 /// Kill any previously managed openvpn, clear VPN state, return known PIDs to kill atomically.
@@ -655,8 +882,7 @@ fn stage_bundle(folder_path: &str) -> Result<PathBuf, String> {
         .as_secs();
     let stage_dir = PathBuf::from(format!("/private/tmp/fwds-vpn-stage-{ts}"));
 
-    fs::create_dir_all(&stage_dir)
-        .map_err(|e| format!("Failed to create stage directory: {e}"))?;
+    fs::create_dir_all(&stage_dir).map_err(|e| format!("Failed to create stage directory: {e}"))?;
 
     #[cfg(unix)]
     {
@@ -670,8 +896,7 @@ fn stage_bundle(folder_path: &str) -> Result<PathBuf, String> {
             continue;
         }
         let dst = stage_dir.join(file_name);
-        fs::copy(&src, &dst)
-            .map_err(|e| format!("Failed to copy {file_name} to stage: {e}"))?;
+        fs::copy(&src, &dst).map_err(|e| format!("Failed to copy {file_name} to stage: {e}"))?;
 
         #[cfg(unix)]
         {
@@ -805,8 +1030,7 @@ fn write_launcher_script(
         shell_quote(&config_path.to_string_lossy()),
         shell_quote(&log_path.to_string_lossy()),
     );
-    fs::write(&launcher, &script)
-        .map_err(|e| format!("Failed to write launcher script: {e}"))?;
+    fs::write(&launcher, &script).map_err(|e| format!("Failed to write launcher script: {e}"))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -889,7 +1113,10 @@ fn sync_vpn_logs(inner: &mut InnerState) {
     let Ok(mut file) = fs::File::open(log_path) else {
         return;
     };
-    if file.seek(SeekFrom::Start(inner.managed_openvpn_log_offset)).is_err() {
+    if file
+        .seek(SeekFrom::Start(inner.managed_openvpn_log_offset))
+        .is_err()
+    {
         return;
     }
     let mut buf = String::new();
@@ -1139,6 +1366,8 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .manage(AppState {
             inner: Arc::new(Mutex::new(InnerState::default())),
+            diagnostic_state: Arc::new(Mutex::new(DiagnosticState::default())),
+            log_watcher_kill: Arc::new(Mutex::new(None)),
         })
         .invoke_handler(tauri::generate_handler![
             select_vpn_folder,
@@ -1156,6 +1385,9 @@ pub fn run() {
             run_preflight,
             open_controller_terminal,
             get_app_state,
+            start_log_watcher,
+            get_diagnostic_state,
+            stop_log_watcher,
         ])
         .setup(|_app| Ok(()))
         .run(tauri::generate_context!())
