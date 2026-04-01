@@ -1714,6 +1714,12 @@
   font-size: 13px;
 }
 
+.diag-card-updated {
+  margin-top: 4px;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
 .diag-card-divider {
   margin: 8px 0;
   border-top: 1px solid var(--border);

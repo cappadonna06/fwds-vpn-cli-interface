@@ -835,6 +835,7 @@ fn open_controller_terminal(state: State<'_, AppState>) -> Result<(), String> {
         .map_err(|e| format!("Failed to open Terminal: {e}"))?;
 
     if out.status.success() {
+        start_log_watcher_internal(&state)?;
         Ok(())
     } else {
         let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
@@ -891,6 +892,7 @@ fn open_local_serial_terminal(device: String, state: State<'_, AppState>) -> Res
         .map_err(|e| format!("Failed to open Terminal: {e}"))?;
 
     if out.status.success() {
+        start_log_watcher_internal(&state)?;
         Ok(())
     } else {
         let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
@@ -900,6 +902,20 @@ fn open_local_serial_terminal(device: String, state: State<'_, AppState>) -> Res
             format!("Failed to open Terminal: {stderr}")
         })
     }
+}
+
+#[tauri::command]
+fn disconnect_local_controller(state: State<'_, AppState>) -> Result<(), String> {
+    {
+        let mut inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
+        inner.local_serial_device = None;
+        inner.connection_mode = "local".into();
+    }
+    stop_log_watcher(state)?;
+    if let Ok(mut diag) = state.diagnostic_state.lock() {
+        *diag = DiagnosticState::default();
+    }
+    Ok(())
 }
 
 /// Lightweight status for the Session tab — does NOT advance the ConsoleTab cursor.
@@ -952,8 +968,7 @@ fn merge_non_empty_cards(base: &mut DiagnosticState, incoming: &DiagnosticState)
     base.last_updated = incoming.last_updated.clone().or(base.last_updated.clone());
 }
 
-#[tauri::command]
-fn start_log_watcher(state: State<'_, AppState>) -> Result<(), String> {
+fn start_log_watcher_internal(state: &AppState) -> Result<(), String> {
     let (controller_key, log_path) = {
         let inner = state.inner.lock().map_err(|_| "lock poisoned")?;
         if inner.connection_mode == "local" {
@@ -1056,9 +1071,21 @@ fn start_log_watcher(state: State<'_, AppState>) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn start_log_watcher(state: State<'_, AppState>) -> Result<(), String> {
+    start_log_watcher_internal(&state)
+}
+
+#[tauri::command]
 fn get_diagnostic_state(state: State<'_, AppState>) -> Result<DiagnosticState, String> {
     let diag = state.diagnostic_state.lock().map_err(|_| "lock poisoned")?;
     Ok(diag.clone())
+}
+
+#[tauri::command]
+fn clear_diagnostic_state(state: State<'_, AppState>) -> Result<(), String> {
+    let mut diag = state.diagnostic_state.lock().map_err(|_| "lock poisoned")?;
+    *diag = DiagnosticState::default();
+    Ok(())
 }
 
 #[tauri::command]
@@ -1610,9 +1637,11 @@ pub fn run() {
             open_controller_terminal,
             list_serial_devices,
             open_local_serial_terminal,
+            disconnect_local_controller,
             get_app_state,
             start_log_watcher,
             get_diagnostic_state,
+            clear_diagnostic_state,
             stop_log_watcher,
         ])
         .setup(|_app| Ok(()))

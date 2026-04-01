@@ -121,10 +121,18 @@ pub fn parse_log_into_state(log: &str, state: &mut DiagnosticState) {
         find_latest(&latest, &["release", "run system diagnostics"]),
     );
 
-    state.wifi = wifi;
-    state.cellular = cellular;
-    state.satellite = satellite;
-    state.ethernet = ethernet;
+    if wifi.is_some() {
+        state.wifi = wifi;
+    }
+    if cellular.is_some() {
+        state.cellular = cellular;
+    }
+    if satellite.is_some() {
+        state.satellite = satellite;
+    }
+    if ethernet.is_some() {
+        state.ethernet = ethernet;
+    }
     if system.sid.is_some() || system.version.is_some() || system.release_date.is_some() {
         state.system = Some(system);
     }
@@ -147,31 +155,62 @@ fn find_latest<'a>(latest: &'a HashMap<String, String>, names: &[&str]) -> Optio
 }
 
 fn split_blocks(log: &str) -> Vec<CommandBlock> {
-    let prompt_re =
-        Regex::new(r"^(?:\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{4}\s+)?(?:\[\d+\])?#\s+(.+)$")
-            .expect("prompt regex");
+    let prompt_re = Regex::new(
+        r"^(?:\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?[+-]\d{4}\s+)?(?:\[\d+\])?#\s*(.+)$",
+    )
+    .expect("prompt regex");
+    let prompt_inline_re =
+        Regex::new(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?[+-]\d{4}\s+\[\d+\]#\s*.*$")
+            .expect("inline prompt regex");
+    let continuation_re = Regex::new(r"^>\s*(.+)$").expect("continuation regex");
+    let ansi_re = Regex::new(r"\x1B\[[0-?]*[ -/]*[@-~]").expect("ansi regex");
 
     let mut blocks = Vec::new();
     let mut current_cmd: Option<String> = None;
     let mut current_body = String::new();
 
     for line in log.lines() {
-        if let Some(cap) = prompt_re.captures(line) {
-            if let Some(cmd) = current_cmd.take() {
-                blocks.push(CommandBlock {
-                    command: cmd,
-                    body: current_body.trim().to_string(),
-                });
-                current_body.clear();
+        let cleaned = ansi_re.replace_all(line, "");
+        let cleaned = cleaned.trim_matches(|c: char| c == '\r' || c == '\u{0}');
+        let cleaned = cleaned.trim_start();
+
+        let prompt_candidate = if prompt_re.is_match(cleaned) {
+            Some(cleaned)
+        } else {
+            prompt_inline_re.find(cleaned).map(|m| m.as_str())
+        };
+
+        if let Some(candidate) = prompt_candidate {
+            if let Some(cap) = prompt_re.captures(candidate) {
+                if let Some(cmd) = current_cmd.take() {
+                    blocks.push(CommandBlock {
+                        command: cmd,
+                        body: current_body.trim().to_string(),
+                    });
+                    current_body.clear();
+                }
+                if let Some(cmd_match) = cap.get(1) {
+                    current_cmd = Some(cmd_match.as_str().trim().to_string());
+                }
+                continue;
             }
+        }
+
+        if let Some(cap) = continuation_re.captures(cleaned) {
             if let Some(cmd_match) = cap.get(1) {
-                current_cmd = Some(cmd_match.as_str().trim().to_string());
+                let chunk = cmd_match.as_str().trim();
+                if !chunk.is_empty() {
+                    if let Some(cmd) = current_cmd.as_mut() {
+                        cmd.push(' ');
+                        cmd.push_str(chunk);
+                    }
+                }
             }
             continue;
         }
 
         if current_cmd.is_some() {
-            current_body.push_str(line);
+            current_body.push_str(cleaned);
             current_body.push('\n');
         }
     }
@@ -184,6 +223,65 @@ fn split_blocks(log: &str) -> Vec<CommandBlock> {
     }
 
     blocks
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_log_into_state, split_blocks};
+    use crate::DiagnosticState;
+
+    #[test]
+    fn split_blocks_parses_timestamped_prompts() {
+        let log = "2026-04-01T10:18:37-0600 [22611067]# sid\n22611067\n2026-04-01T10:18:43-0600 [22611067]# version\nr3.3.1\n";
+        let blocks = split_blocks(log);
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(blocks[0].command, "sid");
+        assert_eq!(blocks[0].body, "22611067");
+        assert_eq!(blocks[1].command, "version");
+        assert_eq!(blocks[1].body, "r3.3.1");
+    }
+
+    #[test]
+    fn split_blocks_handles_continuation_prompts() {
+        let log = "2026-04-01T10:19:20-0600 [22611067]# (\n> wifi-check\n> wifi-signal\n> )\nTesting Wi-Fi...\nDone: Success\n2026-04-01T10:19:53-0600 [22611067]# sid\n22611067\n";
+        let blocks = split_blocks(log);
+        assert_eq!(blocks.len(), 2);
+        assert!(blocks[0].command.contains("wifi-check"));
+        assert!(blocks[0].command.contains("wifi-signal"));
+        assert!(blocks[0].body.contains("Done: Success"));
+    }
+
+    #[test]
+    fn parse_log_keeps_existing_wifi_when_new_chunk_has_no_wifi_blocks() {
+        let mut state = DiagnosticState::default();
+        let wifi_log = "2026-04-01T10:32:46-0600 [22611067]# wifi-check\nTesting Wi-Fi...\nInternet reachability state: online\nWi-Fi state: online\nDone: Success\n2026-04-01T10:32:58-0600 [22611067]# wifi-signal\n\"wlan0\" signal strength: -46 dBm\n";
+        parse_log_into_state(wifi_log, &mut state);
+        assert!(state.wifi.is_some());
+        let first_summary = state
+            .wifi
+            .as_ref()
+            .map(|w| w.summary.clone())
+            .unwrap_or_default();
+
+        let non_wifi_log = "2026-04-01T10:33:10-0600 [22611067]# sid\n22611067\n";
+        parse_log_into_state(non_wifi_log, &mut state);
+        assert!(state.wifi.is_some());
+        let second_summary = state
+            .wifi
+            .as_ref()
+            .map(|w| w.summary.clone())
+            .unwrap_or_default();
+        assert_eq!(first_summary, second_summary);
+    }
+
+    #[test]
+    fn split_blocks_handles_prompt_glued_to_previous_output() {
+        let log = "Done: Success2026-04-01T10:53:01-0600 [22611067]# ethernet-check\nTesting Ethernet...\nDone: Success\n";
+        let blocks = split_blocks(log);
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].command, "ethernet-check");
+        assert!(blocks[0].body.contains("Done: Success"));
+    }
 }
 
 fn parse_wifi(latest: &HashMap<String, String>) -> Option<WifiDiagnostic> {
@@ -261,6 +359,24 @@ fn parse_wifi(latest: &HashMap<String, String>) -> Option<WifiDiagnostic> {
     let conn_state = find_latest(latest, &["connmanctl state", "wifi diagnostics"]);
     let ethtool_driver = find_latest(latest, &["ethtool -i wlan0", "wifi diagnostics"]);
     let proc_net = find_latest(latest, &["cat /proc/net/dev", "wifi diagnostics"]);
+
+    let has_wifi_inputs = wifi_check.is_some()
+        || wifi_signal.is_some()
+        || iw_dev.is_some()
+        || iw_info.is_some()
+        || iw_link.is_some()
+        || iw_station.is_some()
+        || ip_link.is_some()
+        || ip_addr.is_some()
+        || ip_route.is_some()
+        || conn_tech.is_some()
+        || conn_services.is_some()
+        || conn_state.is_some()
+        || ethtool_driver.is_some()
+        || proc_net.is_some();
+    if !has_wifi_inputs {
+        return None;
+    }
 
     if let Some(text) = wifi_check {
         w.internet_reachable = capture_after(text, "Internet reachability state:")
