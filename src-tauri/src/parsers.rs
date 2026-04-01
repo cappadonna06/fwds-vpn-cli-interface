@@ -121,10 +121,18 @@ pub fn parse_log_into_state(log: &str, state: &mut DiagnosticState) {
         find_latest(&latest, &["release", "run system diagnostics"]),
     );
 
-    state.wifi = wifi;
-    state.cellular = cellular;
-    state.satellite = satellite;
-    state.ethernet = ethernet;
+    if wifi.is_some() {
+        state.wifi = wifi;
+    }
+    if cellular.is_some() {
+        state.cellular = cellular;
+    }
+    if satellite.is_some() {
+        state.satellite = satellite;
+    }
+    if ethernet.is_some() {
+        state.ethernet = ethernet;
+    }
     if system.sid.is_some() || system.version.is_some() || system.release_date.is_some() {
         state.system = Some(system);
     }
@@ -207,7 +215,8 @@ fn split_blocks(log: &str) -> Vec<CommandBlock> {
 
 #[cfg(test)]
 mod tests {
-    use super::split_blocks;
+    use super::{parse_log_into_state, split_blocks};
+    use crate::DiagnosticState;
 
     #[test]
     fn split_blocks_parses_timestamped_prompts() {
@@ -228,6 +237,29 @@ mod tests {
         assert!(blocks[0].command.contains("wifi-check"));
         assert!(blocks[0].command.contains("wifi-signal"));
         assert!(blocks[0].body.contains("Done: Success"));
+    }
+
+    #[test]
+    fn parse_log_keeps_existing_wifi_when_new_chunk_has_no_wifi_blocks() {
+        let mut state = DiagnosticState::default();
+        let wifi_log = "2026-04-01T10:32:46-0600 [22611067]# wifi-check\nTesting Wi-Fi...\nInternet reachability state: online\nWi-Fi state: online\nDone: Success\n2026-04-01T10:32:58-0600 [22611067]# wifi-signal\n\"wlan0\" signal strength: -46 dBm\n";
+        parse_log_into_state(wifi_log, &mut state);
+        assert!(state.wifi.is_some());
+        let first_summary = state
+            .wifi
+            .as_ref()
+            .map(|w| w.summary.clone())
+            .unwrap_or_default();
+
+        let non_wifi_log = "2026-04-01T10:33:10-0600 [22611067]# sid\n22611067\n";
+        parse_log_into_state(non_wifi_log, &mut state);
+        assert!(state.wifi.is_some());
+        let second_summary = state
+            .wifi
+            .as_ref()
+            .map(|w| w.summary.clone())
+            .unwrap_or_default();
+        assert_eq!(first_summary, second_summary);
     }
 }
 
@@ -306,6 +338,24 @@ fn parse_wifi(latest: &HashMap<String, String>) -> Option<WifiDiagnostic> {
     let conn_state = find_latest(latest, &["connmanctl state", "wifi diagnostics"]);
     let ethtool_driver = find_latest(latest, &["ethtool -i wlan0", "wifi diagnostics"]);
     let proc_net = find_latest(latest, &["cat /proc/net/dev", "wifi diagnostics"]);
+
+    let has_wifi_inputs = wifi_check.is_some()
+        || wifi_signal.is_some()
+        || iw_dev.is_some()
+        || iw_info.is_some()
+        || iw_link.is_some()
+        || iw_station.is_some()
+        || ip_link.is_some()
+        || ip_addr.is_some()
+        || ip_route.is_some()
+        || conn_tech.is_some()
+        || conn_services.is_some()
+        || conn_state.is_some()
+        || ethtool_driver.is_some()
+        || proc_net.is_some();
+    if !has_wifi_inputs {
+        return None;
+    }
 
     if let Some(text) = wifi_check {
         w.internet_reachable = capture_after(text, "Internet reachability state:")
