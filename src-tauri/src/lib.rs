@@ -1068,6 +1068,13 @@ fn get_diagnostic_state(state: State<'_, AppState>) -> Result<DiagnosticState, S
 }
 
 #[tauri::command]
+fn clear_diagnostic_state(state: State<'_, AppState>) -> Result<(), String> {
+    let mut diag = state.diagnostic_state.lock().map_err(|_| "lock poisoned")?;
+    *diag = DiagnosticState::default();
+    Ok(())
+}
+
+#[tauri::command]
 fn stop_log_watcher(state: State<'_, AppState>) -> Result<(), String> {
     if let Ok(mut watcher) = state.log_watcher_kill.lock() {
         if let Some(existing) = watcher.take() {
@@ -1619,6 +1626,7 @@ pub fn run() {
             get_app_state,
             start_log_watcher,
             get_diagnostic_state,
+            clear_diagnostic_state,
             stop_log_watcher,
         ])
         .setup(|_app| Ok(()))

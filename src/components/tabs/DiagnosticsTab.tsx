@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
 type DiagStatus = "green" | "orange" | "red" | "unknown";
@@ -123,6 +123,7 @@ interface DiagCardProps {
   status: DiagStatus;
   summary: string;
   rows: { label: string; value: string }[];
+  updatedAt?: string | null;
 }
 
 function fmtBool(v: boolean | null | undefined): string {
@@ -181,7 +182,7 @@ function buildWifiRows(wifi?: WifiDiagnostic | null): { label: string; value: st
   return rows;
 }
 
-function DiagCard({ title, icon, status, summary, rows }: DiagCardProps) {
+function DiagCard({ title, icon, status, summary, rows, updatedAt }: DiagCardProps) {
   const statusLabel =
     status === "green" ? "Healthy" :
       status === "orange" ? "Warning" :
@@ -195,6 +196,7 @@ function DiagCard({ title, icon, status, summary, rows }: DiagCardProps) {
       </div>
       <div className="diag-card-status">{statusLabel}</div>
       <div className="diag-card-summary">{summary}</div>
+      <div className="diag-card-updated">Updated {updatedAt ?? "—"}</div>
       <div className="diag-card-divider" />
       <div>
         {rows.map((row) => (
@@ -217,6 +219,20 @@ export default function DiagnosticsTab() {
     satellite: false,
     ethernet: false,
   });
+  const [cardUpdatedAt, setCardUpdatedAt] = useState<Record<string, string | null>>({
+    wifi: null,
+    cellular: null,
+    satellite: null,
+    ethernet: null,
+  });
+  const prevCardsRef = useRef<Record<string, string>>({
+    wifi: "",
+    cellular: "",
+    satellite: "",
+    ethernet: "",
+  });
+  const prevSystemRef = useRef<string>("");
+  const [systemUpdatedAt, setSystemUpdatedAt] = useState<string | null>(null);
 
   useEffect(() => {
     invoke("start_log_watcher").catch(() => {});
@@ -224,6 +240,29 @@ export default function DiagnosticsTab() {
     const id = setInterval(async () => {
       try {
         const state = await invoke<DiagnosticState>("get_diagnostic_state");
+        const now = new Date().toLocaleTimeString();
+        const nextCards: Record<string, string> = {
+          wifi: JSON.stringify(state.wifi ?? null),
+          cellular: JSON.stringify(state.cellular ?? null),
+          satellite: JSON.stringify(state.satellite ?? null),
+          ethernet: JSON.stringify(state.ethernet ?? null),
+        };
+        const nextSystem = JSON.stringify(state.system ?? null);
+
+        setCardUpdatedAt((prev) => {
+          const updated = { ...prev };
+          (Object.keys(nextCards) as Array<keyof typeof nextCards>).forEach((k) => {
+            if (nextCards[k] !== prevCardsRef.current[k]) {
+              updated[k] = now;
+            }
+          });
+          return updated;
+        });
+        if (nextSystem !== prevSystemRef.current) {
+          setSystemUpdatedAt(now);
+        }
+        prevCardsRef.current = nextCards;
+        prevSystemRef.current = nextSystem;
         setDiag(state);
         setLastUpdated(state.last_updated ?? null);
       } catch {
@@ -242,6 +281,24 @@ export default function DiagnosticsTab() {
   const ethernet = diag?.ethernet;
   const system = diag?.system;
 
+  async function clearCards() {
+    await invoke("clear_diagnostic_state").catch(() => {});
+    setDiag({
+      wifi: null,
+      cellular: null,
+      satellite: null,
+      ethernet: null,
+      system: null,
+      last_updated: null,
+      session_has_data: false,
+    });
+    setLastUpdated(null);
+    setSystemUpdatedAt(null);
+    setCardUpdatedAt({ wifi: null, cellular: null, satellite: null, ethernet: null });
+    prevCardsRef.current = { wifi: "", cellular: "", satellite: "", ethernet: "" };
+    prevSystemRef.current = "";
+  }
+
   return (
     <section className="tab-content diag-page">
       <div className="diag-header">
@@ -250,8 +307,12 @@ export default function DiagnosticsTab() {
           <div className="diag-system-line">
             SID {system?.sid ?? "—"} · {system?.version ?? "—"} · {system?.release_date ?? "—"}
           </div>
+          <div className="diag-system-line">System updated {systemUpdatedAt ?? "—"}</div>
         </div>
-        <div className="diag-updated">Last updated {lastUpdated ?? "—"}</div>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <div className="diag-updated">Last updated {lastUpdated ?? "—"}</div>
+          <button className="btn btn-secondary" onClick={clearCards}>Clear Cards</button>
+        </div>
       </div>
       {showNoSessionBanner && (
         <div className="diag-empty">
@@ -272,6 +333,7 @@ export default function DiagnosticsTab() {
             status={wifi?.status ?? "unknown"}
             summary={wifi?.summary ?? "Run wifi-check / wifi diagnostics to populate"}
             rows={expanded.wifi ? buildWifiRows(wifi) : []}
+            updatedAt={cardUpdatedAt.wifi}
           />
         </div>
 
@@ -298,6 +360,7 @@ export default function DiagnosticsTab() {
             ...(cellular?.cell_status ? [{ label: "Status", value: cellular.cell_status }] : []),
             { label: "Check result", value: cellular?.check_result ?? "—" },
           ] : []}
+          updatedAt={cardUpdatedAt.cellular}
           />
         </div>
 
@@ -324,6 +387,7 @@ export default function DiagnosticsTab() {
             ...(satellite?.loopback_time_secs ? [{ label: "Loopback time", value: `${satellite.loopback_time_secs.toFixed(1)}s` }] : []),
             ...(satellite?.imei ? [{ label: "IMEI", value: satellite.imei }] : []),
           ] : []}
+          updatedAt={cardUpdatedAt.satellite}
           />
         </div>
 
@@ -353,6 +417,7 @@ export default function DiagnosticsTab() {
             ...(ethernet && ethernet.flap_count > 0 ? [{ label: "Flap events", value: String(ethernet.flap_count) }] : []),
             { label: "Check result", value: ethernet?.check_result ?? "—" },
           ] : []}
+          updatedAt={cardUpdatedAt.ethernet}
           />
         </div>
       </div>

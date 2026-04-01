@@ -26,6 +26,9 @@ interface AppStatus {
   connection_mode?: string;
   local_serial_device?: string | null;
 }
+interface HeaderDiagnosticState {
+  system?: { sid?: string | null } | null;
+}
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<Tab>("session");
@@ -34,6 +37,7 @@ export default function App() {
     shell_phase: "disconnected",
     controller_ip: null,
   });
+  const [localSid, setLocalSid] = useState<string | null>(null);
 
   useEffect(() => {
     const appWindow = getCurrentWindow();
@@ -58,6 +62,12 @@ export default function App() {
       try {
         const s = await invoke<AppStatus>("get_app_state");
         setAppStatus(s);
+        if (s.connection_mode === "local") {
+          const diag = await invoke<HeaderDiagnosticState>("get_diagnostic_state");
+          setLocalSid(diag.system?.sid ?? null);
+        } else {
+          setLocalSid(null);
+        }
       } catch {
         /* ignore */
       }
@@ -90,7 +100,7 @@ export default function App() {
             <span className={`badge badge-${appStatus.vpn_phase}`}>VPN</span>
           )}
           {appStatus.connection_mode === "local" && appStatus.local_serial_device && (
-            <span className="badge badge-connected">SERIAL {appStatus.local_serial_device}</span>
+            <span className="badge badge-connected">LOCAL {localSid ?? "—"}</span>
           )}
           {appStatus.connection_mode !== "local" && appStatus.controller_ip && (
             <span className="badge badge-connected">CTRL {appStatus.controller_ip}</span>
