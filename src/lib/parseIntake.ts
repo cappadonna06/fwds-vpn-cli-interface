@@ -1,4 +1,4 @@
-import { SystemConfig, defaultConfig, HHCType, WaterUseMode, PreferredNetwork } from "../types/config";
+import { SystemConfig, defaultConfig, HHCType, WaterUseMode, PreferredNetwork, Zone } from "../types/config";
 import { parseZoneField } from "./zoneParser";
 
 const HHC_TYPES: HHCType[] = ["MP3", "HP6", "Legacy", "LV2"];
@@ -27,6 +27,23 @@ function hasFoam(features: string[]): boolean {
 function inferPreferredNetwork(wifiSsid: string): PreferredNetwork {
   return wifiSsid.trim() ? "W" : "E";
 }
+
+/**
+ * Generates a default zone map when zone details are not available.
+ * Splits evenly between Roof and Eave; odd remainder goes to Eave.
+ * Names: "Roof 1", "Roof 2", ..., "Eave 1", "Eave 2", ...
+ */
+function generateDefaultZones(count: number): Zone[] {
+  const roofCount = Math.floor(count / 2);
+  const eaveCount = Math.ceil(count / 2);
+  const zones: Zone[] = [];
+  for (let i = 1; i <= roofCount; i++) zones.push({ type: "Roof", name: `Roof ${i}` });
+  for (let i = 1; i <= eaveCount; i++) zones.push({ type: "Eave", name: `Eave ${i}` });
+  return zones;
+}
+
+const DEFAULT_ZONES_WARNING =
+  "ZONE NAMES ARE DEFAULTS — not accurate. Check with requester or installation design document before proceeding.";
 
 /**
  * Parses a raw tab-separated PM intake row (from Slack/Sheets paste).
@@ -125,10 +142,14 @@ export function parseIntakeRow(raw: string): {
       }
       config.num_zones = zones.length;
     } else {
-      warnings.push(`Could not parse zone field: "${zoneRaw}". Review zone map manually.`);
+      warnings.push(`Could not parse zone field: "${zoneRaw}". Zone map defaulted — ${DEFAULT_ZONES_WARNING}`);
+      if (config.num_zones > 0) {
+        config.zones = generateDefaultZones(config.num_zones);
+      }
     }
   } else if (config.num_zones > 0) {
-    warnings.push(`Zone count is ${config.num_zones} but no zone breakdown provided. Zone map needs manual entry.`);
+    warnings.push(`No zone breakdown in intake. Zone map defaulted — ${DEFAULT_ZONES_WARNING}`);
+    config.zones = generateDefaultZones(config.num_zones);
   }
 
   // Network defaults
