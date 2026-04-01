@@ -248,10 +248,10 @@ export const COMMANDS: ControllerCommand[] = [
     label: "cellular-check",
     command: "cellular-check",
     category: "diagnostic",
-    description: "Test cellular modem operation and signal level.",
+    description: "System-level cellular status and connectivity test.",
     reboot_required: false,
     guard: "none",
-    est_seconds: 15,
+    est_seconds: 12,
     when_to_run: "After setup-cellular or when cellular connectivity is in question.",
     what_to_look_for: [
       "✓ Internet reachability: online — cellular is working",
@@ -348,6 +348,16 @@ export const COMMANDS: ControllerCommand[] = [
     related_command_ids: ["version", "release"],
   },
   {
+    id: "date",
+    label: "date",
+    command: "date",
+    category: "info",
+    description: "Display controller date/time.",
+    reboot_required: false,
+    guard: "none",
+    est_seconds: 1,
+  },
+  {
     id: "version",
     label: "version",
     command: "version",
@@ -372,11 +382,11 @@ export const COMMANDS: ControllerCommand[] = [
     id: "cell-signal",
     label: "cell-signal",
     command: "cell-signal",
-    category: "info",
-    description: "Display cellular signal strength (0–100%).",
+    category: "diagnostic",
+    description: "Current cellular signal quality score.",
     reboot_required: false,
     guard: "none",
-    est_seconds: 2,
+    est_seconds: 1,
     when_to_run: "Quick check of cellular signal strength, 0–100.",
     what_to_look_for: [
       "> 60 is good",
@@ -529,46 +539,101 @@ export const COMMANDS: ControllerCommand[] = [
     id: "cell-imei",
     label: "cell-imei",
     command: "cell-imei",
-    category: "info",
-    description: "Display cellular modem IMEI.",
+    category: "diagnostic",
+    description: "Cellular modem IMEI.",
     reboot_required: false,
     guard: "none",
+    est_seconds: 1,
   },
   {
     id: "cell-ccid",
     label: "cell-ccid",
     command: "cell-ccid",
-    category: "info",
-    description: "Display SIM ICCID.",
+    category: "diagnostic",
+    description: "SIM ICCID.",
     reboot_required: false,
     guard: "none",
+    est_seconds: 1,
+  },
+  {
+    id: "cell-imsi",
+    label: "cell-imsi",
+    command: "cell-imsi",
+    category: "diagnostic",
+    description: "SIM IMSI.",
+    reboot_required: false,
+    guard: "none",
+    est_seconds: 1,
+  },
+  {
+    id: "cell-hni",
+    label: "cell-hni",
+    command: "cell-hni",
+    category: "diagnostic",
+    description: "Home network identifier / MCCMNC.",
+    reboot_required: false,
+    guard: "none",
+    est_seconds: 1,
   },
   {
     id: "cell-apn",
     label: "cell-apn",
     command: "cell-apn",
-    category: "info",
-    description: "Display cellular APN.",
+    category: "diagnostic",
+    description: "Configured / active cellular APN.",
     reboot_required: false,
     guard: "none",
+    est_seconds: 1,
   },
   {
     id: "cell-provider",
     label: "cell-provider",
     command: "cell-provider",
-    category: "info",
-    description: "Display cellular provider name.",
+    category: "diagnostic",
+    description: "Current cellular provider identifier.",
     reboot_required: false,
     guard: "none",
+    est_seconds: 1,
   },
   {
     id: "cell-status",
     label: "cell-status",
     command: "cell-status",
-    category: "info",
-    description: "Display cellular registration status.",
+    category: "diagnostic",
+    description: "Current cellular registration state.",
     reboot_required: false,
     guard: "none",
+    est_seconds: 1,
+  },
+  {
+    id: "ip-link-wwan0",
+    label: "ip link show wwan0",
+    command: "ip link show wwan0",
+    category: "diagnostic",
+    description: "wwan0 link state.",
+    reboot_required: false,
+    guard: "none",
+    est_seconds: 1,
+  },
+  {
+    id: "ip-addr-wwan0",
+    label: "ip addr show wwan0",
+    command: "ip addr show wwan0",
+    category: "diagnostic",
+    description: "wwan0 IP assignment.",
+    reboot_required: false,
+    guard: "none",
+    est_seconds: 1,
+  },
+  {
+    id: "cell-support-at",
+    label: "cell-support --no-ofono --at",
+    command: "cell-support --no-ofono --at",
+    category: "diagnostic",
+    description: "Raw modem / AT diagnostics.",
+    reboot_required: false,
+    guard: "none",
+    est_seconds: 8,
   },
   {
     id: "sat-imei",
@@ -762,11 +827,69 @@ echo "===== WIFI DIAGNOSTICS END ====="
   {
     id: "cellular",
     label: "Cellular",
-    icon: "📱",
-    description: "LTE-M modem connectivity, signal strength, provider, and SIM details. Confirms the modem is registered, signal is acceptable, and the SIM and APN are configured correctly.",
-    when_to_run: "After setup-cellular or when the site reports cellular connectivity issues or alerts are not reaching the cloud.",
-    light_command_ids: ["cellular-check", "cell-signal"],
-    heavy_command_ids: ["cellular-check", "cell-signal", "cell-provider", "cell-ccid", "cell-imei", "cell-apn", "cell-status"],
+    icon: "📡",
+    description: "Full cellular diagnostic suite — controller info, SIM/modem status, routing, ConnMan, connectivity, and AT diagnostics",
+    light_command_ids: ["cellular-check", "cell-status", "cell-signal"],
+    heavy_command_ids: [
+      "date",
+      "version",
+      "sid",
+      "cellular-check",
+      "cell-imei",
+      "cell-ccid",
+      "cell-imsi",
+      "cell-hni",
+      "cell-provider",
+      "cell-status",
+      "cell-signal",
+      "cell-apn",
+      "connmanctl-technologies",
+      "connmanctl-services",
+      "connmanctl-state",
+      "ip-link-wwan0",
+      "ip-addr-wwan0",
+      "ip-route",
+      "proc-net-dev",
+      "cell-support-at",
+    ],
+    heavy_script: `(
+echo "===== CONTROLLER INFO ====="
+date
+version
+sid
+
+echo ""
+echo "===== CELLULAR CONNECTIVITY TEST ====="
+cellular-check
+
+echo ""
+echo "===== BASIC CELL INFO ====="
+cell-imei
+cell-ccid
+cell-imsi
+cell-hni
+cell-provider
+cell-status
+cell-signal
+cell-apn
+
+echo ""
+echo "===== NETWORK TECHNOLOGY ====="
+connmanctl technologies
+connmanctl services
+connmanctl state
+
+echo ""
+echo "===== INTERFACE / ROUTING ====="
+ip link show wwan0
+ip addr show wwan0
+ip route
+cat /proc/net/dev
+
+echo ""
+echo "===== MODEM / RADIO DIAGNOSTICS ====="
+cell-support --no-ofono --at
+)`,
   },
   {
     id: "satellite",
