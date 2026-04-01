@@ -147,16 +147,22 @@ fn find_latest<'a>(latest: &'a HashMap<String, String>, names: &[&str]) -> Optio
 }
 
 fn split_blocks(log: &str) -> Vec<CommandBlock> {
-    let prompt_re =
-        Regex::new(r"^(?:\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{4}\s+)?(?:\[\d+\])?#\s+(.+)$")
-            .expect("prompt regex");
+    let prompt_re = Regex::new(
+        r"^(?:\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?[+-]\d{4}\s+)?(?:\[\d+\])?#\s*(.+)$",
+    )
+    .expect("prompt regex");
+    let continuation_re = Regex::new(r"^>\s*(.+)$").expect("continuation regex");
+    let ansi_re = Regex::new(r"\x1B\[[0-?]*[ -/]*[@-~]").expect("ansi regex");
 
     let mut blocks = Vec::new();
     let mut current_cmd: Option<String> = None;
     let mut current_body = String::new();
 
     for line in log.lines() {
-        if let Some(cap) = prompt_re.captures(line) {
+        let cleaned = ansi_re.replace_all(line, "");
+        let cleaned = cleaned.trim_end_matches('\r');
+
+        if let Some(cap) = prompt_re.captures(cleaned) {
             if let Some(cmd) = current_cmd.take() {
                 blocks.push(CommandBlock {
                     command: cmd,
@@ -170,8 +176,21 @@ fn split_blocks(log: &str) -> Vec<CommandBlock> {
             continue;
         }
 
+        if let Some(cap) = continuation_re.captures(cleaned) {
+            if let Some(cmd_match) = cap.get(1) {
+                let chunk = cmd_match.as_str().trim();
+                if !chunk.is_empty() {
+                    if let Some(cmd) = current_cmd.as_mut() {
+                        cmd.push(' ');
+                        cmd.push_str(chunk);
+                    }
+                }
+            }
+            continue;
+        }
+
         if current_cmd.is_some() {
-            current_body.push_str(line);
+            current_body.push_str(cleaned);
             current_body.push('\n');
         }
     }
@@ -184,6 +203,32 @@ fn split_blocks(log: &str) -> Vec<CommandBlock> {
     }
 
     blocks
+}
+
+#[cfg(test)]
+mod tests {
+    use super::split_blocks;
+
+    #[test]
+    fn split_blocks_parses_timestamped_prompts() {
+        let log = "2026-04-01T10:18:37-0600 [22611067]# sid\n22611067\n2026-04-01T10:18:43-0600 [22611067]# version\nr3.3.1\n";
+        let blocks = split_blocks(log);
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(blocks[0].command, "sid");
+        assert_eq!(blocks[0].body, "22611067");
+        assert_eq!(blocks[1].command, "version");
+        assert_eq!(blocks[1].body, "r3.3.1");
+    }
+
+    #[test]
+    fn split_blocks_handles_continuation_prompts() {
+        let log = "2026-04-01T10:19:20-0600 [22611067]# (\n> wifi-check\n> wifi-signal\n> )\nTesting Wi-Fi...\nDone: Success\n2026-04-01T10:19:53-0600 [22611067]# sid\n22611067\n";
+        let blocks = split_blocks(log);
+        assert_eq!(blocks.len(), 2);
+        assert!(blocks[0].command.contains("wifi-check"));
+        assert!(blocks[0].command.contains("wifi-signal"));
+        assert!(blocks[0].body.contains("Done: Success"));
+    }
 }
 
 fn parse_wifi(latest: &HashMap<String, String>) -> Option<WifiDiagnostic> {
