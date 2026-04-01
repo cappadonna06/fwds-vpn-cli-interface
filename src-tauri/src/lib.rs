@@ -911,7 +911,7 @@ fn disconnect_local_controller(state: State<'_, AppState>) -> Result<(), String>
         inner.local_serial_device = None;
         inner.connection_mode = "local".into();
     }
-    stop_log_watcher(state)?;
+    stop_log_watcher_internal(&state)?;
     if let Ok(mut diag) = state.diagnostic_state.lock() {
         *diag = DiagnosticState::default();
     }
@@ -982,11 +982,12 @@ fn start_log_watcher_internal(state: &AppState) -> Result<(), String> {
                 .controller_ip
                 .clone()
                 .ok_or_else(|| "No controller IP — connect first".to_string())?;
-            (ip.clone(), log_file_path(&ip))
+            (format!("vpn:{ip}"), log_file_path(&ip))
         }
     };
     let diag_arc = state.diagnostic_state.clone();
     let store_arc = state.diagnostic_store.clone();
+    let key_arc = state.current_controller_key.clone();
 
     if let Ok(mut key) = state.current_controller_key.lock() {
         *key = Some(controller_key.clone());
@@ -1017,6 +1018,7 @@ fn start_log_watcher_internal(state: &AppState) -> Result<(), String> {
     }
 
     thread::spawn(move || {
+        let mut active_controller_key = controller_key.clone();
         let mut waited = 0;
         while !log_path.exists() && waited < 10 {
             if kill_flag.load(Ordering::Relaxed) {
@@ -1052,10 +1054,39 @@ fn start_log_watcher_internal(state: &AppState) -> Result<(), String> {
                         diag.last_updated =
                             Some(chrono::Local::now().format("%H:%M:%S").to_string());
                         diag.session_has_data = has_any_diag_data(&diag);
+
+                        let mut migrated_from: Option<String> = None;
+                        if let Some(sid) = diag
+                            .system
+                            .as_ref()
+                            .and_then(|system| system.sid.as_ref())
+                            .map(|sid| sid.trim())
+                            .filter(|sid| !sid.is_empty())
+                        {
+                            let sid_key = format!("vpn:{sid}");
+                            if sid_key != active_controller_key {
+                                migrated_from = Some(active_controller_key.clone());
+                                active_controller_key = sid_key.clone();
+                                if let Ok(mut key) = key_arc.lock() {
+                                    *key = Some(sid_key);
+                                }
+                            }
+                        }
+
                         if let Ok(mut store) = store_arc.lock() {
+                            if let Some(old_key) = migrated_from {
+                                if let Some(previous) = store.controllers.remove(&old_key) {
+                                    let migrated = store
+                                        .controllers
+                                        .entry(active_controller_key.clone())
+                                        .or_insert_with(DiagnosticState::default);
+                                    merge_non_empty_cards(migrated, &previous);
+                                }
+                            }
+
                             let entry = store
                                 .controllers
-                                .entry(controller_key.clone())
+                                .entry(active_controller_key.clone())
                                 .or_insert_with(DiagnosticState::default);
                             merge_non_empty_cards(entry, &diag);
                             save_diagnostic_store(&store);
@@ -1090,6 +1121,10 @@ fn clear_diagnostic_state(state: State<'_, AppState>) -> Result<(), String> {
 
 #[tauri::command]
 fn stop_log_watcher(state: State<'_, AppState>) -> Result<(), String> {
+    stop_log_watcher_internal(&state)
+}
+
+fn stop_log_watcher_internal(state: &AppState) -> Result<(), String> {
     if let Ok(mut watcher) = state.log_watcher_kill.lock() {
         if let Some(existing) = watcher.take() {
             existing.store(true, Ordering::Relaxed);
