@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -54,9 +55,11 @@ struct AppState {
     inner: Arc<Mutex<InnerState>>,
     diagnostic_state: Arc<Mutex<DiagnosticState>>,
     log_watcher_kill: Arc<Mutex<Option<Arc<AtomicBool>>>>,
+    diagnostic_store: Arc<Mutex<DiagnosticStore>>,
+    current_controller_key: Arc<Mutex<Option<String>>>,
 }
 
-#[derive(serde::Serialize, Clone, Default)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Default)]
 pub struct DiagnosticState {
     pub wifi: Option<WifiDiagnostic>,
     pub cellular: Option<CellularDiagnostic>,
@@ -64,9 +67,10 @@ pub struct DiagnosticState {
     pub ethernet: Option<EthernetDiagnostic>,
     pub system: Option<SystemDiagnostic>,
     pub last_updated: Option<String>,
+    pub session_has_data: bool,
 }
 
-#[derive(serde::Serialize, Clone)]
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
 pub struct WifiDiagnostic {
     pub status: DiagStatus,
     pub summary: String,
@@ -83,7 +87,7 @@ pub struct WifiDiagnostic {
     pub packet_loss_pct: u8,
 }
 
-#[derive(serde::Serialize, Clone)]
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
 pub struct CellularDiagnostic {
     pub status: DiagStatus,
     pub summary: String,
@@ -104,7 +108,7 @@ pub struct CellularDiagnostic {
     pub cell_status: Option<String>,
 }
 
-#[derive(serde::Serialize, Clone)]
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
 pub struct SatelliteDiagnostic {
     pub status: DiagStatus,
     pub summary: String,
@@ -114,7 +118,7 @@ pub struct SatelliteDiagnostic {
     pub imei: Option<String>,
 }
 
-#[derive(serde::Serialize, Clone)]
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
 pub struct EthernetDiagnostic {
     pub status: DiagStatus,
     pub summary: String,
@@ -135,14 +139,14 @@ pub struct EthernetDiagnostic {
     pub flap_count: u32,
 }
 
-#[derive(serde::Serialize, Clone)]
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
 pub struct SystemDiagnostic {
     pub sid: Option<String>,
     pub version: Option<String>,
     pub release_date: Option<String>,
 }
 
-#[derive(serde::Serialize, Clone, Default)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum DiagStatus {
     #[default]
@@ -150,6 +154,11 @@ pub enum DiagStatus {
     Green,
     Orange,
     Red,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone, Default)]
+struct DiagnosticStore {
+    controllers: HashMap<String, DiagnosticState>,
 }
 
 const REQUIRED_FILES: &[&str] = &[
@@ -170,6 +179,27 @@ fn log_file_path(ip: &str) -> PathBuf {
     dirs::desktop_dir()
         .unwrap_or_else(|| PathBuf::from("~/Desktop"))
         .join(filename)
+}
+
+fn diagnostic_store_path() -> PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".fwds-diagnostics-store.json")
+}
+
+fn load_diagnostic_store() -> DiagnosticStore {
+    let path = diagnostic_store_path();
+    let Ok(raw) = fs::read_to_string(path) else {
+        return DiagnosticStore::default();
+    };
+    serde_json::from_str(&raw).unwrap_or_default()
+}
+
+fn save_diagnostic_store(store: &DiagnosticStore) {
+    let path = diagnostic_store_path();
+    if let Ok(raw) = serde_json::to_string_pretty(store) {
+        let _ = fs::write(path, raw);
+    }
 }
 
 #[tauri::command]
@@ -764,6 +794,33 @@ fn get_app_state(state: State<'_, AppState>) -> Result<serde_json::Value, String
     }))
 }
 
+fn has_any_diag_data(diag: &DiagnosticState) -> bool {
+    diag.wifi.is_some()
+        || diag.cellular.is_some()
+        || diag.satellite.is_some()
+        || diag.ethernet.is_some()
+        || diag.system.is_some()
+}
+
+fn merge_non_empty_cards(base: &mut DiagnosticState, incoming: &DiagnosticState) {
+    if incoming.wifi.is_some() {
+        base.wifi = incoming.wifi.clone();
+    }
+    if incoming.cellular.is_some() {
+        base.cellular = incoming.cellular.clone();
+    }
+    if incoming.satellite.is_some() {
+        base.satellite = incoming.satellite.clone();
+    }
+    if incoming.ethernet.is_some() {
+        base.ethernet = incoming.ethernet.clone();
+    }
+    if incoming.system.is_some() {
+        base.system = incoming.system.clone();
+    }
+    base.last_updated = incoming.last_updated.clone().or(base.last_updated.clone());
+}
+
 #[tauri::command]
 fn start_log_watcher(state: State<'_, AppState>) -> Result<(), String> {
     let ip = {
@@ -775,7 +832,25 @@ fn start_log_watcher(state: State<'_, AppState>) -> Result<(), String> {
     };
 
     let log_path = log_file_path(&ip);
+    let controller_key = ip.clone();
     let diag_arc = state.diagnostic_state.clone();
+    let store_arc = state.diagnostic_store.clone();
+
+    if let Ok(mut key) = state.current_controller_key.lock() {
+        *key = Some(controller_key.clone());
+    }
+
+    if let (Ok(mut diag), Ok(store)) =
+        (state.diagnostic_state.lock(), state.diagnostic_store.lock())
+    {
+        if let Some(cached) = store.controllers.get(&controller_key) {
+            *diag = cached.clone();
+            diag.session_has_data = false;
+            diag.last_updated = None;
+        } else {
+            *diag = DiagnosticState::default();
+        }
+    }
 
     let kill_flag = Arc::new(AtomicBool::new(false));
     {
@@ -824,6 +899,15 @@ fn start_log_watcher(state: State<'_, AppState>) -> Result<(), String> {
                         parse_log_into_state(&buffer, &mut diag);
                         diag.last_updated =
                             Some(chrono::Local::now().format("%H:%M:%S").to_string());
+                        diag.session_has_data = has_any_diag_data(&diag);
+                        if let Ok(mut store) = store_arc.lock() {
+                            let entry = store
+                                .controllers
+                                .entry(controller_key.clone())
+                                .or_insert_with(DiagnosticState::default);
+                            merge_non_empty_cards(entry, &diag);
+                            save_diagnostic_store(&store);
+                        }
                     }
                 }
                 Err(_) => break,
@@ -849,7 +933,8 @@ fn stop_log_watcher(state: State<'_, AppState>) -> Result<(), String> {
     }
 
     if let Ok(mut diag) = state.diagnostic_state.lock() {
-        *diag = DiagnosticState::default();
+        diag.session_has_data = false;
+        diag.last_updated = None;
     }
 
     Ok(())
@@ -1368,6 +1453,8 @@ pub fn run() {
             inner: Arc::new(Mutex::new(InnerState::default())),
             diagnostic_state: Arc::new(Mutex::new(DiagnosticState::default())),
             log_watcher_kill: Arc::new(Mutex::new(None)),
+            diagnostic_store: Arc::new(Mutex::new(load_diagnostic_store())),
+            current_controller_key: Arc::new(Mutex::new(None)),
         })
         .invoke_handler(tauri::generate_handler![
             select_vpn_folder,

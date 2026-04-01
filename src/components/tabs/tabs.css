@@ -1764,3 +1764,15 @@
 .diag-card-unknown {
   opacity: 0.5;
 }
+
+.diag-expand-btn {
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  border-radius: 4px;
+  padding: 4px 8px;
+  margin-bottom: 6px;
+  font-size: 11px;
+}

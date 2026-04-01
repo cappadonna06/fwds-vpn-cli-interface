@@ -23,8 +23,14 @@ pub fn parse_log_into_state(log: &str, state: &mut DiagnosticState) {
         latest.insert(block.command, block.body);
     }
 
-    let mut wifi = parse_wifi_check(latest.get("wifi-check"));
-    if let Some(dbm) = parse_wifi_signal(latest.get("wifi-signal")) {
+    let mut wifi = parse_wifi_check(find_latest(
+        &latest,
+        &["wifi-check", "run wifi diagnostics"],
+    ));
+    if let Some(dbm) = parse_wifi_signal(find_latest(
+        &latest,
+        &["wifi-signal", "run wifi diagnostics"],
+    )) {
         if let Some(w) = wifi.as_mut() {
             w.signal_dbm = Some(dbm);
         } else {
@@ -46,8 +52,14 @@ pub fn parse_log_into_state(log: &str, state: &mut DiagnosticState) {
         }
     }
 
-    let mut cellular = parse_cellular_check(latest.get("cellular-check"));
-    if let Some(code) = parse_single_value(latest.get("cell-provider")) {
+    let mut cellular = parse_cellular_check(find_latest(
+        &latest,
+        &["cellular-check", "run cellular diagnostics"],
+    ));
+    if let Some(code) = parse_single_value(find_latest(
+        &latest,
+        &["cell-provider", "run cellular diagnostics"],
+    )) {
         let provider = resolve_provider(&code);
         merge_cellular(&mut cellular, |c| {
             c.provider_code = code.clone();
@@ -55,45 +67,61 @@ pub fn parse_log_into_state(log: &str, state: &mut DiagnosticState) {
             c.summary = format!("{} · {}/100 · {}", c.provider, c.strength, c.strength_label);
         });
     }
-    if let Some(strength) =
-        parse_single_value(latest.get("cell-signal")).and_then(|v| v.parse::<u8>().ok())
+    if let Some(strength) = parse_single_value(find_latest(
+        &latest,
+        &["cell-signal", "run cellular diagnostics"],
+    ))
+    .and_then(|v| v.parse::<u8>().ok())
     {
         merge_cellular(&mut cellular, |c| {
             c.strength = strength;
             c.summary = format!("{} · {}/100 · {}", c.provider, c.strength, c.strength_label);
         });
     }
-    if let Some(iccid) = parse_single_value(latest.get("cell-ccid")) {
+    if let Some(iccid) = parse_single_value(find_latest(
+        &latest,
+        &["cell-ccid", "run cellular diagnostics"],
+    )) {
         merge_cellular(&mut cellular, |c| c.iccid = Some(iccid.clone()));
     }
-    if let Some(imei) = parse_single_value(latest.get("cell-imei")) {
+    if let Some(imei) = parse_single_value(find_latest(
+        &latest,
+        &["cell-imei", "run cellular diagnostics"],
+    )) {
         merge_cellular(&mut cellular, |c| c.imei = Some(imei.clone()));
     }
-    if let Some(apn) = parse_single_value(latest.get("cell-apn")) {
+    if let Some(apn) = parse_single_value(find_latest(
+        &latest,
+        &["cell-apn", "run cellular diagnostics"],
+    )) {
         merge_cellular(&mut cellular, |c| c.apn = Some(apn.clone()));
     }
-    if let Some(cell_status) = parse_single_value(latest.get("cell-status")) {
+    if let Some(cell_status) = parse_single_value(find_latest(
+        &latest,
+        &["cell-status", "run cellular diagnostics"],
+    )) {
         merge_cellular(&mut cellular, |c| c.cell_status = Some(cell_status.clone()));
     }
 
     let satellite = parse_satellite(
-        latest.get("setup-satellite"),
+        find_latest(&latest, &["setup-satellite"]),
         latest
             .get("satellite-check -t")
             .or_else(|| latest.get("satellite-check -m"))
-            .or_else(|| latest.get("satellite-check")),
+            .or_else(|| latest.get("satellite-check"))
+            .or_else(|| find_latest(&latest, &["run satellite diagnostics"])),
     );
 
     let ethernet = parse_ethernet(
-        latest.get("ethernet-check"),
-        latest.get("ethtool eth0"),
-        latest.get("ifconfig eth0"),
+        find_latest(&latest, &["ethernet-check", "run ethernet diagnostics"]),
+        find_latest(&latest, &["ethtool eth0", "run ethernet diagnostics"]),
+        find_latest(&latest, &["ifconfig eth0", "run ethernet diagnostics"]),
     );
 
     let system = parse_system(
-        latest.get("sid"),
-        latest.get("version"),
-        latest.get("release"),
+        find_latest(&latest, &["sid", "run system diagnostics"]),
+        find_latest(&latest, &["version", "run system diagnostics"]),
+        find_latest(&latest, &["release", "run system diagnostics"]),
     );
 
     state.wifi = wifi;
@@ -103,6 +131,22 @@ pub fn parse_log_into_state(log: &str, state: &mut DiagnosticState) {
     if system.sid.is_some() || system.version.is_some() || system.release_date.is_some() {
         state.system = Some(system);
     }
+}
+
+fn find_latest<'a>(latest: &'a HashMap<String, String>, names: &[&str]) -> Option<&'a String> {
+    for name in names {
+        if let Some(v) = latest.get(*name) {
+            return Some(v);
+        }
+    }
+    latest.iter().find_map(|(k, v)| {
+        let key = k.to_ascii_lowercase();
+        if names.iter().any(|n| key.contains(&n.to_ascii_lowercase())) {
+            Some(v)
+        } else {
+            None
+        }
+    })
 }
 
 fn split_blocks(log: &str) -> Vec<CommandBlock> {

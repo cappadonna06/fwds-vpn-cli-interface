@@ -81,6 +81,7 @@ interface DiagnosticState {
   ethernet?: EthernetDiagnostic | null;
   system?: SystemDiagnostic | null;
   last_updated?: string | null;
+  session_has_data?: boolean;
 }
 
 interface DiagCardProps {
@@ -131,6 +132,12 @@ function DiagCard({ title, icon, status, summary, rows }: DiagCardProps) {
 export default function DiagnosticsTab() {
   const [diag, setDiag] = useState<DiagnosticState | null>(null);
   const [lastUpdated, setLastUpdated] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({
+    wifi: false,
+    cellular: false,
+    satellite: false,
+    ethernet: false,
+  });
 
   useEffect(() => {
     invoke("start_log_watcher").catch(() => {});
@@ -148,23 +155,7 @@ export default function DiagnosticsTab() {
     return () => clearInterval(id);
   }, []);
 
-  const isEmpty = useMemo(() => {
-    if (!diag) return true;
-    return !diag.wifi && !diag.cellular && !diag.satellite && !diag.ethernet && !diag.system;
-  }, [diag]);
-
-  if (isEmpty) {
-    return (
-      <section className="tab-content diag-page">
-        <h2>System Diagnostics</h2>
-        <div className="diag-empty">
-          <div>ℹ No session data yet.</div>
-          <div>Launch a controller terminal and run diagnostic commands.</div>
-          <div>Cards will populate automatically as output is detected.</div>
-        </div>
-      </section>
-    );
-  }
+  const showNoSessionBanner = useMemo(() => !diag?.session_has_data, [diag]);
 
   const wifi = diag?.wifi;
   const cellular = diag?.cellular;
@@ -183,32 +174,47 @@ export default function DiagnosticsTab() {
         </div>
         <div className="diag-updated">Last updated {lastUpdated ?? "—"}</div>
       </div>
+      {showNoSessionBanner && (
+        <div className="diag-empty">
+          <div>ℹ No data collected this session yet.</div>
+          <div>Showing known diagnostics; run command blocks to refresh cards.</div>
+        </div>
+      )}
 
       <div className="diag-grid">
-        <DiagCard
-          title="Wi-Fi"
-          icon="🌐"
-          status={wifi?.status ?? "unknown"}
-          summary={wifi?.summary ?? "Run wifi-check to populate"}
-          rows={[
-            { label: "SSID", value: wifi?.ssid ?? "—" },
-            { label: "Signal", value: wifi ? `${wifi.strength}/100 (${wifi.strength_label})` : "—" },
-            ...(wifi?.signal_dbm !== null && wifi?.signal_dbm !== undefined ? [{ label: "Signal (dBm)", value: `${wifi.signal_dbm} dBm` }] : []),
-            { label: "IPv4", value: fmtBool(wifi?.ipv4) },
-            { label: "IPv6", value: fmtBool(wifi?.ipv6) },
-            { label: "DNS", value: wifi?.dns_servers ?? "—" },
-            ...(wifi?.avg_latency_ms !== null && wifi?.avg_latency_ms !== undefined ? [{ label: "Latency (avg)", value: `${wifi.avg_latency_ms.toFixed(1)} ms` }] : []),
-            { label: "Packet loss", value: wifi ? `${wifi.packet_loss_pct}%` : "—" },
-            { label: "Check result", value: wifi?.check_result ?? "—" },
-          ]}
-        />
+        <div>
+          <button className="diag-expand-btn" onClick={() => setExpanded((p) => ({ ...p, wifi: !p.wifi }))}>
+            {expanded.wifi ? "▾" : "▸"} Wi-Fi details
+          </button>
+          <DiagCard
+            title="Wi-Fi"
+            icon="🌐"
+            status={wifi?.status ?? "unknown"}
+            summary={wifi?.summary ?? "Run wifi-check / wifi diagnostics to populate"}
+            rows={expanded.wifi ? [
+              { label: "SSID", value: wifi?.ssid ?? "—" },
+              { label: "Signal", value: wifi ? `${wifi.strength}/100 (${wifi.strength_label})` : "—" },
+              ...(wifi?.signal_dbm !== null && wifi?.signal_dbm !== undefined ? [{ label: "Signal (dBm)", value: `${wifi.signal_dbm} dBm` }] : []),
+              { label: "IPv4", value: fmtBool(wifi?.ipv4) },
+              { label: "IPv6", value: fmtBool(wifi?.ipv6) },
+              { label: "DNS", value: wifi?.dns_servers ?? "—" },
+              ...(wifi?.avg_latency_ms !== null && wifi?.avg_latency_ms !== undefined ? [{ label: "Latency (avg)", value: `${wifi.avg_latency_ms.toFixed(1)} ms` }] : []),
+              { label: "Packet loss", value: wifi ? `${wifi.packet_loss_pct}%` : "—" },
+              { label: "Check result", value: wifi?.check_result ?? "—" },
+            ] : []}
+          />
+        </div>
 
-        <DiagCard
+        <div>
+          <button className="diag-expand-btn" onClick={() => setExpanded((p) => ({ ...p, cellular: !p.cellular }))}>
+            {expanded.cellular ? "▾" : "▸"} Cellular details
+          </button>
+          <DiagCard
           title="Cellular"
           icon="📶"
           status={cellular?.status ?? "unknown"}
-          summary={cellular?.summary ?? "Run cellular-check to populate"}
-          rows={[
+          summary={cellular?.summary ?? "Run cellular-check / cellular diagnostics to populate"}
+          rows={expanded.cellular ? [
             { label: "Provider", value: cellular ? `${cellular.provider} (${cellular.provider_code})` : "—" },
             { label: "Signal", value: cellular ? `${cellular.strength}/100 (${cellular.strength_label})` : "—" },
             { label: "IPv4", value: fmtBool(cellular?.ipv4) },
@@ -221,15 +227,20 @@ export default function DiagnosticsTab() {
             ...(cellular?.apn ? [{ label: "APN", value: cellular.apn }] : []),
             ...(cellular?.cell_status ? [{ label: "Status", value: cellular.cell_status }] : []),
             { label: "Check result", value: cellular?.check_result ?? "—" },
-          ]}
-        />
+          ] : []}
+          />
+        </div>
 
-        <DiagCard
+        <div>
+          <button className="diag-expand-btn" onClick={() => setExpanded((p) => ({ ...p, satellite: !p.satellite }))}>
+            {expanded.satellite ? "▾" : "▸"} Satellite details
+          </button>
+          <DiagCard
           title="Satellite"
           icon="🛰️"
           status={satellite?.status ?? "unknown"}
           summary={satellite?.summary ?? "Run satellite-check to populate"}
-          rows={[
+          rows={expanded.satellite ? [
             { label: "Enabled", value: fmtBool(satellite?.enabled) },
             {
               label: "Loopback",
@@ -242,15 +253,20 @@ export default function DiagnosticsTab() {
             },
             ...(satellite?.loopback_time_secs ? [{ label: "Loopback time", value: `${satellite.loopback_time_secs.toFixed(1)}s` }] : []),
             ...(satellite?.imei ? [{ label: "IMEI", value: satellite.imei }] : []),
-          ]}
-        />
+          ] : []}
+          />
+        </div>
 
-        <DiagCard
+        <div>
+          <button className="diag-expand-btn" onClick={() => setExpanded((p) => ({ ...p, ethernet: !p.ethernet }))}>
+            {expanded.ethernet ? "▾" : "▸"} Ethernet details
+          </button>
+          <DiagCard
           title="Ethernet"
           icon="🔌"
           status={ethernet?.status ?? "unknown"}
-          summary={ethernet?.summary ?? "Run ethernet-check to populate"}
-          rows={[
+          summary={ethernet?.summary ?? "Run ethernet-check / ethernet diagnostics to populate"}
+          rows={expanded.ethernet ? [
             { label: "Internet", value: ethernet ? (ethernet.internet_reachable ? "Online" : "Offline") : "—" },
             { label: "State", value: ethernet?.eth_state ?? "—" },
             { label: "IP address", value: ethernet?.ip_address ?? "—" },
@@ -266,8 +282,9 @@ export default function DiagnosticsTab() {
             { label: "RX dropped", value: fmtNum(ethernet?.rx_dropped) },
             ...(ethernet && ethernet.flap_count > 0 ? [{ label: "Flap events", value: String(ethernet.flap_count) }] : []),
             { label: "Check result", value: ethernet?.check_result ?? "—" },
-          ]}
-        />
+          ] : []}
+          />
+        </div>
       </div>
     </section>
   );
