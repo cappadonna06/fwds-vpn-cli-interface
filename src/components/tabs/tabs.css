@@ -1776,3 +1776,16 @@
   margin-bottom: 6px;
   font-size: 11px;
 }
+
+.cmd-drawer-script {
+  margin-top: 10px;
+  background: var(--bg-0);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 10px;
+  color: var(--text-secondary);
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}

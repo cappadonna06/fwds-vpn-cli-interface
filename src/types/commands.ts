@@ -517,6 +517,8 @@ export interface DiagnosticBlock {
   light_command_ids: string[];
   heavy_command_ids: string[];
   time_warning?: string;
+  light_script?: string;
+  heavy_script?: string;
 }
 
 export const DIAGNOSTIC_BLOCKS: DiagnosticBlock[] = [
@@ -528,6 +530,48 @@ export const DIAGNOSTIC_BLOCKS: DiagnosticBlock[] = [
     when_to_run: "After setup-ethernet, after any network change, or when the site reports connectivity issues.",
     light_command_ids: ["ethernet-check"],
     heavy_command_ids: ["ethernet-check", "ethtool-eth0", "ifconfig-eth0"],
+    heavy_script: `echo "===== ETH DIAGNOSTICS START ====="
+
+echo ""
+echo "--- FRONTLINE ---"
+ethernet-check
+
+echo ""
+echo "--- LINK / PHY ---"
+ethtool eth0
+cat /sys/class/net/eth0/carrier
+cat /sys/class/net/eth0/operstate
+dmesg | grep -i eth
+
+echo ""
+echo "--- INTERFACE ---"
+ip link show eth0
+ip addr show eth0
+
+echo ""
+echo "--- ROUTING / DNS ---"
+ip route
+cat /etc/resolv.conf
+
+echo ""
+echo "--- CONNECTIVITY ---"
+ping -c 3 8.8.8.8
+ping -c 3 google.com
+
+echo ""
+echo "--- CONNMAN ---"
+connmanctl technologies
+connmanctl services
+connmanctl state
+
+echo ""
+echo "--- DRIVER / STATS ---"
+ethtool -i eth0
+ethtool -S eth0
+cat /proc/net/dev
+
+echo ""
+echo "===== ETH DIAGNOSTICS END ====="`,
   },
   {
     id: "wifi",

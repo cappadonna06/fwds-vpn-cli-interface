@@ -38,6 +38,18 @@ function sumSeconds(ids: string[]): number {
   }, 0);
 }
 
+function resolveBlockScript(block: DiagnosticBlock, tier: "light" | "heavy"): string {
+  const custom = tier === "light" ? block.light_script : block.heavy_script;
+  if (custom && custom.trim().length > 0) return custom;
+  const ids = tier === "light" ? block.light_command_ids : block.heavy_command_ids;
+  return ids
+    .map((id) => {
+      const c = COMMANDS.find((x) => x.id === id);
+      return c ? c.command : id;
+    })
+    .join("\n");
+}
+
 function highlightMatch(text: string, query: string): ReactNode {
   if (!query) return text;
   const idx = text.toLowerCase().indexOf(query.toLowerCase());
@@ -171,7 +183,6 @@ function CommandRow({
 
 interface DiagnosticBlockRowProps {
   block: DiagnosticBlock;
-  commands: ControllerCommand[];
   onCopyLight: (block: DiagnosticBlock) => void;
   onCopyHeavy: (block: DiagnosticBlock) => void;
   copiedBlockId: string | null;
@@ -181,7 +192,6 @@ interface DiagnosticBlockRowProps {
 
 function DiagnosticBlockRow({
   block,
-  commands,
   onCopyLight,
   onCopyHeavy,
   copiedBlockId,
@@ -197,19 +207,8 @@ function DiagnosticBlockRow({
     block.heavy_command_ids.length > 0 &&
     JSON.stringify(block.light_command_ids) !== JSON.stringify(block.heavy_command_ids);
 
-  const lightTooltip = block.light_command_ids
-    .map((id) => {
-      const c = commands.find((x) => x.id === id);
-      return c ? c.command : id;
-    })
-    .join("\n");
-
-  const heavyTooltip = block.heavy_command_ids
-    .map((id) => {
-      const c = commands.find((x) => x.id === id);
-      return c ? c.command : id;
-    })
-    .join("\n");
+  const lightTooltip = resolveBlockScript(block, "light");
+  const heavyTooltip = resolveBlockScript(block, "heavy");
 
   return (
     <div className={`diag-block-row ${isDrawerOpen ? "diag-block-row-open" : ""}`}>
@@ -310,6 +309,8 @@ function DiagnosticBlockDrawer({
 
   const lightCmds = resolveCommands(block.light_command_ids);
   const heavyCmds = resolveCommands(block.heavy_command_ids);
+  const lightScript = block.light_script;
+  const heavyScript = block.heavy_script;
 
   function renderCommandList(cmds: ControllerCommand[]) {
     return (
@@ -397,6 +398,7 @@ function DiagnosticBlockDrawer({
                 )}
               </div>
               {renderCommandList(heavyCmds)}
+              {heavyScript && <pre className="cmd-drawer-script">{heavyScript}</pre>}
             </div>
           )}
 
@@ -410,6 +412,7 @@ function DiagnosticBlockDrawer({
                 )}
               </div>
               {renderCommandList(lightCmds)}
+              {lightScript && <pre className="cmd-drawer-script">{lightScript}</pre>}
             </div>
           )}
 
@@ -423,6 +426,7 @@ function DiagnosticBlockDrawer({
                 )}
               </div>
               {renderCommandList(heavyCmds)}
+              {heavyScript && <pre className="cmd-drawer-script">{heavyScript}</pre>}
             </div>
           )}
 
@@ -728,13 +732,8 @@ export default function CommandsTab() {
   }
 
   function handleBlockCopy(block: DiagnosticBlock, tier: "light" | "heavy" | "single") {
-    const ids = tier === "light" ? block.light_command_ids : block.heavy_command_ids;
-    const text = ids
-      .map((id: string) => {
-        const c = COMMANDS.find((x) => x.id === id);
-        return c ? c.command : id;
-      })
-      .join("\n");
+    const scriptTier = tier === "light" ? "light" : "heavy";
+    const text = resolveBlockScript(block, scriptTier);
     navigator.clipboard.writeText(text).catch(() => {});
     const key = tier === "single" ? `${block.id}-single` : `${block.id}-${tier}`;
     setCopiedBlockId(key);
@@ -941,7 +940,6 @@ export default function CommandsTab() {
             <DiagnosticBlockRow
               key={block.id}
               block={block}
-              commands={COMMANDS}
               onCopyLight={blockCopyLight}
               onCopyHeavy={blockCopyHeavy}
               copiedBlockId={copiedBlockId}
