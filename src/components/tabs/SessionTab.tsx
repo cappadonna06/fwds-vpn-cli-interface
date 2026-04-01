@@ -243,6 +243,15 @@ export default function SessionTab() {
     }
   }
 
+  async function disconnectLocalSession() {
+    try {
+      await invoke("disconnect_local_controller");
+      setSerialDetail("Local session disconnected.");
+    } catch (e) {
+      setSerialDetail(String(e));
+    }
+  }
+
   const allFilesOk = validation !== null && BUNDLE_FILES.every((f) => validation[f] === true);
   const bundleValid = allFilesOk;
   const octetNum = parseInt(lastOctet, 10);
@@ -430,6 +439,9 @@ export default function SessionTab() {
                 </button>
                 <button className="btn btn-primary" disabled={!serialDevice} onClick={launchLocalSerialTerminal}>
                   Launch Serial Terminal
+                </button>
+                <button className="btn btn-secondary" onClick={disconnectLocalSession}>
+                  Disconnect Local
                 </button>
               </div>
               {serialDevices.length > 0 && (

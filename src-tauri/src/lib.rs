@@ -904,6 +904,20 @@ fn open_local_serial_terminal(device: String, state: State<'_, AppState>) -> Res
     }
 }
 
+#[tauri::command]
+fn disconnect_local_controller(state: State<'_, AppState>) -> Result<(), String> {
+    {
+        let mut inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
+        inner.local_serial_device = None;
+        inner.connection_mode = "local".into();
+    }
+    stop_log_watcher(state)?;
+    if let Ok(mut diag) = state.diagnostic_state.lock() {
+        *diag = DiagnosticState::default();
+    }
+    Ok(())
+}
+
 /// Lightweight status for the Session tab — does NOT advance the ConsoleTab cursor.
 #[tauri::command]
 fn get_controller_status(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
@@ -1623,6 +1637,7 @@ pub fn run() {
             open_controller_terminal,
             list_serial_devices,
             open_local_serial_terminal,
+            disconnect_local_controller,
             get_app_state,
             start_log_watcher,
             get_diagnostic_state,
