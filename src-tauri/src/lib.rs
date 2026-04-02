@@ -229,10 +229,55 @@ pub struct CellularDiagnostic {
 pub struct SatelliteDiagnostic {
     pub status: DiagStatus,
     pub summary: String,
-    pub enabled: bool,
-    pub loopback_passed: Option<bool>,
-    pub loopback_time_secs: Option<f64>,
-    pub imei: Option<String>,
+
+    // Controller context
+    pub controller_sid: Option<String>,
+    pub controller_version: Option<String>,
+    pub controller_date: Option<String>,
+
+    // Modem identity
+    pub sat_imei: Option<String>,
+    pub modem_present: Option<bool>,
+
+    // ConnMan / system context
+    pub connman_state: Option<String>,
+    pub connman_eth_connected: Option<bool>,
+    pub connman_wifi_connected: Option<bool>,
+    pub connman_cell_connected: Option<bool>,
+    pub connman_active_service: Option<String>,
+
+    // Interface / routing context
+    pub default_gateway: Option<String>,
+    pub default_via_eth0: Option<bool>,
+    pub default_via_wlan0: Option<bool>,
+    pub default_via_wwan0: Option<bool>,
+
+    // Optional telemetry/context hook
+    pub satellites_seen: Option<f64>,
+
+    // Light test
+    pub light_test_ran: bool,
+    pub light_test_success: Option<bool>,
+    pub light_test_timeout: Option<bool>,
+    pub light_test_blocked_in_use: Option<bool>,
+    pub light_test_error: Option<String>,
+
+    // Full / loopback test
+    pub loopback_test_ran: bool,
+    pub loopback_test_success: Option<bool>,
+    pub loopback_test_timeout: Option<bool>,
+    pub loopback_test_blocked_in_use: Option<bool>,
+    pub loopback_test_error: Option<String>,
+
+    // Loopback metrics
+    pub station_sent_epoch: Option<i64>,
+    pub server_sent_epoch: Option<i64>,
+    pub current_epoch: Option<i64>,
+    pub total_time_seconds: Option<u64>,
+
+    // Recommended actions
+    pub recommended_action: Option<String>,
+    pub other_actions: Vec<String>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone)]

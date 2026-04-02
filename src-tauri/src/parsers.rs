@@ -27,14 +27,7 @@ pub fn parse_log_into_state(log: &str, state: &mut DiagnosticState) {
 
     let cellular = parse_cellular_from_latest(&latest);
 
-    let satellite = parse_satellite(
-        find_latest(&latest, &["setup-satellite"]),
-        latest
-            .get("satellite-check -t")
-            .or_else(|| latest.get("satellite-check -m"))
-            .or_else(|| latest.get("satellite-check"))
-            .or_else(|| find_latest(&latest, &["run satellite diagnostics"])),
-    );
+    let satellite = build_satellite_parse_block(&latest).map(|block| parse_satellite(&block));
 
     let ethernet_block = find_latest_body_contains(
         &latest,
@@ -98,8 +91,8 @@ pub fn parse_log_into_state(log: &str, state: &mut DiagnosticState) {
             });
         }
     }
-    if satellite.is_some() {
-        state.satellite = satellite;
+    if let Some(next) = satellite {
+        state.satellite = Some(next);
     }
     if ethernet.is_some() {
         if let Some(next) = ethernet {
@@ -233,6 +226,48 @@ fn find_latest_body_contains<'a>(
             .iter()
             .all(|m| lower.contains(&m.to_ascii_lowercase()))
     })
+}
+
+fn build_satellite_parse_block(latest: &HashMap<String, String>) -> Option<String> {
+    let mut parts: Vec<String> = Vec::new();
+    let keys = [
+        "date",
+        "version",
+        "sid",
+        "sat-imei",
+        "connmanctl technologies",
+        "connmanctl services",
+        "connmanctl state",
+        "ip route",
+        "satellite-check -c 1 -W 1 -w 1",
+        "satellite-check -c 1 -W 1 -w 1 -v",
+        "satellite-check -t -f -v -W 5 -w 10",
+        "satellite-check -t",
+        "satellite-check",
+    ];
+
+    for key in keys {
+        if let Some(body) = latest.get(key) {
+            parts.push(format!("$ {key}\n{body}"));
+        }
+    }
+
+    if let Some(wrapped) = find_latest(
+        latest,
+        &[
+            "run satellite diagnostics",
+            "===== QUICK SATELLITE CHECK =====",
+            "===== SATELLITE LOOPBACK TEST =====",
+        ],
+    ) {
+        parts.push(wrapped.clone());
+    }
+
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join("\n\n"))
+    }
 }
 
 fn split_blocks(log: &str) -> Vec<CommandBlock> {
@@ -1011,61 +1046,286 @@ fn default_cellular() -> CellularDiagnostic {
     }
 }
 
-fn parse_satellite(
-    setup_block: Option<&String>,
-    test_block: Option<&String>,
-) -> Option<SatelliteDiagnostic> {
-    if setup_block.is_none() && test_block.is_none() {
-        return None;
+pub fn parse_satellite(block: &str) -> SatelliteDiagnostic {
+    let mut diag = SatelliteDiagnostic {
+        status: DiagStatus::Unknown,
+        summary: "Incomplete data".into(),
+        controller_sid: None,
+        controller_version: None,
+        controller_date: None,
+        sat_imei: None,
+        modem_present: None,
+        connman_state: None,
+        connman_eth_connected: None,
+        connman_wifi_connected: None,
+        connman_cell_connected: None,
+        connman_active_service: None,
+        default_gateway: None,
+        default_via_eth0: None,
+        default_via_wlan0: None,
+        default_via_wwan0: None,
+        satellites_seen: None,
+        light_test_ran: false,
+        light_test_success: None,
+        light_test_timeout: None,
+        light_test_blocked_in_use: None,
+        light_test_error: None,
+        loopback_test_ran: false,
+        loopback_test_success: None,
+        loopback_test_timeout: None,
+        loopback_test_blocked_in_use: None,
+        loopback_test_error: None,
+        station_sent_epoch: None,
+        server_sent_epoch: None,
+        current_epoch: None,
+        total_time_seconds: None,
+        recommended_action: None,
+        other_actions: vec![],
+    };
+
+    parse_satellite_controller_info(block, &mut diag);
+    parse_satellite_imei(block, &mut diag);
+    parse_satellite_connman_context(block, &mut diag);
+    parse_satellite_routing_context(block, &mut diag);
+    parse_satellite_check(block, &mut diag);
+    determine_satellite_status(&mut diag);
+    diag
+}
+
+fn parse_satellite_controller_info(text: &str, diag: &mut SatelliteDiagnostic) {
+    for line in text.lines() {
+        let value = line.trim();
+        if value.is_empty() {
+            continue;
+        }
+        if diag.controller_date.is_none()
+            && (value.contains("UTC") || value.contains(" GMT") || value.contains(" CST"))
+        {
+            diag.controller_date = Some(value.to_string());
+            continue;
+        }
+        if diag.controller_version.is_none() && (value.starts_with('r') || value.contains('.')) {
+            diag.controller_version = Some(value.to_string());
+            continue;
+        }
+        if diag.controller_sid.is_none() && value.chars().all(|c| c.is_ascii_digit()) {
+            diag.controller_sid = Some(value.to_string());
+        }
+    }
+}
+
+fn parse_satellite_imei(text: &str, diag: &mut SatelliteDiagnostic) {
+    if let Ok(imei_re) = Regex::new(r"\b\d{14,17}\b") {
+        if let Some(cap) = imei_re.find(text) {
+            diag.sat_imei = Some(cap.as_str().to_string());
+            diag.modem_present = Some(true);
+        }
+    }
+}
+
+fn parse_satellite_connman_context(text: &str, diag: &mut SatelliteDiagnostic) {
+    if let Some(block) = extract_connman_tech(text, "ethernet") {
+        diag.connman_eth_connected =
+            extract_regex(&block, r"Connected = (True|False)").map(|v| v == "True");
+    }
+    if let Some(block) = extract_connman_tech(text, "wifi") {
+        diag.connman_wifi_connected =
+            extract_regex(&block, r"Connected = (True|False)").map(|v| v == "True");
+    }
+    if let Some(block) = extract_connman_tech(text, "cellular") {
+        diag.connman_cell_connected =
+            extract_regex(&block, r"Connected = (True|False)").map(|v| v == "True");
+    }
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("*AO ") {
+            let svc = trimmed
+                .trim_start_matches("*AO ")
+                .split_whitespace()
+                .next()
+                .unwrap_or("")
+                .to_string();
+            if !svc.is_empty() {
+                diag.connman_active_service = Some(svc);
+            }
+        }
+        if let Some(state) = trimmed.strip_prefix("State =") {
+            diag.connman_state = Some(state.trim().to_string());
+        }
+    }
+}
+
+fn parse_satellite_routing_context(text: &str, diag: &mut SatelliteDiagnostic) {
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if !trimmed.starts_with("default via ") {
+            continue;
+        }
+        if let Some(gw) = extract_regex(trimmed, r"default via (\S+)") {
+            if diag.default_gateway.is_none() {
+                diag.default_gateway = Some(gw.clone());
+            }
+            if trimmed.contains(" dev eth0") {
+                diag.default_via_eth0 = Some(true);
+                diag.default_gateway = Some(gw.clone());
+            } else {
+                diag.default_via_eth0.get_or_insert(false);
+            }
+            if trimmed.contains(" dev wlan0") {
+                diag.default_via_wlan0 = Some(true);
+                diag.default_gateway = Some(gw.clone());
+            } else {
+                diag.default_via_wlan0.get_or_insert(false);
+            }
+            if trimmed.contains(" dev wwan0") {
+                diag.default_via_wwan0 = Some(true);
+                diag.default_gateway = Some(gw.clone());
+            } else {
+                diag.default_via_wwan0.get_or_insert(false);
+            }
+        }
+    }
+}
+
+fn parse_satellite_check(text: &str, diag: &mut SatelliteDiagnostic) {
+    let lower = text.to_ascii_lowercase();
+    let looks_like_loopback = lower.contains("satellite loopback test")
+        || lower.contains("satellite-check -t")
+        || lower.contains("loopback test");
+    let has_success_marker =
+        lower.contains("test completed") || lower.contains("received satellite ping response");
+    let blocked_in_use = lower.contains("network service is in use by another resource")
+        || lower.contains("(-65555)");
+    let timeout_like = lower.contains("timeout")
+        || lower.contains("timed out")
+        || lower.contains("deadline exceeded");
+
+    if blocked_in_use {
+        if looks_like_loopback {
+            diag.loopback_test_ran = true;
+            diag.loopback_test_success = Some(false);
+            diag.loopback_test_blocked_in_use = Some(true);
+            diag.loopback_test_error = Some(extract_last_non_empty_line(text));
+        } else {
+            diag.light_test_ran = true;
+            diag.light_test_success = Some(false);
+            diag.light_test_blocked_in_use = Some(true);
+            diag.light_test_error = Some(extract_last_non_empty_line(text));
+        }
+        return;
     }
 
-    let enabled = setup_block
-        .and_then(|b| {
-            capture_line(b, "Enable Satellite networking")
-                .or_else(|| capture_line(b, "Enable satellite networking"))
-        })
-        .map(|line| line.contains("? Y") || line.ends_with('Y'))
-        .unwrap_or(false);
-
-    let loopback_passed = test_block.map(|b| {
-        let lower = b.to_ascii_lowercase();
-        if lower.contains("successfully completed satellite loopback") || lower.contains("success")
-        {
-            true
-        } else if lower.contains("failed") || lower.contains("failure") {
-            false
-        } else {
-            false
+    if looks_like_loopback {
+        diag.loopback_test_ran = true;
+        if has_success_marker {
+            diag.loopback_test_success = Some(true);
+        } else if lower.contains("fail") || lower.contains("error") || timeout_like {
+            diag.loopback_test_success = Some(false);
+            if timeout_like {
+                diag.loopback_test_timeout = Some(true);
+            }
+            diag.loopback_test_error = Some(extract_last_non_empty_line(text));
         }
-    });
+        diag.station_sent_epoch =
+            extract_regex(text, r"time station sent ping:\s*(\d+)").and_then(|v| v.parse().ok());
+        diag.server_sent_epoch = extract_regex(text, r"time server sent ping response:\s*(\d+)")
+            .and_then(|v| v.parse().ok());
+        diag.current_epoch =
+            extract_regex(text, r"current time:\s*(\d+)").and_then(|v| v.parse().ok());
+        diag.total_time_seconds =
+            extract_regex(text, r"total time:\s*(\d+)").and_then(|v| v.parse().ok());
+    }
 
-    let loopback_time_secs = test_block.and_then(|b| parse_satellite_time(b));
+    let has_light_command = lower.contains("satellite-check -c 1 -w 1")
+        || lower.contains("satellite-check -c 1 -w 1 -v")
+        || lower.contains("quick satellite check");
+    if has_light_command || (!looks_like_loopback && lower.contains("satellite-check")) {
+        diag.light_test_ran = true;
+        if has_success_marker {
+            diag.light_test_success = Some(true);
+        } else if lower.contains("fail") || lower.contains("error") || timeout_like {
+            diag.light_test_success = Some(false);
+            if timeout_like {
+                diag.light_test_timeout = Some(true);
+            }
+            diag.light_test_error = Some(extract_last_non_empty_line(text));
+        }
+    }
+}
 
-    let status = match loopback_passed {
-        Some(true) => DiagStatus::Green,
-        Some(false) => DiagStatus::Red,
-        None if enabled => DiagStatus::Orange,
-        _ => DiagStatus::Unknown,
-    };
+fn determine_satellite_status(diag: &mut SatelliteDiagnostic) {
+    if diag.modem_present == Some(false) || diag.sat_imei.is_none() {
+        diag.status = DiagStatus::Red;
+        diag.summary = "No satellite modem detected".into();
+        diag.recommended_action = Some("Check satellite modem / hardware connection".into());
+        diag.other_actions = vec!["Reboot controller".into()];
+        return;
+    }
 
-    let summary = match loopback_passed {
-        Some(true) => match loopback_time_secs {
-            Some(v) => format!("Loopback passed · {:.1}s", v),
-            None => "Loopback passed".into(),
-        },
-        Some(false) => "Loopback failed".into(),
-        None if enabled => "Enabled · not tested".into(),
-        _ => "Offline".into(),
-    };
+    if diag.loopback_test_ran && diag.loopback_test_success == Some(false) {
+        if diag.loopback_test_blocked_in_use == Some(true) {
+            diag.status = DiagStatus::Orange;
+            diag.summary = "Satellite test blocked — service in use".into();
+            diag.recommended_action = Some("Retry when satellite service is not in use".into());
+            diag.other_actions = vec![];
+            return;
+        }
 
-    Some(SatelliteDiagnostic {
-        status,
-        summary,
-        enabled,
-        loopback_passed,
-        loopback_time_secs,
-        imei: None,
-    })
+        diag.status = DiagStatus::Red;
+        diag.summary = "Satellite communication failed".into();
+        diag.recommended_action = Some("Check antenna placement and provisioning".into());
+        diag.other_actions = vec![
+            "Move antenna to clear sky".into(),
+            "Retry loopback test".into(),
+        ];
+        return;
+    }
+
+    if let Some(seen) = diag.satellites_seen {
+        if seen <= 0.0 {
+            diag.status = DiagStatus::Red;
+            diag.summary = "No satellites visible".into();
+            diag.recommended_action = Some("Check antenna placement and connection".into());
+            diag.other_actions = vec![
+                "Move antenna to clear sky".into(),
+                "Retry quick satellite check".into(),
+            ];
+            return;
+        }
+    }
+
+    if diag.loopback_test_ran && diag.loopback_test_success == Some(true) {
+        diag.status = DiagStatus::Green;
+        diag.summary = "Satellite link verified".into();
+        diag.recommended_action = None;
+        diag.other_actions = vec![];
+        return;
+    }
+
+    if diag.modem_present == Some(true) {
+        diag.status = DiagStatus::Grey;
+        diag.summary = "Satellite not validated".into();
+        diag.recommended_action = Some("Run full satellite loopback test".into());
+        diag.other_actions = vec![];
+        return;
+    }
+
+    diag.status = DiagStatus::Unknown;
+    diag.summary = "Incomplete data".into();
+}
+
+fn extract_last_non_empty_line(text: &str) -> String {
+    text.lines()
+        .rev()
+        .find_map(|line| {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        })
+        .unwrap_or_else(|| "Satellite check failed".to_string())
 }
 
 fn parse_ethernet(
@@ -1415,15 +1675,6 @@ fn capture_line(text: &str, contains: &str) -> Option<String> {
     text.lines()
         .find(|l| l.contains(contains))
         .map(|l| l.trim().to_string())
-}
-
-fn parse_satellite_time(text: &str) -> Option<f64> {
-    let re = Regex::new(r"time=(\d+):(\d+):(\d+(?:\.\d+)?)").ok()?;
-    let cap = re.captures(text)?;
-    let h = cap.get(1)?.as_str().parse::<f64>().ok()?;
-    let m = cap.get(2)?.as_str().parse::<f64>().ok()?;
-    let s = cap.get(3)?.as_str().parse::<f64>().ok()?;
-    Some((h * 3600.0) + (m * 60.0) + s)
 }
 
 fn parse_interface_ip(text: &String) -> Option<String> {
