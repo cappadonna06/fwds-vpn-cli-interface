@@ -3,43 +3,29 @@
   flex-direction: column;
   height: 100vh;
   overflow: hidden;
-}
-
-.app-shell {
-  flex-direction: row;
   background: var(--bg-0);
 }
 
-.app-sidebar {
-  width: 260px;
+.app-top-header {
+  height: 74px;
+  border-bottom: 1px solid var(--border);
   background: var(--bg-1);
-  border-right: 1px solid var(--border);
   display: flex;
-  flex-direction: column;
-  flex-shrink: 0;
-  padding: 14px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 18px;
   gap: 16px;
+  flex-shrink: 0;
 }
 
-.app-sidebar-header-wrap {
-  border-bottom: 1px solid var(--border-soft);
-  padding-bottom: 14px;
-}
-
-.sidebar-header {
+.top-header-brand {
   display: flex;
-  flex-direction: column;
+  align-items: center;
   gap: 12px;
 }
 
-.sidebar-brand {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.h-8 {
-  height: 2rem;
+.h-10 {
+  height: 2.5rem;
 }
 
 .w-auto {
@@ -50,29 +36,113 @@
   object-fit: contain;
 }
 
-.sidebar-brand-text {
+.top-header-brand-text {
   display: flex;
   flex-direction: column;
-  line-height: 1.2;
+  line-height: 1.1;
 }
 
-.sidebar-brand-title {
-  font-size: 13px;
+.top-header-brand-title {
+  font-size: 22px;
   font-weight: 700;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.03em;
   color: var(--text-primary);
 }
 
-.sidebar-brand-subtitle {
-  font-size: 12px;
+.top-header-brand-subtitle {
+  font-size: 18px;
   color: var(--text-secondary);
 }
 
-.sidebar-pills {
+.top-header-status {
   display: flex;
-  align-items: center;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+}
+
+.top-header-pills {
+  display: flex;
   gap: 6px;
   flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.top-header-controller {
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.top-header-controller.valid {
+  color: var(--success-ink);
+}
+
+.top-header-controller.invalid {
+  color: var(--danger-ink);
+}
+
+.app-shell {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.app-sidebar {
+  width: 260px;
+  background: var(--bg-1);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  padding: 14px 8px;
+}
+
+.app-sidebar-nav-wrap {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.sidebar-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.sidebar-nav-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-secondary);
+  padding: 11px 14px;
+  font-size: 13px;
+  font-weight: 500;
+  text-align: left;
+}
+
+.sidebar-nav-item:hover {
+  background: var(--nav-hover);
+  color: var(--text-primary);
+}
+
+.sidebar-nav-item.selected {
+  background: var(--nav-selected);
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.sidebar-nav-accent {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 3px;
+  background: var(--accent);
 }
 
 .status-pill {
@@ -101,70 +171,6 @@
   color: var(--text-muted);
   background: var(--bg-2);
   border-color: var(--border-soft);
-}
-
-.sidebar-controller {
-  font-family: var(--mono);
-  font-size: 11px;
-  line-height: 1.4;
-}
-
-.sidebar-controller.valid {
-  color: var(--success-ink);
-}
-
-.sidebar-controller.invalid {
-  color: var(--danger-ink);
-}
-
-.app-sidebar-nav-wrap {
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-}
-
-.sidebar-nav {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.sidebar-nav-item {
-  position: relative;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  width: 100%;
-  border: 1px solid transparent;
-  border-radius: 8px;
-  background: transparent;
-  color: var(--text-secondary);
-  padding: 10px 12px;
-  font-size: 13px;
-  font-weight: 500;
-  text-align: left;
-}
-
-.sidebar-nav-item:hover {
-  background: var(--nav-hover);
-  color: var(--text-primary);
-}
-
-.sidebar-nav-item.selected {
-  background: var(--nav-selected);
-  color: var(--accent);
-  font-weight: 700;
-  border-color: var(--nav-selected-border);
-}
-
-.sidebar-nav-accent {
-  position: absolute;
-  top: 7px;
-  bottom: 7px;
-  right: 0;
-  width: 3px;
-  border-radius: 3px;
-  background: var(--accent);
 }
 
 .app-body {

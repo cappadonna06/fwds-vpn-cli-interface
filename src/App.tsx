@@ -83,7 +83,6 @@ export default function App() {
     };
   }, []);
 
-  // Poll app-wide status for the header every 2s
   useEffect(() => {
     async function fetchStatus() {
       try {
@@ -113,49 +112,50 @@ export default function App() {
   const controllerValid = Boolean(localSid);
 
   return (
-    <div className="app app-shell">
-      <Sidebar
-        header={
-          <SidebarHeader
-            showVpn={showVpn}
-            vpnState={vpnState}
-            showLocal={showLocal}
-            localState={localState}
-            controllerDisplay={controllerDisplay}
-            controllerValid={controllerValid}
-          />
-        }
-        nav={
-          <nav className="sidebar-nav" aria-label="Primary navigation">
-            {TABS.map((tab) => (
-              <SidebarNavItem
-                key={tab.id}
-                label={tab.label}
-                selected={activeTab === tab.id}
-                onClick={() => setActiveTab(tab.id)}
-              />
-            ))}
-          </nav>
-        }
+    <div className="app">
+      <SidebarHeader
+        showVpn={showVpn}
+        vpnState={vpnState}
+        showLocal={showLocal}
+        localState={localState}
+        controllerDisplay={controllerDisplay}
+        controllerValid={controllerValid}
       />
 
-      <main className="app-body">
-        <div style={{ display: activeTab === "session" ? "contents" : "none" }}>
-          <SessionTab />
-        </div>
-        <div style={{ display: activeTab === "console" ? "contents" : "none" }}>
-          <CommandsTab />
-        </div>
-        <div style={{ display: activeTab === "wizard" ? "contents" : "none" }}>
-          <WizardTab />
-        </div>
-        <div style={{ display: activeTab === "diagnostics" ? "contents" : "none" }}>
-          <DiagnosticsTab />
-        </div>
-        <div style={{ display: activeTab === "logs" ? "contents" : "none" }}>
-          <LogsTab />
-        </div>
-      </main>
+      <div className="app-shell">
+        <Sidebar
+          nav={
+            <nav className="sidebar-nav" aria-label="Primary navigation">
+              {TABS.map((tab) => (
+                <SidebarNavItem
+                  key={tab.id}
+                  label={tab.label}
+                  selected={activeTab === tab.id}
+                  onClick={() => setActiveTab(tab.id)}
+                />
+              ))}
+            </nav>
+          }
+        />
+
+        <main className="app-body">
+          <div style={{ display: activeTab === "session" ? "contents" : "none" }}>
+            <SessionTab />
+          </div>
+          <div style={{ display: activeTab === "console" ? "contents" : "none" }}>
+            <CommandsTab />
+          </div>
+          <div style={{ display: activeTab === "wizard" ? "contents" : "none" }}>
+            <WizardTab />
+          </div>
+          <div style={{ display: activeTab === "diagnostics" ? "contents" : "none" }}>
+            <DiagnosticsTab />
+          </div>
+          <div style={{ display: activeTab === "logs" ? "contents" : "none" }}>
+            <LogsTab />
+          </div>
+        </main>
+      </div>
     </div>
   );
 }

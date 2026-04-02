@@ -18,23 +18,24 @@ export default function SidebarHeader({
   controllerValid,
 }: SidebarHeaderProps) {
   return (
-    <div className="sidebar-header">
-      <div className="sidebar-brand">
-        <img src="/logo.png" alt="FWDS logo" className="h-8 w-auto object-contain" />
-        <div className="sidebar-brand-text">
-          <span className="sidebar-brand-title">FWDS</span>
-          <span className="sidebar-brand-subtitle">Controller Console</span>
+    <header className="app-top-header">
+      <div className="top-header-brand">
+        <img src="/logo.png" alt="FWDS logo" className="h-10 w-auto object-contain" />
+        <div className="top-header-brand-text">
+          <span className="top-header-brand-title">FWDS</span>
+          <span className="top-header-brand-subtitle">Controller Console</span>
         </div>
       </div>
 
-      <div className="sidebar-pills">
-        {showVpn && vpnState && <StatusPill label="VPN" state={vpnState} />}
-        {showLocal && localState && <StatusPill label="Local" state={localState} />}
+      <div className="top-header-status">
+        <div className="top-header-pills">
+          {showVpn && vpnState && <StatusPill label="VPN" state={vpnState} />}
+          {showLocal && localState && <StatusPill label="Local" state={localState} />}
+        </div>
+        <div className={`top-header-controller ${controllerValid ? "valid" : "invalid"}`}>
+          {controllerDisplay}
+        </div>
       </div>
-
-      <div className={`sidebar-controller ${controllerValid ? "valid" : "invalid"}`}>
-        {controllerDisplay}
-      </div>
-    </div>
+    </header>
   );
 }
