@@ -149,21 +149,80 @@ pub struct WifiDiagnostic {
 pub struct CellularDiagnostic {
     pub status: DiagStatus,
     pub summary: String,
-    pub provider: String,
-    pub provider_code: String,
-    pub strength: u8,
-    pub strength_label: String,
+
+    pub controller_sid: Option<String>,
+    pub controller_version: Option<String>,
+    pub controller_date: Option<String>,
+
+    pub check_result: String,
+    pub check_error: Option<String>,
+    pub internet_reachable: bool,
+    pub cell_state: String,
+    pub provider_code: Option<String>,
+    pub strength_score: Option<u8>,
+    pub strength_label: Option<String>,
     pub ipv4: bool,
     pub ipv6: bool,
     pub dns_servers: String,
-    pub internet_reachable: bool,
-    pub check_result: String,
-    pub avg_latency_ms: Option<f64>,
-    pub packet_loss_pct: u8,
+    pub check_avg_latency_ms: Option<f64>,
+    pub check_packet_loss_pct: u8,
+
     pub imei: Option<String>,
     pub iccid: Option<String>,
-    pub apn: Option<String>,
-    pub cell_status: Option<String>,
+    pub imsi: Option<String>,
+    pub hni: Option<String>,
+    pub basic_provider: Option<String>,
+    pub basic_status: Option<String>,
+    pub basic_signal: Option<String>,
+    pub basic_apn: Option<String>,
+
+    pub connman_cell_powered: Option<bool>,
+    pub connman_cell_connected: Option<bool>,
+    pub connman_wifi_connected: Option<bool>,
+    pub connman_eth_connected: Option<bool>,
+    pub connman_active_service: Option<String>,
+    pub connman_cell_active: Option<bool>,
+    pub connman_cell_ready: Option<bool>,
+    pub connman_state: Option<String>,
+
+    pub wwan_exists: bool,
+    pub wwan_link_state: Option<String>,
+    pub wwan_lower_up: Option<bool>,
+    pub wwan_ipv4_address: Option<String>,
+    pub wwan_ipv4_prefix: Option<u8>,
+    pub default_via_wwan0: Option<bool>,
+    pub default_gateway: Option<String>,
+    pub role: Option<String>,
+
+    pub proc_rx_bytes: Option<u64>,
+    pub proc_rx_packets: Option<u64>,
+    pub proc_rx_errs: Option<u64>,
+    pub proc_rx_drop: Option<u64>,
+    pub proc_tx_bytes: Option<u64>,
+    pub proc_tx_packets: Option<u64>,
+    pub proc_tx_errs: Option<u64>,
+
+    pub modem_present: Option<bool>,
+    pub modem_model: Option<String>,
+    pub modem_revision: Option<String>,
+    pub sim_ready: Option<bool>,
+    pub sim_inserted: Option<bool>,
+    pub cfun: Option<u8>,
+    pub registered: Option<bool>,
+    pub attached: Option<bool>,
+    pub operator_name: Option<String>,
+    pub qcsq: Option<String>,
+    pub rssi_dbm: Option<i32>,
+    pub rat: Option<String>,
+    pub mccmnc: Option<String>,
+    pub band: Option<String>,
+    pub channel: Option<String>,
+    pub pdp_active: Option<bool>,
+    pub pdp_ip: Option<String>,
+    pub at_apn: Option<String>,
+
+    pub recommended_action: Option<String>,
+    pub other_actions: Vec<String>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
@@ -209,6 +268,7 @@ pub struct SystemDiagnostic {
 pub enum DiagStatus {
     #[default]
     Unknown,
+    Grey,
     Green,
     Orange,
     Red,
@@ -835,7 +895,7 @@ fn open_controller_terminal(state: State<'_, AppState>) -> Result<(), String> {
         .map_err(|e| format!("Failed to open Terminal: {e}"))?;
 
     if out.status.success() {
-        start_log_watcher_internal(&state)?;
+        start_log_watcher_internal(&state, false)?;
         Ok(())
     } else {
         let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
@@ -892,7 +952,7 @@ fn open_local_serial_terminal(device: String, state: State<'_, AppState>) -> Res
         .map_err(|e| format!("Failed to open Terminal: {e}"))?;
 
     if out.status.success() {
-        start_log_watcher_internal(&state)?;
+        start_log_watcher_internal(&state, false)?;
         Ok(())
     } else {
         let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
@@ -968,7 +1028,7 @@ fn merge_non_empty_cards(base: &mut DiagnosticState, incoming: &DiagnosticState)
     base.last_updated = incoming.last_updated.clone().or(base.last_updated.clone());
 }
 
-fn start_log_watcher_internal(state: &AppState) -> Result<(), String> {
+fn start_log_watcher_internal(state: &AppState, start_from_end: bool) -> Result<(), String> {
     let (controller_key, log_path) = {
         let inner = state.inner.lock().map_err(|_| "lock poisoned")?;
         if inner.connection_mode == "local" {
@@ -1036,7 +1096,11 @@ fn start_log_watcher_internal(state: &AppState) -> Result<(), String> {
             Err(_) => return,
         };
 
-        let _ = file.seek(SeekFrom::Start(0));
+        let _ = if start_from_end {
+            file.seek(SeekFrom::End(0))
+        } else {
+            file.seek(SeekFrom::Start(0))
+        };
 
         let mut buffer = String::new();
         loop {
@@ -1103,7 +1167,7 @@ fn start_log_watcher_internal(state: &AppState) -> Result<(), String> {
 
 #[tauri::command]
 fn start_log_watcher(state: State<'_, AppState>) -> Result<(), String> {
-    start_log_watcher_internal(&state)
+    start_log_watcher_internal(&state, false)
 }
 
 #[tauri::command]
@@ -1114,8 +1178,13 @@ fn get_diagnostic_state(state: State<'_, AppState>) -> Result<DiagnosticState, S
 
 #[tauri::command]
 fn clear_diagnostic_state(state: State<'_, AppState>) -> Result<(), String> {
-    let mut diag = state.diagnostic_state.lock().map_err(|_| "lock poisoned")?;
-    *diag = DiagnosticState::default();
+    {
+        let mut diag = state.diagnostic_state.lock().map_err(|_| "lock poisoned")?;
+        *diag = DiagnosticState::default();
+    }
+    // Restart watcher from the current file end so newly-run diagnostics
+    // repopulate cards cleanly after a clear action.
+    start_log_watcher_internal(&state, true)?;
     Ok(())
 }
 

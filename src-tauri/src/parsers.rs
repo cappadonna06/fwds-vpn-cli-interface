@@ -25,56 +25,7 @@ pub fn parse_log_into_state(log: &str, state: &mut DiagnosticState) {
 
     let wifi = parse_wifi(&latest);
 
-    let mut cellular = parse_cellular_check(find_latest(
-        &latest,
-        &["cellular-check", "run cellular diagnostics"],
-    ));
-    if let Some(code) = parse_single_value(find_latest(
-        &latest,
-        &["cell-provider", "run cellular diagnostics"],
-    )) {
-        let provider = resolve_provider(&code);
-        merge_cellular(&mut cellular, |c| {
-            c.provider_code = code.clone();
-            c.provider = provider.clone();
-            c.summary = format!("{} · {}/100 · {}", c.provider, c.strength, c.strength_label);
-        });
-    }
-    if let Some(strength) = parse_single_value(find_latest(
-        &latest,
-        &["cell-signal", "run cellular diagnostics"],
-    ))
-    .and_then(|v| v.parse::<u8>().ok())
-    {
-        merge_cellular(&mut cellular, |c| {
-            c.strength = strength;
-            c.summary = format!("{} · {}/100 · {}", c.provider, c.strength, c.strength_label);
-        });
-    }
-    if let Some(iccid) = parse_single_value(find_latest(
-        &latest,
-        &["cell-ccid", "run cellular diagnostics"],
-    )) {
-        merge_cellular(&mut cellular, |c| c.iccid = Some(iccid.clone()));
-    }
-    if let Some(imei) = parse_single_value(find_latest(
-        &latest,
-        &["cell-imei", "run cellular diagnostics"],
-    )) {
-        merge_cellular(&mut cellular, |c| c.imei = Some(imei.clone()));
-    }
-    if let Some(apn) = parse_single_value(find_latest(
-        &latest,
-        &["cell-apn", "run cellular diagnostics"],
-    )) {
-        merge_cellular(&mut cellular, |c| c.apn = Some(apn.clone()));
-    }
-    if let Some(cell_status) = parse_single_value(find_latest(
-        &latest,
-        &["cell-status", "run cellular diagnostics"],
-    )) {
-        merge_cellular(&mut cellular, |c| c.cell_status = Some(cell_status.clone()));
-    }
+    let cellular = parse_cellular_from_latest(&latest);
 
     let satellite = parse_satellite(
         find_latest(&latest, &["setup-satellite"]),
@@ -85,9 +36,16 @@ pub fn parse_log_into_state(log: &str, state: &mut DiagnosticState) {
             .or_else(|| find_latest(&latest, &["run satellite diagnostics"])),
     );
 
+    let ethernet_block = find_latest_body_contains(
+        &latest,
+        &[
+            "===== eth diagnostics start =====",
+            "===== eth diagnostics end =====",
+        ],
+    );
     let ethernet = parse_ethernet(
-        find_latest(&latest, &["ethernet-check", "run ethernet diagnostics"]),
-        find_latest(&latest, &["ethtool eth0", "run ethernet diagnostics"]),
+        find_latest(&latest, &["ethernet-check", "run ethernet diagnostics"]).or(ethernet_block),
+        find_latest(&latest, &["ethtool eth0", "run ethernet diagnostics"]).or(ethernet_block),
         find_latest(
             &latest,
             &[
@@ -96,7 +54,8 @@ pub fn parse_log_into_state(log: &str, state: &mut DiagnosticState) {
                 "run ethernet diagnostics",
                 "ethernet diags heavy",
             ],
-        ),
+        )
+        .or(ethernet_block),
         find_latest(
             &latest,
             &[
@@ -104,7 +63,8 @@ pub fn parse_log_into_state(log: &str, state: &mut DiagnosticState) {
                 "run ethernet diagnostics",
                 "ethernet diags heavy",
             ],
-        ),
+        )
+        .or(ethernet_block),
         find_latest(
             &latest,
             &[
@@ -112,30 +72,139 @@ pub fn parse_log_into_state(log: &str, state: &mut DiagnosticState) {
                 "run ethernet diagnostics",
                 "ethernet diags heavy",
             ],
-        ),
+        )
+        .or(ethernet_block),
     );
 
     let system = parse_system(
-        find_latest(&latest, &["sid", "run system diagnostics"]),
-        find_latest(&latest, &["version", "run system diagnostics"]),
-        find_latest(&latest, &["release", "run system diagnostics"]),
+        latest.get("sid"),
+        latest.get("version"),
+        latest.get("release"),
     );
 
     if wifi.is_some() {
-        state.wifi = wifi;
+        if let Some(next) = wifi {
+            state.wifi = Some(match state.wifi.take() {
+                Some(prev) => merge_wifi_diag(prev, next),
+                None => next,
+            });
+        }
     }
     if cellular.is_some() {
-        state.cellular = cellular;
+        if let Some(next) = cellular {
+            state.cellular = Some(match state.cellular.take() {
+                Some(prev) => merge_cellular_diag(prev, next),
+                None => next,
+            });
+        }
     }
     if satellite.is_some() {
         state.satellite = satellite;
     }
     if ethernet.is_some() {
-        state.ethernet = ethernet;
+        if let Some(next) = ethernet {
+            state.ethernet = Some(match state.ethernet.take() {
+                Some(prev) => merge_ethernet_diag(prev, next),
+                None => next,
+            });
+        }
     }
     if system.sid.is_some() || system.version.is_some() || system.release_date.is_some() {
         state.system = Some(system);
     }
+}
+
+fn wifi_has_authoritative_check(diag: &WifiDiagnostic) -> bool {
+    diag.check_result != "Unknown" || diag.check_error.is_some()
+}
+
+fn cellular_has_authoritative_check(diag: &CellularDiagnostic) -> bool {
+    diag.check_result != "Unknown" || diag.check_error.is_some()
+}
+
+fn ethernet_has_authoritative_check(diag: &EthernetDiagnostic) -> bool {
+    diag.check_result != "Unknown"
+}
+
+fn merge_wifi_diag(prev: WifiDiagnostic, mut next: WifiDiagnostic) -> WifiDiagnostic {
+    if wifi_has_authoritative_check(&next) {
+        return next;
+    }
+    if wifi_has_authoritative_check(&prev) {
+        next.status = prev.status;
+        next.summary = prev.summary;
+        next.check_result = prev.check_result;
+        next.check_error = prev.check_error;
+        next.internet_reachable = prev.internet_reachable;
+        next.wifi_state = prev.wifi_state;
+        next.access_point = next.access_point.or(prev.access_point);
+        next.strength_score = next.strength_score.or(prev.strength_score);
+        next.strength_label = next.strength_label.or(prev.strength_label);
+        next.ipv4 = next.ipv4 || prev.ipv4;
+        next.ipv6 = next.ipv6 || prev.ipv6;
+        if next.dns_servers == "—" {
+            next.dns_servers = prev.dns_servers;
+        }
+        next.check_avg_latency_ms = next.check_avg_latency_ms.or(prev.check_avg_latency_ms);
+        next.check_packet_loss_pct = next.check_packet_loss_pct.max(prev.check_packet_loss_pct);
+    }
+    next
+}
+
+fn merge_cellular_diag(
+    prev: CellularDiagnostic,
+    mut next: CellularDiagnostic,
+) -> CellularDiagnostic {
+    if cellular_has_authoritative_check(&next) {
+        return next;
+    }
+    if cellular_has_authoritative_check(&prev) {
+        next.status = prev.status;
+        next.summary = prev.summary;
+        next.check_result = prev.check_result;
+        next.check_error = prev.check_error;
+        next.internet_reachable = prev.internet_reachable;
+        next.cell_state = prev.cell_state;
+        next.provider_code = next.provider_code.or(prev.provider_code);
+        next.strength_score = next.strength_score.or(prev.strength_score);
+        next.strength_label = next.strength_label.or(prev.strength_label);
+        next.ipv4 = next.ipv4 || prev.ipv4;
+        next.ipv6 = next.ipv6 || prev.ipv6;
+        if next.dns_servers == "—" {
+            next.dns_servers = prev.dns_servers;
+        }
+        next.check_avg_latency_ms = next.check_avg_latency_ms.or(prev.check_avg_latency_ms);
+        next.check_packet_loss_pct = next.check_packet_loss_pct.max(prev.check_packet_loss_pct);
+        next.recommended_action = next.recommended_action.or(prev.recommended_action);
+        if next.other_actions.is_empty() {
+            next.other_actions = prev.other_actions;
+        }
+    }
+    next
+}
+
+fn merge_ethernet_diag(
+    prev: EthernetDiagnostic,
+    mut next: EthernetDiagnostic,
+) -> EthernetDiagnostic {
+    if ethernet_has_authoritative_check(&next) {
+        return next;
+    }
+    if ethernet_has_authoritative_check(&prev) {
+        next.status = prev.status;
+        next.summary = prev.summary;
+        next.check_result = prev.check_result;
+        next.internet_reachable = prev.internet_reachable;
+        if next.eth_state == "unknown" || next.eth_state == "up" {
+            next.eth_state = prev.eth_state;
+        }
+        next.ipv4 = next.ipv4 || prev.ipv4;
+        next.ipv6 = next.ipv6 || prev.ipv6;
+        if next.dns_servers == "—" {
+            next.dns_servers = prev.dns_servers;
+        }
+    }
+    next
 }
 
 fn find_latest<'a>(latest: &'a HashMap<String, String>, names: &[&str]) -> Option<&'a String> {
@@ -154,6 +223,18 @@ fn find_latest<'a>(latest: &'a HashMap<String, String>, names: &[&str]) -> Optio
     })
 }
 
+fn find_latest_body_contains<'a>(
+    latest: &'a HashMap<String, String>,
+    markers: &[&str],
+) -> Option<&'a String> {
+    latest.values().find(|body| {
+        let lower = body.to_ascii_lowercase();
+        markers
+            .iter()
+            .all(|m| lower.contains(&m.to_ascii_lowercase()))
+    })
+}
+
 fn split_blocks(log: &str) -> Vec<CommandBlock> {
     let prompt_re = Regex::new(
         r"^(?:\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?[+-]\d{4}\s+)?(?:\[\d+\])?#\s*(.+)$",
@@ -168,6 +249,7 @@ fn split_blocks(log: &str) -> Vec<CommandBlock> {
     let mut blocks = Vec::new();
     let mut current_cmd: Option<String> = None;
     let mut current_body = String::new();
+    let mut orphan_body = String::new();
 
     for line in log.lines() {
         let cleaned = ansi_re.replace_all(line, "");
@@ -182,6 +264,13 @@ fn split_blocks(log: &str) -> Vec<CommandBlock> {
 
         if let Some(candidate) = prompt_candidate {
             if let Some(cap) = prompt_re.captures(candidate) {
+                if !orphan_body.trim().is_empty() {
+                    blocks.push(CommandBlock {
+                        command: "__orphan__".to_string(),
+                        body: orphan_body.trim().to_string(),
+                    });
+                    orphan_body.clear();
+                }
                 if let Some(cmd) = current_cmd.take() {
                     blocks.push(CommandBlock {
                         command: cmd,
@@ -212,7 +301,17 @@ fn split_blocks(log: &str) -> Vec<CommandBlock> {
         if current_cmd.is_some() {
             current_body.push_str(cleaned);
             current_body.push('\n');
+        } else if !cleaned.is_empty() {
+            orphan_body.push_str(cleaned);
+            orphan_body.push('\n');
         }
+    }
+
+    if !orphan_body.trim().is_empty() {
+        blocks.push(CommandBlock {
+            command: "__orphan__".to_string(),
+            body: orphan_body.trim().to_string(),
+        });
     }
 
     if let Some(cmd) = current_cmd {
@@ -227,7 +326,7 @@ fn split_blocks(log: &str) -> Vec<CommandBlock> {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_log_into_state, split_blocks};
+    use super::{parse_cellular, parse_log_into_state, split_blocks};
     use crate::DiagnosticState;
 
     #[test]
@@ -281,6 +380,157 @@ mod tests {
         assert_eq!(blocks.len(), 1);
         assert_eq!(blocks[0].command, "ethernet-check");
         assert!(blocks[0].body.contains("Done: Success"));
+    }
+
+    #[test]
+    fn parse_log_parses_cellular_heavy_multiline_block() {
+        let mut state = DiagnosticState::default();
+        let log = r#"2026-04-01T10:19:20-0600 [22611067]# (
+> echo "===== CONTROLLER INFO ====="
+> date
+> version
+> sid
+> echo "===== CELLULAR CONNECTIVITY TEST ====="
+> cellular-check
+> echo "===== BASIC CELL INFO ====="
+> cell-imei
+> cell-ccid
+> cell-imsi
+> cell-hni
+> cell-provider
+> cell-status
+> cell-signal
+> cell-apn
+> echo "===== NETWORK TECHNOLOGY ====="
+> connmanctl technologies
+> connmanctl services
+> connmanctl state
+> echo "===== INTERFACE / ROUTING ====="
+> ip link show wwan0
+> ip addr show wwan0
+> ip route
+> cat /proc/net/dev
+> echo "===== MODEM / RADIO DIAGNOSTICS ====="
+> cell-support --no-ofono --at
+> )
+===== CONTROLLER INFO =====
+Thu Apr  2 10:20:00 UTC 2026
+r3.3.1
+22611067
+
+===== CELLULAR CONNECTIVITY TEST =====
+Internet reachability state: online
+Cellular state: ready
+Cellular provider: 311480
+Cellular strength: 80/100 ("strong")
+Cellular supports IPv4? Yes
+Cellular supports IPv6? No
+Done: Success
+
+===== BASIC CELL INFO =====
+868765071689128
+89148000008543971083
+311270028230364
+311480
+311480
+registered
+80
+vzwinternet
+
+===== NETWORK TECHNOLOGY =====
+/net/connman/technology/cellular
+  Powered = True
+  Connected = True
+*AR cellular_311480
+State = ready
+
+===== INTERFACE / ROUTING =====
+3: wwan0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc mq state UP mode DEFAULT group default qlen 1000
+    inet 100.108.114.41/29 brd 100.108.114.47 scope global wwan0
+default via 100.108.114.46 dev wwan0
+
+===== MODEM / RADIO DIAGNOSTICS =====
++CPIN: READY
++CGATT: 1
++CREG: 0,1
++QCSQ: "CAT-M1",-62,-92,93,-14
++COPS: 0,0,"Verizon ",8
+"#;
+        parse_log_into_state(log, &mut state);
+        let cell = state
+            .cellular
+            .expect("cellular should parse from heavy block");
+        assert_eq!(cell.status, crate::DiagStatus::Green);
+        assert_eq!(cell.check_result, "Success");
+        assert_eq!(cell.wwan_ipv4_address.as_deref(), Some("100.108.114.41"));
+    }
+
+    #[test]
+    fn wifi_status_does_not_downgrade_on_partial_followup_chunk() {
+        let mut state = DiagnosticState::default();
+        let wifi_check_log = "2026-04-01T10:32:46-0600 [22611067]# wifi-check\nTesting Wi-Fi...\nInternet reachability state: online\nWi-Fi state: ready\nDone: Success\n";
+        parse_log_into_state(wifi_check_log, &mut state);
+        assert_eq!(
+            state.wifi.as_ref().map(|w| w.check_result.as_str()),
+            Some("Success")
+        );
+
+        let partial_wifi_log = "2026-04-01T10:33:01-0600 [22611067]# iw dev wlan0 link\nConnected to 9c:0b:05:30:f7:c8 (on wlan0)\n\tSSID: lieberells\n\tsignal: -30 dBm\n";
+        parse_log_into_state(partial_wifi_log, &mut state);
+
+        let wifi = state.wifi.expect("wifi should still exist");
+        assert_eq!(wifi.check_result, "Success");
+        assert_eq!(wifi.status, crate::DiagStatus::Green);
+        assert_eq!(wifi.ssid.as_deref(), Some("lieberells"));
+    }
+
+    #[test]
+    fn ethernet_status_does_not_downgrade_on_partial_followup_chunk() {
+        let mut state = DiagnosticState::default();
+        let eth_check_log = "2026-04-01T10:32:46-0600 [22611067]# ethernet-check\nTesting Ethernet...\nInternet reachability state: online\nEthernet state: online\nEthernet supports IPv4? Yes\nEthernet supports IPv6? Yes\nEthernet name servers: 192.168.4.1\nDone: Success\n";
+        parse_log_into_state(eth_check_log, &mut state);
+        assert_eq!(
+            state.ethernet.as_ref().map(|e| e.check_result.as_str()),
+            Some("Success")
+        );
+
+        let partial_eth_log = "2026-04-01T10:33:01-0600 [22611067]# ethtool eth0\nSettings for eth0:\n\tSpeed: 1000Mb/s\n\tDuplex: Full\n\tLink detected: yes\n";
+        parse_log_into_state(partial_eth_log, &mut state);
+
+        let eth = state.ethernet.expect("ethernet should still exist");
+        assert_eq!(eth.check_result, "Success");
+        assert_eq!(eth.status, crate::DiagStatus::Green);
+        assert_eq!(eth.speed.as_deref(), Some("1000Mb/s"));
+    }
+
+    #[test]
+    fn split_blocks_captures_orphan_output_chunk() {
+        let log = "Testing Wi-Fi...\nInternet reachability state: online\nDone: Success\n";
+        let blocks = split_blocks(log);
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].command, "__orphan__");
+        assert!(blocks[0].body.contains("Done: Success"));
+    }
+
+    #[test]
+    fn parse_cellular_classifies_no_modem_from_quoted_ttyusb_error() {
+        let block = r#"
+===== CELLULAR CONNECTIVITY TEST =====
+Testing Cellular...
+Done: Failure: -65552: Network technology not available
+
+===== INTERFACE / ROUTING =====
+Device "wwan0" does not exist.
+
+===== MODEM / RADIO DIAGNOSTICS =====
+Running AT commands...
+ERROR: device "/dev/ttyUSB2" does not exist
+"#;
+        let cell = parse_cellular(block);
+        assert_eq!(cell.check_result, "Failure");
+        assert_eq!(cell.modem_present, Some(false));
+        assert_eq!(cell.status, crate::DiagStatus::Red);
+        assert_eq!(cell.summary, "No modem detected");
     }
 }
 
@@ -345,20 +595,31 @@ fn parse_wifi(latest: &HashMap<String, String>) -> Option<WifiDiagnostic> {
         proc_tx_errs: None,
     };
 
-    let wifi_check = find_latest(latest, &["wifi-check", "wifi diagnostics"]);
-    let wifi_signal = find_latest(latest, &["wifi-signal", "wifi diagnostics"]);
-    let iw_dev = find_latest(latest, &["iw dev", "wifi diagnostics"]);
-    let iw_info = find_latest(latest, &["iw dev wlan0 info", "wifi diagnostics"]);
-    let iw_link = find_latest(latest, &["iw dev wlan0 link", "wifi diagnostics"]);
-    let iw_station = find_latest(latest, &["iw dev wlan0 station dump", "wifi diagnostics"]);
-    let ip_link = find_latest(latest, &["ip link show wlan0", "wifi diagnostics"]);
-    let ip_addr = find_latest(latest, &["ip addr show wlan0", "wifi diagnostics"]);
-    let ip_route = find_latest(latest, &["ip route", "wifi diagnostics"]);
-    let conn_tech = find_latest(latest, &["connmanctl technologies", "wifi diagnostics"]);
-    let conn_services = find_latest(latest, &["connmanctl services", "wifi diagnostics"]);
-    let conn_state = find_latest(latest, &["connmanctl state", "wifi diagnostics"]);
-    let ethtool_driver = find_latest(latest, &["ethtool -i wlan0", "wifi diagnostics"]);
-    let proc_net = find_latest(latest, &["cat /proc/net/dev", "wifi diagnostics"]);
+    let wifi_block = find_latest_body_contains(
+        latest,
+        &[
+            "===== wifi diagnostics start =====",
+            "===== wifi diagnostics end =====",
+        ],
+    );
+    let wifi_check = find_latest(latest, &["wifi-check", "wifi diagnostics"]).or(wifi_block);
+    let wifi_signal = find_latest(latest, &["wifi-signal", "wifi diagnostics"]).or(wifi_block);
+    let iw_dev = find_latest(latest, &["iw dev", "wifi diagnostics"]).or(wifi_block);
+    let iw_info = find_latest(latest, &["iw dev wlan0 info", "wifi diagnostics"]).or(wifi_block);
+    let iw_link = find_latest(latest, &["iw dev wlan0 link", "wifi diagnostics"]).or(wifi_block);
+    let iw_station =
+        find_latest(latest, &["iw dev wlan0 station dump", "wifi diagnostics"]).or(wifi_block);
+    let ip_link = find_latest(latest, &["ip link show wlan0", "wifi diagnostics"]).or(wifi_block);
+    let ip_addr = find_latest(latest, &["ip addr show wlan0", "wifi diagnostics"]).or(wifi_block);
+    let ip_route = find_latest(latest, &["ip route", "wifi diagnostics"]).or(wifi_block);
+    let conn_tech =
+        find_latest(latest, &["connmanctl technologies", "wifi diagnostics"]).or(wifi_block);
+    let conn_services =
+        find_latest(latest, &["connmanctl services", "wifi diagnostics"]).or(wifi_block);
+    let conn_state = find_latest(latest, &["connmanctl state", "wifi diagnostics"]).or(wifi_block);
+    let ethtool_driver =
+        find_latest(latest, &["ethtool -i wlan0", "wifi diagnostics"]).or(wifi_block);
+    let proc_net = find_latest(latest, &["cat /proc/net/dev", "wifi diagnostics"]).or(wifi_block);
 
     let has_wifi_inputs = wifi_check.is_some()
         || wifi_signal.is_some()
@@ -571,52 +832,183 @@ fn parse_wifi(latest: &HashMap<String, String>) -> Option<WifiDiagnostic> {
     Some(w)
 }
 
-fn parse_cellular_check(block: Option<&String>) -> Option<CellularDiagnostic> {
-    let text = block?;
-    let provider_code = capture_after(text, "Cellular provider:").unwrap_or_else(|| "—".into());
-    let provider = resolve_provider(&provider_code);
-    let (strength, strength_label) = parse_strength_line(capture_line(text, "Cellular strength:"));
-    let ipv4 = parse_yes_no(capture_after(text, "Cellular supports IPv4?"));
-    let ipv6 = parse_yes_no(capture_after(text, "Cellular supports IPv6?"));
-    let dns_servers = capture_after(text, "Cellular name servers:").unwrap_or_else(|| "—".into());
-    let internet_reachable = capture_after(text, "Internet reachability state:")
-        .map(|s| s.eq_ignore_ascii_case("online"))
-        .unwrap_or(false);
-    let check_result = capture_after(text, "Done:").unwrap_or_else(|| "Unknown".into());
-    let avg_latency_ms = parse_avg_latency(text);
-    let packet_loss_pct = parse_packet_loss(text).unwrap_or(0);
+fn parse_cellular_from_latest(latest: &HashMap<String, String>) -> Option<CellularDiagnostic> {
+    let mut diag = default_cellular();
+    let mut has_any = false;
 
-    let status = if check_result.eq_ignore_ascii_case("failure") || !internet_reachable {
-        DiagStatus::Red
-    } else if check_result.eq_ignore_ascii_case("success") && internet_reachable {
-        if strength >= 50 {
-            DiagStatus::Green
-        } else {
-            DiagStatus::Orange
+    if let Some(block) = find_latest_body_contains(
+        latest,
+        &[
+            "===== cellular connectivity test =====",
+            "===== basic cell info =====",
+            "===== modem / radio diagnostics =====",
+        ],
+    ) {
+        parse_cellular_block(block, &mut diag);
+        has_any = true;
+    }
+
+    if let Some(block) = find_latest(latest, &["run cellular diagnostics"]) {
+        parse_cellular_block(block, &mut diag);
+        has_any = true;
+    }
+
+    if let Some(text) = find_latest(latest, &["date"]) {
+        diag.controller_date = parse_single_value(Some(text)).or(diag.controller_date);
+        has_any = has_any || !text.trim().is_empty();
+    }
+    if let Some(text) = find_latest(latest, &["version"]) {
+        diag.controller_version = parse_single_value(Some(text)).or(diag.controller_version);
+        has_any = has_any || !text.trim().is_empty();
+    }
+    if let Some(text) = find_latest(latest, &["sid"]) {
+        diag.controller_sid = parse_single_value(Some(text)).or(diag.controller_sid);
+        has_any = has_any || !text.trim().is_empty();
+    }
+    if let Some(text) = find_latest(latest, &["cellular-check"]) {
+        parse_cellular_check_text(text, &mut diag);
+        has_any = true;
+    }
+    let basic_cmds = [
+        "cell-imei",
+        "cell-ccid",
+        "cell-imsi",
+        "cell-hni",
+        "cell-provider",
+        "cell-status",
+        "cell-signal",
+        "cell-apn",
+    ];
+    let mut basic_lines: Vec<String> = Vec::new();
+    for cmd in basic_cmds {
+        if let Some(text) = find_latest(latest, &[cmd]) {
+            has_any = true;
+            if let Some(v) = parse_single_value(Some(text)) {
+                basic_lines.push(v);
+            }
         }
-    } else {
-        DiagStatus::Unknown
-    };
+    }
+    if !basic_lines.is_empty() {
+        parse_basic_cell_info(&basic_lines.join("\n"), &mut diag);
+    }
+    if let Some(text) = find_latest(latest, &["connmanctl technologies"]) {
+        parse_connman_cellular(text, &mut diag);
+        has_any = true;
+    }
+    if let Some(text) = find_latest(latest, &["connmanctl services"]) {
+        parse_connman_cellular(text, &mut diag);
+        has_any = true;
+    }
+    if let Some(text) = find_latest(latest, &["connmanctl state"]) {
+        parse_connman_cellular(text, &mut diag);
+        has_any = true;
+    }
+    if let Some(text) = find_latest(latest, &["ip link show wwan0"]) {
+        parse_wwan_interface(text, &mut diag);
+        has_any = true;
+    }
+    if let Some(text) = find_latest(latest, &["ip addr show wwan0"]) {
+        parse_wwan_interface(text, &mut diag);
+        has_any = true;
+    }
+    if let Some(text) = find_latest(latest, &["ip route"]) {
+        parse_wwan_interface(text, &mut diag);
+        has_any = true;
+    }
+    if let Some(text) = find_latest(latest, &["cat /proc/net/dev"]) {
+        parse_proc_net_dev(text, &mut diag);
+        has_any = true;
+    }
+    if let Some(text) = find_latest(latest, &["cell-support --no-ofono --at"]) {
+        parse_cell_support_at(text, &mut diag);
+        has_any = true;
+    }
 
-    Some(CellularDiagnostic {
-        status,
-        summary: format!("{} · {}/100 · {}", provider, strength, strength_label),
-        provider,
-        provider_code,
-        strength,
-        strength_label,
-        ipv4,
-        ipv6,
-        dns_servers,
-        internet_reachable,
-        check_result,
-        avg_latency_ms,
-        packet_loss_pct,
+    if !has_any {
+        return None;
+    }
+    determine_cellular_status(&mut diag);
+    Some(diag)
+}
+
+pub fn parse_cellular(block: &str) -> CellularDiagnostic {
+    let mut diag = default_cellular();
+    parse_cellular_block(block, &mut diag);
+    determine_cellular_status(&mut diag);
+    diag
+}
+
+fn default_cellular() -> CellularDiagnostic {
+    CellularDiagnostic {
+        status: DiagStatus::Unknown,
+        summary: "Incomplete data".into(),
+        controller_sid: None,
+        controller_version: None,
+        controller_date: None,
+        check_result: "Unknown".into(),
+        check_error: None,
+        internet_reachable: false,
+        cell_state: "unknown".into(),
+        provider_code: None,
+        strength_score: None,
+        strength_label: None,
+        ipv4: false,
+        ipv6: false,
+        dns_servers: "—".into(),
+        check_avg_latency_ms: None,
+        check_packet_loss_pct: 0,
         imei: None,
         iccid: None,
-        apn: None,
-        cell_status: None,
-    })
+        imsi: None,
+        hni: None,
+        basic_provider: None,
+        basic_status: None,
+        basic_signal: None,
+        basic_apn: None,
+        connman_cell_powered: None,
+        connman_cell_connected: None,
+        connman_wifi_connected: None,
+        connman_eth_connected: None,
+        connman_active_service: None,
+        connman_cell_active: None,
+        connman_cell_ready: None,
+        connman_state: None,
+        wwan_exists: false,
+        wwan_link_state: None,
+        wwan_lower_up: None,
+        wwan_ipv4_address: None,
+        wwan_ipv4_prefix: None,
+        default_via_wwan0: None,
+        default_gateway: None,
+        role: None,
+        proc_rx_bytes: None,
+        proc_rx_packets: None,
+        proc_rx_errs: None,
+        proc_rx_drop: None,
+        proc_tx_bytes: None,
+        proc_tx_packets: None,
+        proc_tx_errs: None,
+        modem_present: None,
+        modem_model: None,
+        modem_revision: None,
+        sim_ready: None,
+        sim_inserted: None,
+        cfun: None,
+        registered: None,
+        attached: None,
+        operator_name: None,
+        qcsq: None,
+        rssi_dbm: None,
+        rat: None,
+        mccmnc: None,
+        band: None,
+        channel: None,
+        pdp_active: None,
+        pdp_ip: None,
+        at_apn: None,
+        recommended_action: None,
+        other_actions: vec![],
+    }
 }
 
 fn parse_satellite(
@@ -747,6 +1139,7 @@ fn parse_ethernet(
 
     let summary = match status {
         DiagStatus::Green => "Ethernet passing".to_string(),
+        DiagStatus::Grey => "Ethernet inactive".to_string(),
         DiagStatus::Red => "Ethernet needs attention".to_string(),
         DiagStatus::Orange => "Ethernet warning".to_string(),
         DiagStatus::Unknown => "No data yet".to_string(),
@@ -789,16 +1182,6 @@ fn parse_system(
     }
 }
 
-fn resolve_provider(code: &str) -> String {
-    match code {
-        "311480" | "311481" | "311482" => "Verizon".into(),
-        "310260" | "310026" => "T-Mobile".into(),
-        "310410" => "AT&T".into(),
-        "311490" => "T-Mobile (MVNO)".into(),
-        _ => code.into(),
-    }
-}
-
 fn parse_strength_line(line: Option<String>) -> (u8, String) {
     let Some(line) = line else {
         return (0, "unknown".into());
@@ -833,11 +1216,37 @@ fn parse_avg_latency(text: &str) -> Option<f64> {
         .and_then(|m| m.as_str().parse::<f64>().ok())
 }
 
+fn parse_avg_latency_multi(text: &str) -> Option<f64> {
+    let re = Regex::new(r"Round trip times:.*?=\s*([0-9.]+)/([0-9.]+)/([0-9.]+)/").ok()?;
+    let mut vals: Vec<f64> = Vec::new();
+    for cap in re.captures_iter(text) {
+        if let Some(v) = cap.get(2).and_then(|m| m.as_str().parse::<f64>().ok()) {
+            vals.push(v);
+        }
+    }
+    if vals.is_empty() {
+        None
+    } else {
+        Some(vals.iter().sum::<f64>() / vals.len() as f64)
+    }
+}
+
 fn parse_packet_loss(text: &str) -> Option<u8> {
     let re = Regex::new(r"(\d+)%\s+packet loss").ok()?;
     re.captures(text)
         .and_then(|c| c.get(1))
         .and_then(|m| m.as_str().parse::<u8>().ok())
+}
+
+fn parse_packet_loss_worst(text: &str) -> Option<u8> {
+    let re = Regex::new(r"(\d+)%\s+packet loss").ok()?;
+    let mut worst: Option<u8> = None;
+    for cap in re.captures_iter(text) {
+        if let Some(v) = cap.get(1).and_then(|m| m.as_str().parse::<u8>().ok()) {
+            worst = Some(worst.map_or(v, |w| w.max(v)));
+        }
+    }
+    worst
 }
 
 fn parse_signal_dbm(text: &str) -> Option<i32> {
@@ -880,6 +1289,12 @@ fn extract_connman_tech(text: &str, tech: &str) -> Option<String> {
 }
 
 fn determine_wifi_status(diag: &mut WifiDiagnostic) {
+    if diag.check_result == "Unknown" && diag.check_error.is_none() {
+        diag.status = DiagStatus::Unknown;
+        diag.summary = "Partial data".into();
+        return;
+    }
+
     if diag
         .check_error
         .as_deref()
@@ -1057,32 +1472,431 @@ fn parse_proc_net_dev_stats(text: &String) -> Option<(u64, u64, u64)> {
     None
 }
 
-fn merge_cellular(
-    cellular: &mut Option<CellularDiagnostic>,
-    mutator: impl FnOnce(&mut CellularDiagnostic),
-) {
-    if cellular.is_none() {
-        *cellular = Some(CellularDiagnostic {
-            status: DiagStatus::Unknown,
-            summary: "Cell data sample only".into(),
-            provider: "—".into(),
-            provider_code: "—".into(),
-            strength: 0,
-            strength_label: "unknown".into(),
-            ipv4: false,
-            ipv6: false,
-            dns_servers: "—".into(),
-            internet_reachable: false,
-            check_result: "Unknown".into(),
-            avg_latency_ms: None,
-            packet_loss_pct: 0,
-            imei: None,
-            iccid: None,
-            apn: None,
-            cell_status: None,
-        });
+fn parse_cellular_block(block: &str, diag: &mut CellularDiagnostic) {
+    let sections = [
+        (
+            "===== CONTROLLER INFO =====",
+            "===== CELLULAR CONNECTIVITY TEST =====",
+        ),
+        (
+            "===== CELLULAR CONNECTIVITY TEST =====",
+            "===== BASIC CELL INFO =====",
+        ),
+        (
+            "===== BASIC CELL INFO =====",
+            "===== NETWORK TECHNOLOGY =====",
+        ),
+        (
+            "===== NETWORK TECHNOLOGY =====",
+            "===== INTERFACE / ROUTING =====",
+        ),
+        (
+            "===== INTERFACE / ROUTING =====",
+            "===== MODEM / RADIO DIAGNOSTICS =====",
+        ),
+        ("===== MODEM / RADIO DIAGNOSTICS =====", ""),
+    ];
+
+    for (start, end) in sections {
+        if let Some(section) = extract_between(block, start, end) {
+            if start.contains("CONTROLLER INFO") {
+                parse_controller_info(&section, diag);
+            } else if start.contains("CONNECTIVITY TEST") {
+                parse_cellular_check_text(&section, diag);
+            } else if start.contains("BASIC CELL INFO") {
+                parse_basic_cell_info(&section, diag);
+            } else if start.contains("NETWORK TECHNOLOGY") {
+                parse_connman_cellular(&section, diag);
+            } else if start.contains("INTERFACE / ROUTING") {
+                parse_wwan_interface(&section, diag);
+                parse_proc_net_dev(&section, diag);
+            } else if start.contains("MODEM / RADIO") {
+                parse_cell_support_at(&section, diag);
+            }
+        }
     }
-    if let Some(cell) = cellular.as_mut() {
-        mutator(cell);
+}
+
+fn extract_between(text: &str, start: &str, end: &str) -> Option<String> {
+    let start_idx = text.find(start)?;
+    let rest = &text[start_idx + start.len()..];
+    let end_idx = if end.is_empty() {
+        rest.len()
+    } else {
+        rest.find(end).unwrap_or(rest.len())
+    };
+    Some(rest[..end_idx].trim().to_string())
+}
+
+fn parse_controller_info(text: &str, diag: &mut CellularDiagnostic) {
+    for line in text.lines() {
+        let v = line.trim();
+        if v.is_empty() {
+            continue;
+        }
+        if diag.controller_date.is_none()
+            && (v.contains(':') && (v.contains("UTC") || v.contains("20")))
+        {
+            diag.controller_date = Some(v.to_string());
+            continue;
+        }
+        if diag.controller_version.is_none() && (v.starts_with('r') || v.contains('.')) {
+            diag.controller_version = Some(v.to_string());
+            continue;
+        }
+        if diag.controller_sid.is_none() && v.chars().all(|c| c.is_ascii_digit()) {
+            diag.controller_sid = Some(v.to_string());
+        }
     }
+}
+
+fn parse_cellular_check_text(text: &str, diag: &mut CellularDiagnostic) {
+    diag.internet_reachable = capture_after(text, "Internet reachability state:")
+        .map(|s| s.eq_ignore_ascii_case("online"))
+        .unwrap_or(diag.internet_reachable);
+    if let Some(v) = capture_after(text, "Cellular state:") {
+        diag.cell_state = v;
+    }
+    diag.provider_code = diag
+        .provider_code
+        .clone()
+        .or_else(|| capture_after(text, "Cellular provider:"));
+    let (score, label) = parse_strength_line(capture_line(text, "Cellular strength:"));
+    if score > 0 {
+        diag.strength_score = Some(score);
+        if !label.is_empty() && label != "unknown" {
+            diag.strength_label = Some(label);
+        }
+    }
+    diag.ipv4 = parse_yes_no(capture_after(text, "Cellular supports IPv4?")) || diag.ipv4;
+    diag.ipv6 = parse_yes_no(capture_after(text, "Cellular supports IPv6?")) || diag.ipv6;
+    if let Some(v) = capture_after(text, "Cellular name servers:") {
+        diag.dns_servers = v;
+    }
+    if let Some(done) = capture_after(text, "Done:") {
+        let low = done.to_ascii_lowercase();
+        if low.starts_with("success") {
+            diag.check_result = "Success".into();
+            diag.check_error = None;
+        } else if low.starts_with("failure") {
+            diag.check_result = "Failure".into();
+            diag.check_error = Some(done.trim_start_matches("Failure:").trim().to_string());
+        }
+    }
+    diag.check_avg_latency_ms = parse_avg_latency_multi(text).or(diag.check_avg_latency_ms);
+    diag.check_packet_loss_pct =
+        parse_packet_loss_worst(text).unwrap_or(diag.check_packet_loss_pct);
+}
+
+fn parse_basic_cell_info(text: &str, diag: &mut CellularDiagnostic) {
+    let lines: Vec<String> = text
+        .lines()
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty())
+        .collect();
+    if lines.is_empty() {
+        return;
+    }
+    let mut vals: Vec<Option<String>> = vec![None; 8];
+    for (i, line) in lines.iter().take(8).enumerate() {
+        if !line.to_ascii_lowercase().starts_with("error:") {
+            vals[i] = Some(line.clone());
+        }
+    }
+    diag.imei = diag.imei.clone().or(vals[0].clone());
+    diag.iccid = diag.iccid.clone().or(vals[1].clone());
+    diag.imsi = diag.imsi.clone().or(vals[2].clone());
+    diag.hni = diag.hni.clone().or(vals[3].clone());
+    diag.basic_provider = diag.basic_provider.clone().or(vals[4].clone());
+    diag.basic_status = diag.basic_status.clone().or(vals[5].clone());
+    diag.basic_signal = diag.basic_signal.clone().or(vals[6].clone());
+    diag.basic_apn = diag.basic_apn.clone().or(vals[7].clone());
+}
+
+fn parse_connman_cellular(text: &str, diag: &mut CellularDiagnostic) {
+    if let Some(block) = extract_connman_tech(text, "cellular") {
+        diag.connman_cell_powered =
+            extract_regex(&block, r"Powered = (True|False)").map(|v| v == "True");
+        diag.connman_cell_connected =
+            extract_regex(&block, r"Connected = (True|False)").map(|v| v == "True");
+    }
+    if let Some(block) = extract_connman_tech(text, "wifi") {
+        diag.connman_wifi_connected =
+            extract_regex(&block, r"Connected = (True|False)").map(|v| v == "True");
+    }
+    if let Some(block) = extract_connman_tech(text, "ethernet") {
+        diag.connman_eth_connected =
+            extract_regex(&block, r"Connected = (True|False)").map(|v| v == "True");
+    }
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("*AO ") {
+            let svc = trimmed
+                .trim_start_matches("*AO ")
+                .split_whitespace()
+                .next()
+                .unwrap_or("")
+                .to_string();
+            if !svc.is_empty() {
+                diag.connman_active_service = Some(svc.clone());
+                diag.connman_cell_active = Some(svc.contains("cellular_"));
+            }
+        }
+        if trimmed.starts_with("*AR ") {
+            let svc = trimmed
+                .trim_start_matches("*AR ")
+                .split_whitespace()
+                .next()
+                .unwrap_or("");
+            diag.connman_cell_ready = Some(svc.contains("cellular_"));
+        }
+        if let Some(state) = trimmed.strip_prefix("State =") {
+            diag.connman_state = Some(state.trim().to_string());
+        }
+    }
+    if diag.connman_cell_active.is_none() {
+        diag.connman_cell_active = Some(false);
+    }
+    if diag.connman_cell_ready.is_none() && text.contains("cellular_") {
+        diag.connman_cell_ready = Some(false);
+    }
+    diag.role = Some(if diag.connman_cell_active == Some(true) {
+        "active".into()
+    } else if diag.connman_cell_ready == Some(true) {
+        "backup".into()
+    } else {
+        "inactive".into()
+    });
+}
+
+fn parse_wwan_interface(text: &str, diag: &mut CellularDiagnostic) {
+    if text.contains("Device \"wwan0\" does not exist") {
+        diag.wwan_exists = false;
+        return;
+    }
+    if text.contains("wwan0") {
+        diag.wwan_exists = true;
+    }
+    if let Some(first) = text.lines().find(|l| l.contains("wwan0")) {
+        diag.wwan_lower_up = Some(first.contains("LOWER_UP"));
+        diag.wwan_link_state =
+            extract_regex(first, r"state\s+([A-Z]+)").or(diag.wwan_link_state.clone());
+    }
+    let re = Regex::new(r"inet\s+(\d+\.\d+\.\d+\.\d+)/(\d{1,2})").ok();
+    if let Some(re) = re {
+        if let Some(c) = re.captures(text) {
+            diag.wwan_ipv4_address = c.get(1).map(|m| m.as_str().to_string());
+            diag.wwan_ipv4_prefix = c.get(2).and_then(|m| m.as_str().parse::<u8>().ok());
+        }
+    }
+    for line in text.lines() {
+        let line = line.trim();
+        if line.starts_with("default via ") {
+            if let Some(gw) = extract_regex(line, r"default via (\S+)") {
+                if line.contains(" dev wwan0") {
+                    diag.default_via_wwan0 = Some(true);
+                    diag.default_gateway = Some(gw);
+                } else if diag.default_gateway.is_none() {
+                    diag.default_gateway = Some(gw);
+                    diag.default_via_wwan0.get_or_insert(false);
+                }
+            }
+        }
+    }
+}
+
+fn parse_proc_net_dev(text: &str, diag: &mut CellularDiagnostic) {
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("wwan0:") {
+            let rhs = trimmed.trim_start_matches("wwan0:").trim();
+            let cols: Vec<&str> = rhs.split_whitespace().collect();
+            if cols.len() >= 11 {
+                diag.proc_rx_bytes = cols.first().and_then(|v| v.parse::<u64>().ok());
+                diag.proc_rx_packets = cols.get(1).and_then(|v| v.parse::<u64>().ok());
+                diag.proc_rx_errs = cols.get(2).and_then(|v| v.parse::<u64>().ok());
+                diag.proc_rx_drop = cols.get(3).and_then(|v| v.parse::<u64>().ok());
+                diag.proc_tx_bytes = cols.get(8).and_then(|v| v.parse::<u64>().ok());
+                diag.proc_tx_packets = cols.get(9).and_then(|v| v.parse::<u64>().ok());
+                diag.proc_tx_errs = cols.get(10).and_then(|v| v.parse::<u64>().ok());
+            }
+        }
+    }
+}
+
+fn parse_cell_support_at(text: &str, diag: &mut CellularDiagnostic) {
+    if text.contains("/dev/ttyUSB2 does not exist")
+        || (text.contains("/dev/ttyUSB2") && text.contains("does not exist"))
+    {
+        diag.modem_present = Some(false);
+    }
+    if text.contains("Quectel") || text.contains("BG96") {
+        diag.modem_present = Some(true);
+        diag.modem_model = extract_regex(text, r"(BG96)");
+    }
+    diag.modem_revision = capture_after(text, "Revision:");
+    if text.contains("+CPIN: READY") {
+        diag.sim_ready = Some(true);
+        diag.sim_inserted = Some(true);
+    }
+    if text.contains("+CPIN: NOT INSERTED")
+        || text.to_ascii_lowercase().contains("sim not inserted")
+    {
+        diag.sim_ready = Some(false);
+        diag.sim_inserted = Some(false);
+    }
+    diag.cfun = extract_regex(text, r"\+CFUN:\s*(\d+)").and_then(|v| v.parse::<u8>().ok());
+    let reg = extract_regex(text, r"\+CREG:\s*\d,(\d)")
+        .or_else(|| extract_regex(text, r"\+CEREG:\s*\d,(\d)"));
+    if let Some(v) = reg {
+        diag.registered = Some(v == "1" || v == "5");
+    }
+    diag.attached = extract_regex(text, r"\+CGATT:\s*(\d)").map(|v| v == "1");
+    diag.operator_name =
+        extract_regex(text, r#"\+COPS:.*?"([^"]+)""#).map(|v| v.trim().to_string());
+    if let Some(mode) = extract_regex(text, r#"\+QCSQ:\s*"([^"]+)""#) {
+        diag.qcsq = Some(mode.clone());
+        if mode != "NOSERVICE" {
+            diag.rat = Some(mode);
+        }
+    }
+    diag.rssi_dbm =
+        extract_regex(text, r#"\+QCSQ:\s*"[^"]+",\s*(-?\d+)"#).and_then(|v| v.parse::<i32>().ok());
+    if let Some(cap) = Regex::new(r#"\+QNWINFO:\s*"([^"]+)","([^"]+)","([^"]+)",(\d+)"#)
+        .ok()
+        .and_then(|re| re.captures(text))
+    {
+        diag.rat = cap
+            .get(1)
+            .map(|m| m.as_str().to_string())
+            .or(diag.rat.clone());
+        diag.mccmnc = cap.get(2).map(|m| m.as_str().to_string());
+        diag.band = cap.get(3).map(|m| m.as_str().to_string());
+        diag.channel = cap.get(4).map(|m| m.as_str().to_string());
+    }
+    diag.pdp_active = extract_regex(text, r"\+CGACT:\s*1,(\d)").map(|v| v == "1");
+    diag.pdp_ip =
+        extract_regex(text, r"\+CGPADDR:\s*1,(\d+\.\d+\.\d+\.\d+)").filter(|ip| ip != "0.0.0.0");
+    diag.at_apn = extract_regex(text, r"\+CGCONTRDP:.*?,[^,]*,[^,]*,[^,]*,[^,]*,([^,\s]+)")
+        .or_else(|| extract_regex(text, r#"\+CGCONTRDP:.*?(vzwinternet|super)"#));
+}
+
+fn determine_cellular_status(diag: &mut CellularDiagnostic) {
+    let has_authoritative_check = diag.check_result != "Unknown" || diag.check_error.is_some();
+    if !has_authoritative_check {
+        diag.status = DiagStatus::Unknown;
+        diag.summary = "Partial data".into();
+        return;
+    }
+
+    if diag
+        .check_error
+        .as_deref()
+        .map(|e| e.contains("-65553"))
+        .unwrap_or(false)
+        || diag.connman_cell_powered == Some(false)
+        || (diag.cfun == Some(0)
+            && diag.sim_inserted == Some(true)
+            && diag.modem_present == Some(true)
+            && diag.check_error.is_some())
+    {
+        diag.status = DiagStatus::Grey;
+        diag.summary = "Cellular disabled".into();
+        diag.recommended_action = Some("Enable via setup-cellular".into());
+        diag.other_actions = vec![];
+        return;
+    }
+    if diag
+        .check_error
+        .as_deref()
+        .map(|e| e.contains("-65552"))
+        .unwrap_or(false)
+        && (diag.modem_present == Some(false) || !diag.wwan_exists)
+    {
+        diag.status = DiagStatus::Red;
+        diag.summary = "No modem detected".into();
+        diag.recommended_action = Some("Check modem connection / seating".into());
+        diag.other_actions = vec!["Reboot controller".into()];
+        return;
+    }
+    if diag.sim_inserted == Some(false)
+        || (diag.sim_ready == Some(false)
+            && diag.modem_present == Some(true)
+            && diag.iccid.is_none())
+    {
+        diag.status = DiagStatus::Red;
+        diag.summary = "No SIM detected".into();
+        diag.recommended_action = Some("Insert SIM card".into());
+        diag.other_actions = vec![];
+        return;
+    }
+    if diag.modem_present == Some(true)
+        && diag.sim_inserted == Some(true)
+        && diag.registered == Some(false)
+        && diag.qcsq.as_deref() == Some("NOSERVICE")
+    {
+        diag.status = DiagStatus::Red;
+        diag.summary = "No signal — not registered".into();
+        diag.recommended_action = Some("Check coverage or antenna".into());
+        diag.other_actions = vec![
+            "Move to known good coverage area".into(),
+            "Reboot controller".into(),
+            "Try alternate SIM".into(),
+        ];
+        return;
+    }
+    if diag.modem_present == Some(true)
+        && diag.sim_inserted == Some(true)
+        && diag.registered == Some(true)
+        && diag.attached == Some(true)
+        && diag.connman_cell_connected == Some(false)
+    {
+        diag.status = DiagStatus::Orange;
+        diag.summary = "Registered · APN/profile mismatch".into();
+        diag.recommended_action = Some("Check APN / firmware cellular profile".into());
+        diag.other_actions = vec![
+            "Try supported SIM".into(),
+            "Verify APN database entry".into(),
+        ];
+        return;
+    }
+    if diag.connman_cell_connected == Some(true)
+        && diag.wwan_ipv4_address.is_some()
+        && diag.check_result == "Failure"
+    {
+        diag.status = DiagStatus::Orange;
+        diag.summary = "Connected · no internet".into();
+        diag.recommended_action = Some("Check carrier data service / DNS".into());
+        diag.other_actions = vec![];
+        return;
+    }
+    if diag.check_result == "Success"
+        && diag.internet_reachable
+        && diag.connman_cell_connected == Some(true)
+        && diag.wwan_ipv4_address.is_some()
+    {
+        let provider = diag
+            .operator_name
+            .clone()
+            .or(diag.basic_provider.clone())
+            .or(diag.provider_code.clone())
+            .unwrap_or_else(|| "Cellular".into());
+        let signal = diag
+            .strength_label
+            .clone()
+            .or(diag.strength_score.map(|v| format!("{}/100", v)))
+            .unwrap_or_else(|| "connected".into());
+        let role = match diag.role.as_deref() {
+            Some("active") => "active",
+            Some("backup") => "backup",
+            _ => "connected",
+        };
+        diag.status = DiagStatus::Green;
+        diag.summary = format!("{} · {} · {}", provider.trim(), signal, role);
+        diag.recommended_action = None;
+        diag.other_actions = vec![];
+        return;
+    }
+    diag.status = DiagStatus::Unknown;
+    diag.summary = "Incomplete data".into();
 }

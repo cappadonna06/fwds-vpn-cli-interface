@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
-type DiagStatus = "green" | "orange" | "red" | "unknown";
+type DiagStatus = "grey" | "green" | "orange" | "red" | "unknown";
 
 interface WifiDiagnostic {
   status: DiagStatus;
@@ -55,21 +55,48 @@ interface WifiDiagnostic {
 interface CellularDiagnostic {
   status: DiagStatus;
   summary: string;
-  provider: string;
-  provider_code: string;
-  strength: number;
-  strength_label: string;
+  check_result: string;
+  check_error?: string | null;
+  internet_reachable: boolean;
+  cell_state: string;
+  provider_code?: string | null;
+  strength_score?: number | null;
+  strength_label?: string | null;
   ipv4: boolean;
   ipv6: boolean;
   dns_servers: string;
-  internet_reachable: boolean;
-  check_result: string;
-  avg_latency_ms?: number | null;
-  packet_loss_pct: number;
+  check_avg_latency_ms?: number | null;
+  check_packet_loss_pct: number;
   imei?: string | null;
   iccid?: string | null;
-  apn?: string | null;
-  cell_status?: string | null;
+  imsi?: string | null;
+  hni?: string | null;
+  basic_provider?: string | null;
+  basic_status?: string | null;
+  basic_signal?: string | null;
+  basic_apn?: string | null;
+  connman_cell_powered?: boolean | null;
+  connman_cell_connected?: boolean | null;
+  connman_wifi_connected?: boolean | null;
+  connman_eth_connected?: boolean | null;
+  connman_active_service?: string | null;
+  connman_cell_active?: boolean | null;
+  connman_cell_ready?: boolean | null;
+  connman_state?: string | null;
+  wwan_ipv4_address?: string | null;
+  wwan_ipv4_prefix?: number | null;
+  role?: string | null;
+  modem_present?: boolean | null;
+  modem_model?: string | null;
+  sim_ready?: boolean | null;
+  sim_inserted?: boolean | null;
+  operator_name?: string | null;
+  qcsq?: string | null;
+  rat?: string | null;
+  band?: string | null;
+  at_apn?: string | null;
+  recommended_action?: string | null;
+  other_actions?: string[] | null;
 }
 
 interface SatelliteDiagnostic {
@@ -182,9 +209,113 @@ function buildWifiRows(wifi?: WifiDiagnostic | null): { label: string; value: st
   return rows;
 }
 
+function buildCellularRows(cell?: CellularDiagnostic | null): { label: string; value: string }[] {
+  if (!cell) return [];
+  const rows: { label: string; value: string }[] = [];
+
+  rows.push({ label: "Check result", value: cell.check_result || "—" });
+  if (cell.check_error) rows.push({ label: "Error", value: cell.check_error });
+
+  rows.push({ label: "State", value: cell.cell_state || "—" });
+
+  const provider =
+    cell.operator_name ||
+    cell.basic_provider ||
+    cell.provider_code ||
+    cell.hni ||
+    "—";
+  rows.push({ label: "Provider", value: provider });
+
+  if (cell.strength_score !== null && cell.strength_score !== undefined) {
+    rows.push({
+      label: "Signal",
+      value: `${cell.strength_score}/100${cell.strength_label ? ` (${cell.strength_label})` : ""}`,
+    });
+  } else if (cell.qcsq) {
+    rows.push({ label: "Signal", value: cell.qcsq === "NOSERVICE" ? "No service" : cell.qcsq });
+  }
+
+  rows.push({
+    label: "Connected",
+    value: cell.connman_cell_connected === true ? "Yes" : "No",
+  });
+
+  rows.push({
+    label: "Role",
+    value:
+      cell.role === "active"
+        ? "Active"
+        : cell.role === "backup"
+          ? "Backup"
+          : "Inactive",
+  });
+
+  rows.push({
+    label: "IP address",
+    value: cell.wwan_ipv4_address ? `${cell.wwan_ipv4_address}/${cell.wwan_ipv4_prefix ?? ""}` : "—",
+  });
+
+  if (cell.basic_apn || cell.at_apn) {
+    rows.push({ label: "APN", value: cell.at_apn || cell.basic_apn || "—" });
+  }
+
+  rows.push({
+    label: "SIM",
+    value:
+      cell.sim_inserted === false
+        ? "Not inserted"
+        : cell.sim_ready === true
+          ? "Ready"
+          : "—",
+  });
+
+  rows.push({
+    label: "Modem",
+    value: cell.modem_present === true ? (cell.modem_model || "Detected") : "Not detected",
+  });
+
+  if (cell.rat || cell.band) {
+    rows.push({
+      label: "Network",
+      value: [cell.rat, cell.band].filter(Boolean).join(" / ") || "—",
+    });
+  }
+
+  rows.push({
+    label: "ConnMan",
+    value:
+      cell.connman_cell_connected === true
+        ? "Connected"
+        : cell.connman_cell_powered === false
+          ? "Disabled"
+          : cell.connman_cell_powered === true
+            ? "Powered, not connected"
+            : "—",
+  });
+
+  if (cell.check_avg_latency_ms !== null && cell.check_avg_latency_ms !== undefined) {
+    rows.push({ label: "Latency", value: `${cell.check_avg_latency_ms.toFixed(1)} ms` });
+  }
+
+  if (cell.check_packet_loss_pct !== null && cell.check_packet_loss_pct !== undefined) {
+    rows.push({ label: "Packet loss", value: `${cell.check_packet_loss_pct}%` });
+  }
+
+  if (cell.recommended_action) {
+    rows.push({ label: "Recommended", value: cell.recommended_action });
+  }
+
+  if (cell.other_actions && cell.other_actions.length > 0) {
+    rows.push({ label: "Other options", value: cell.other_actions.join(" • ") });
+  }
+
+  return rows;
+}
+
 function DiagCard({ title, icon, status, summary, rows, updatedAt }: DiagCardProps) {
   const statusLabel =
     status === "green" ? "Healthy" :
+      status === "grey" ? "Disabled" :
       status === "orange" ? "Warning" :
         status === "red" ? "Error" : "Unknown";
 
@@ -192,7 +323,7 @@ function DiagCard({ title, icon, status, summary, rows, updatedAt }: DiagCardPro
     <article className={`diag-card ${status === "unknown" ? "diag-card-unknown" : ""}`}>
       <div className="diag-card-header">
         <div>{icon} {title}</div>
-        <span className={`diag-status-dot diag-status-${status}`} />
+        <span className={`diag-status-dot diag-status-${status === "grey" ? "unknown" : status}`} />
       </div>
       <div className="diag-card-status">{statusLabel}</div>
       <div className="diag-card-summary">{summary}</div>
@@ -305,7 +436,10 @@ export default function DiagnosticsTab() {
         <div>
           <h2>System Diagnostics</h2>
           <div className="diag-system-line">
-            SID {system?.sid ?? "—"} · {system?.version ?? "—"} · {system?.release_date ?? "—"}
+            SID {system?.sid ?? "—"}
+          </div>
+          <div className="diag-system-line">
+            {system?.version ?? "—"} · {system?.release_date ?? "—"}
           </div>
           <div className="diag-system-line">System updated {systemUpdatedAt ?? "—"}</div>
         </div>
@@ -346,20 +480,7 @@ export default function DiagnosticsTab() {
           icon="📶"
           status={cellular?.status ?? "unknown"}
           summary={cellular?.summary ?? "Run cellular-check / cellular diagnostics to populate"}
-          rows={expanded.cellular ? [
-            { label: "Provider", value: cellular ? `${cellular.provider} (${cellular.provider_code})` : "—" },
-            { label: "Signal", value: cellular ? `${cellular.strength}/100 (${cellular.strength_label})` : "—" },
-            { label: "IPv4", value: fmtBool(cellular?.ipv4) },
-            { label: "IPv6", value: fmtBool(cellular?.ipv6) },
-            { label: "DNS", value: cellular?.dns_servers ?? "—" },
-            { label: "Latency (avg)", value: cellular?.avg_latency_ms ? `${cellular.avg_latency_ms.toFixed(1)} ms` : "—" },
-            { label: "Packet loss", value: cellular ? `${cellular.packet_loss_pct}%` : "—" },
-            ...(cellular?.imei ? [{ label: "IMEI", value: cellular.imei }] : []),
-            ...(cellular?.iccid ? [{ label: "ICCID", value: cellular.iccid }] : []),
-            ...(cellular?.apn ? [{ label: "APN", value: cellular.apn }] : []),
-            ...(cellular?.cell_status ? [{ label: "Status", value: cellular.cell_status }] : []),
-            { label: "Check result", value: cellular?.check_result ?? "—" },
-          ] : []}
+          rows={expanded.cellular ? buildCellularRows(cellular) : []}
           updatedAt={cardUpdatedAt.cellular}
           />
         </div>
