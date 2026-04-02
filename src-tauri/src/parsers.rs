@@ -73,20 +73,128 @@ pub fn parse_log_into_state(log: &str, state: &mut DiagnosticState) {
     );
 
     if wifi.is_some() {
-        state.wifi = wifi;
+        if let Some(next) = wifi {
+            state.wifi = Some(match state.wifi.take() {
+                Some(prev) => merge_wifi_diag(prev, next),
+                None => next,
+            });
+        }
     }
     if cellular.is_some() {
-        state.cellular = cellular;
+        if let Some(next) = cellular {
+            state.cellular = Some(match state.cellular.take() {
+                Some(prev) => merge_cellular_diag(prev, next),
+                None => next,
+            });
+        }
     }
     if satellite.is_some() {
         state.satellite = satellite;
     }
     if ethernet.is_some() {
-        state.ethernet = ethernet;
+        if let Some(next) = ethernet {
+            state.ethernet = Some(match state.ethernet.take() {
+                Some(prev) => merge_ethernet_diag(prev, next),
+                None => next,
+            });
+        }
     }
     if system.sid.is_some() || system.version.is_some() || system.release_date.is_some() {
         state.system = Some(system);
     }
+}
+
+fn wifi_has_authoritative_check(diag: &WifiDiagnostic) -> bool {
+    diag.check_result != "Unknown" || diag.check_error.is_some()
+}
+
+fn cellular_has_authoritative_check(diag: &CellularDiagnostic) -> bool {
+    diag.check_result != "Unknown" || diag.check_error.is_some()
+}
+
+fn ethernet_has_authoritative_check(diag: &EthernetDiagnostic) -> bool {
+    diag.check_result != "Unknown"
+}
+
+fn merge_wifi_diag(prev: WifiDiagnostic, mut next: WifiDiagnostic) -> WifiDiagnostic {
+    if wifi_has_authoritative_check(&next) {
+        return next;
+    }
+    if wifi_has_authoritative_check(&prev) {
+        next.status = prev.status;
+        next.summary = prev.summary;
+        next.check_result = prev.check_result;
+        next.check_error = prev.check_error;
+        next.internet_reachable = prev.internet_reachable;
+        next.wifi_state = prev.wifi_state;
+        next.access_point = next.access_point.or(prev.access_point);
+        next.strength_score = next.strength_score.or(prev.strength_score);
+        next.strength_label = next.strength_label.or(prev.strength_label);
+        next.ipv4 = next.ipv4 || prev.ipv4;
+        next.ipv6 = next.ipv6 || prev.ipv6;
+        if next.dns_servers == "—" {
+            next.dns_servers = prev.dns_servers;
+        }
+        next.check_avg_latency_ms = next.check_avg_latency_ms.or(prev.check_avg_latency_ms);
+        next.check_packet_loss_pct = next.check_packet_loss_pct.max(prev.check_packet_loss_pct);
+    }
+    next
+}
+
+fn merge_cellular_diag(
+    prev: CellularDiagnostic,
+    mut next: CellularDiagnostic,
+) -> CellularDiagnostic {
+    if cellular_has_authoritative_check(&next) {
+        return next;
+    }
+    if cellular_has_authoritative_check(&prev) {
+        next.status = prev.status;
+        next.summary = prev.summary;
+        next.check_result = prev.check_result;
+        next.check_error = prev.check_error;
+        next.internet_reachable = prev.internet_reachable;
+        next.cell_state = prev.cell_state;
+        next.provider_code = next.provider_code.or(prev.provider_code);
+        next.strength_score = next.strength_score.or(prev.strength_score);
+        next.strength_label = next.strength_label.or(prev.strength_label);
+        next.ipv4 = next.ipv4 || prev.ipv4;
+        next.ipv6 = next.ipv6 || prev.ipv6;
+        if next.dns_servers == "—" {
+            next.dns_servers = prev.dns_servers;
+        }
+        next.check_avg_latency_ms = next.check_avg_latency_ms.or(prev.check_avg_latency_ms);
+        next.check_packet_loss_pct = next.check_packet_loss_pct.max(prev.check_packet_loss_pct);
+        next.recommended_action = next.recommended_action.or(prev.recommended_action);
+        if next.other_actions.is_empty() {
+            next.other_actions = prev.other_actions;
+        }
+    }
+    next
+}
+
+fn merge_ethernet_diag(
+    prev: EthernetDiagnostic,
+    mut next: EthernetDiagnostic,
+) -> EthernetDiagnostic {
+    if ethernet_has_authoritative_check(&next) {
+        return next;
+    }
+    if ethernet_has_authoritative_check(&prev) {
+        next.status = prev.status;
+        next.summary = prev.summary;
+        next.check_result = prev.check_result;
+        next.internet_reachable = prev.internet_reachable;
+        if next.eth_state == "unknown" || next.eth_state == "up" {
+            next.eth_state = prev.eth_state;
+        }
+        next.ipv4 = next.ipv4 || prev.ipv4;
+        next.ipv6 = next.ipv6 || prev.ipv6;
+        if next.dns_servers == "—" {
+            next.dns_servers = prev.dns_servers;
+        }
+    }
+    next
 }
 
 fn find_latest<'a>(latest: &'a HashMap<String, String>, names: &[&str]) -> Option<&'a String> {
@@ -327,6 +435,44 @@ default via 100.108.114.46 dev wwan0
         assert_eq!(cell.status, crate::DiagStatus::Green);
         assert_eq!(cell.check_result, "Success");
         assert_eq!(cell.wwan_ipv4_address.as_deref(), Some("100.108.114.41"));
+    }
+
+    #[test]
+    fn wifi_status_does_not_downgrade_on_partial_followup_chunk() {
+        let mut state = DiagnosticState::default();
+        let wifi_check_log = "2026-04-01T10:32:46-0600 [22611067]# wifi-check\nTesting Wi-Fi...\nInternet reachability state: online\nWi-Fi state: ready\nDone: Success\n";
+        parse_log_into_state(wifi_check_log, &mut state);
+        assert_eq!(
+            state.wifi.as_ref().map(|w| w.check_result.as_str()),
+            Some("Success")
+        );
+
+        let partial_wifi_log = "2026-04-01T10:33:01-0600 [22611067]# iw dev wlan0 link\nConnected to 9c:0b:05:30:f7:c8 (on wlan0)\n\tSSID: lieberells\n\tsignal: -30 dBm\n";
+        parse_log_into_state(partial_wifi_log, &mut state);
+
+        let wifi = state.wifi.expect("wifi should still exist");
+        assert_eq!(wifi.check_result, "Success");
+        assert_eq!(wifi.status, crate::DiagStatus::Green);
+        assert_eq!(wifi.ssid.as_deref(), Some("lieberells"));
+    }
+
+    #[test]
+    fn ethernet_status_does_not_downgrade_on_partial_followup_chunk() {
+        let mut state = DiagnosticState::default();
+        let eth_check_log = "2026-04-01T10:32:46-0600 [22611067]# ethernet-check\nTesting Ethernet...\nInternet reachability state: online\nEthernet state: online\nEthernet supports IPv4? Yes\nEthernet supports IPv6? Yes\nEthernet name servers: 192.168.4.1\nDone: Success\n";
+        parse_log_into_state(eth_check_log, &mut state);
+        assert_eq!(
+            state.ethernet.as_ref().map(|e| e.check_result.as_str()),
+            Some("Success")
+        );
+
+        let partial_eth_log = "2026-04-01T10:33:01-0600 [22611067]# ethtool eth0\nSettings for eth0:\n\tSpeed: 1000Mb/s\n\tDuplex: Full\n\tLink detected: yes\n";
+        parse_log_into_state(partial_eth_log, &mut state);
+
+        let eth = state.ethernet.expect("ethernet should still exist");
+        assert_eq!(eth.check_result, "Success");
+        assert_eq!(eth.status, crate::DiagStatus::Green);
+        assert_eq!(eth.speed.as_deref(), Some("1000Mb/s"));
     }
 }
 
