@@ -326,7 +326,7 @@ fn split_blocks(log: &str) -> Vec<CommandBlock> {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_log_into_state, split_blocks};
+    use super::{parse_cellular, parse_log_into_state, split_blocks};
     use crate::DiagnosticState;
 
     #[test]
@@ -510,6 +510,27 @@ default via 100.108.114.46 dev wwan0
         assert_eq!(blocks.len(), 1);
         assert_eq!(blocks[0].command, "__orphan__");
         assert!(blocks[0].body.contains("Done: Success"));
+    }
+
+    #[test]
+    fn parse_cellular_classifies_no_modem_from_quoted_ttyusb_error() {
+        let block = r#"
+===== CELLULAR CONNECTIVITY TEST =====
+Testing Cellular...
+Done: Failure: -65552: Network technology not available
+
+===== INTERFACE / ROUTING =====
+Device "wwan0" does not exist.
+
+===== MODEM / RADIO DIAGNOSTICS =====
+Running AT commands...
+ERROR: device "/dev/ttyUSB2" does not exist
+"#;
+        let cell = parse_cellular(block);
+        assert_eq!(cell.check_result, "Failure");
+        assert_eq!(cell.modem_present, Some(false));
+        assert_eq!(cell.status, crate::DiagStatus::Red);
+        assert_eq!(cell.summary, "No modem detected");
     }
 }
 
@@ -1704,7 +1725,9 @@ fn parse_proc_net_dev(text: &str, diag: &mut CellularDiagnostic) {
 }
 
 fn parse_cell_support_at(text: &str, diag: &mut CellularDiagnostic) {
-    if text.contains("/dev/ttyUSB2 does not exist") {
+    if text.contains("/dev/ttyUSB2 does not exist")
+        || (text.contains("/dev/ttyUSB2") && text.contains("does not exist"))
+    {
         diag.modem_present = Some(false);
     }
     if text.contains("Quectel") || text.contains("BG96") {
@@ -1788,7 +1811,7 @@ fn determine_cellular_status(diag: &mut CellularDiagnostic) {
         .as_deref()
         .map(|e| e.contains("-65552"))
         .unwrap_or(false)
-        && diag.modem_present == Some(false)
+        && (diag.modem_present == Some(false) || !diag.wwan_exists)
     {
         diag.status = DiagStatus::Red;
         diag.summary = "No modem detected".into();

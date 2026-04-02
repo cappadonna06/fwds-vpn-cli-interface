@@ -895,7 +895,7 @@ fn open_controller_terminal(state: State<'_, AppState>) -> Result<(), String> {
         .map_err(|e| format!("Failed to open Terminal: {e}"))?;
 
     if out.status.success() {
-        start_log_watcher_internal(&state)?;
+        start_log_watcher_internal(&state, false)?;
         Ok(())
     } else {
         let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
@@ -952,7 +952,7 @@ fn open_local_serial_terminal(device: String, state: State<'_, AppState>) -> Res
         .map_err(|e| format!("Failed to open Terminal: {e}"))?;
 
     if out.status.success() {
-        start_log_watcher_internal(&state)?;
+        start_log_watcher_internal(&state, false)?;
         Ok(())
     } else {
         let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
@@ -1028,7 +1028,7 @@ fn merge_non_empty_cards(base: &mut DiagnosticState, incoming: &DiagnosticState)
     base.last_updated = incoming.last_updated.clone().or(base.last_updated.clone());
 }
 
-fn start_log_watcher_internal(state: &AppState) -> Result<(), String> {
+fn start_log_watcher_internal(state: &AppState, start_from_end: bool) -> Result<(), String> {
     let (controller_key, log_path) = {
         let inner = state.inner.lock().map_err(|_| "lock poisoned")?;
         if inner.connection_mode == "local" {
@@ -1096,7 +1096,11 @@ fn start_log_watcher_internal(state: &AppState) -> Result<(), String> {
             Err(_) => return,
         };
 
-        let _ = file.seek(SeekFrom::Start(0));
+        let _ = if start_from_end {
+            file.seek(SeekFrom::End(0))
+        } else {
+            file.seek(SeekFrom::Start(0))
+        };
 
         let mut buffer = String::new();
         loop {
@@ -1163,7 +1167,7 @@ fn start_log_watcher_internal(state: &AppState) -> Result<(), String> {
 
 #[tauri::command]
 fn start_log_watcher(state: State<'_, AppState>) -> Result<(), String> {
-    start_log_watcher_internal(&state)
+    start_log_watcher_internal(&state, false)
 }
 
 #[tauri::command]
@@ -1174,8 +1178,13 @@ fn get_diagnostic_state(state: State<'_, AppState>) -> Result<DiagnosticState, S
 
 #[tauri::command]
 fn clear_diagnostic_state(state: State<'_, AppState>) -> Result<(), String> {
-    let mut diag = state.diagnostic_state.lock().map_err(|_| "lock poisoned")?;
-    *diag = DiagnosticState::default();
+    {
+        let mut diag = state.diagnostic_state.lock().map_err(|_| "lock poisoned")?;
+        *diag = DiagnosticState::default();
+    }
+    // Restart watcher from the current file end so newly-run diagnostics
+    // repopulate cards cleanly after a clear action.
+    start_log_watcher_internal(&state, true)?;
     Ok(())
 }
 
