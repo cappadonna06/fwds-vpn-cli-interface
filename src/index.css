@@ -1,18 +1,28 @@
 :root {
-  --bg-0: #0d0f12;
-  --bg-1: #161a24;
-  --bg-2: #1e2336;
-  --bg-3: #272d45;
-  --border: #37405e;
-  --text-primary: #eceef5;
-  --text-secondary: #a8aec8;
-  --text-muted: #717899;
-  --accent: #4a7cdc;
-  --accent-hover: #5b8eee;
-  --success: #3cb371;
-  --warning: #e8a838;
-  --danger: #dc4a4a;
-  --danger-hover: #ee5b5b;
+  --bg-0: #f4f6f8;
+  --bg-1: #ffffff;
+  --bg-2: #f1f4f8;
+  --bg-3: #e8edf5;
+  --border: #d8dee8;
+  --border-soft: #e7ebf2;
+  --text-primary: #1f2a37;
+  --text-secondary: #4b5563;
+  --text-muted: #6b7280;
+  --accent: #2f6fe4;
+  --accent-hover: #245ecd;
+  --nav-hover: #edf3ff;
+  --nav-selected: #e8f0ff;
+  --nav-selected-border: #c9dbff;
+  --success: #1f9d55;
+  --success-ink: #157347;
+  --success-bg: #e7f7ef;
+  --success-border: #b8e5cc;
+  --warning: #d08700;
+  --danger: #dc2626;
+  --danger-hover: #b91c1c;
+  --danger-ink: #b42318;
+  --danger-bg: #feeceb;
+  --danger-border: #f7c6c2;
   --mono: "JetBrains Mono", "Fira Code", "Cascadia Code", monospace;
 }
 
@@ -48,7 +58,7 @@ select,
 textarea {
   font-family: inherit;
   font-size: 13px;
-  background: var(--bg-2);
+  background: var(--bg-1);
   color: var(--text-primary);
   border: 1px solid var(--border);
   border-radius: 4px;
@@ -68,14 +78,14 @@ textarea:focus {
 }
 
 ::-webkit-scrollbar-track {
-  background: var(--bg-1);
+  background: var(--bg-2);
 }
 
 ::-webkit-scrollbar-thumb {
-  background: var(--border);
+  background: #c2c9d4;
   border-radius: 3px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--text-muted);
+  background: #aeb7c4;
 }

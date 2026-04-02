@@ -6,6 +6,10 @@ import CommandsTab from "./components/tabs/CommandsTab";
 import WizardTab from "./components/tabs/WizardTab";
 import LogsTab from "./components/tabs/LogsTab";
 import DiagnosticsTab from "./components/tabs/DiagnosticsTab";
+import Sidebar from "./components/shell/Sidebar";
+import SidebarHeader from "./components/shell/SidebarHeader";
+import SidebarNavItem from "./components/shell/SidebarNavItem";
+import { StatusPillState } from "./components/shell/StatusPill";
 import "./App.css";
 import "./components/tabs/tabs.css";
 
@@ -30,6 +34,26 @@ interface HeaderDiagnosticState {
   system?: { sid?: string | null } | null;
 }
 
+function mapVpnState(vpnPhase: string): StatusPillState {
+  if (vpnPhase === "connected") {
+    return "success";
+  }
+  if (vpnPhase === "failed") {
+    return "error";
+  }
+  return "neutral";
+}
+
+function mapLocalState(connectionMode?: string, serialDevice?: string | null): StatusPillState {
+  if (connectionMode === "local" && serialDevice) {
+    return "success";
+  }
+  if (connectionMode === "local" && !serialDevice) {
+    return "error";
+  }
+  return "neutral";
+}
+
 export default function App() {
   const [activeTab, setActiveTab] = useState<Tab>("session");
   const [appStatus, setAppStatus] = useState<AppStatus>({
@@ -43,11 +67,14 @@ export default function App() {
     const appWindow = getCurrentWindow();
     let unlisten: (() => void) | undefined;
 
-    appWindow.onCloseRequested(async () => {
-      await invoke("stop_log_watcher").catch(() => {});
-    }).then((fn) => {
-      unlisten = fn;
-    }).catch(() => {});
+    appWindow
+      .onCloseRequested(async () => {
+        await invoke("stop_log_watcher").catch(() => {});
+      })
+      .then((fn) => {
+        unlisten = fn;
+      })
+      .catch(() => {});
 
     return () => {
       if (unlisten) {
@@ -56,7 +83,6 @@ export default function App() {
     };
   }, []);
 
-  // Poll app-wide status for the header every 2s
   useEffect(() => {
     async function fetchStatus() {
       try {
@@ -77,46 +103,59 @@ export default function App() {
     return () => clearInterval(id);
   }, []);
 
+  const showVpn = appStatus.vpn_phase !== "disconnected";
+  const showLocal = appStatus.connection_mode === "local";
+  const vpnState = mapVpnState(appStatus.vpn_phase);
+  const localState = mapLocalState(appStatus.connection_mode, appStatus.local_serial_device);
+
+  const controllerDisplay = localSid ?? appStatus.controller_ip ?? appStatus.local_serial_device ?? "No controller";
+  const controllerValid = Boolean(localSid);
+
   return (
     <div className="app">
-      <header className="app-header">
-        <div className="app-title">
-          <span className="app-title-mark">FWDS</span>
-          <span className="app-title-sub">Controller Console</span>
-        </div>
-        <nav className="tab-bar">
-          {TABS.map((tab) => (
-            <button
-              key={tab.id}
-              className={`tab-btn ${activeTab === tab.id ? "active" : ""}`}
-              onClick={() => setActiveTab(tab.id)}
-            >
-              {tab.label}
-            </button>
-          ))}
-        </nav>
-        <div className="header-status">
-          {appStatus.vpn_phase !== "disconnected" && (
-            <span className={`badge badge-${appStatus.vpn_phase}`}>VPN</span>
-          )}
-          {appStatus.connection_mode === "local" && appStatus.local_serial_device && (
-            <span className="badge badge-connected">LOCAL {localSid ?? "—"}</span>
-          )}
-          {appStatus.connection_mode !== "local" && appStatus.controller_ip && (
-            <span className="badge badge-connected">CTRL {appStatus.controller_ip}</span>
-          )}
-        </div>
-      </header>
+      <SidebarHeader
+        showVpn={showVpn}
+        vpnState={vpnState}
+        showLocal={showLocal}
+        localState={localState}
+        controllerDisplay={controllerDisplay}
+        controllerValid={controllerValid}
+      />
 
-      <main className="app-body">
-        <div style={{ display: activeTab === "session" ? "contents" : "none" }}>
-          <SessionTab />
-        </div>
-        <div style={{ display: activeTab === "console" ? "contents" : "none" }}><CommandsTab /></div>
-        <div style={{ display: activeTab === "wizard" ? "contents" : "none" }}><WizardTab /></div>
-        <div style={{ display: activeTab === "diagnostics" ? "contents" : "none" }}><DiagnosticsTab /></div>
-        <div style={{ display: activeTab === "logs" ? "contents" : "none" }}><LogsTab /></div>
-      </main>
+      <div className="app-shell">
+        <Sidebar
+          nav={
+            <nav className="sidebar-nav" aria-label="Primary navigation">
+              {TABS.map((tab) => (
+                <SidebarNavItem
+                  key={tab.id}
+                  label={tab.label}
+                  selected={activeTab === tab.id}
+                  onClick={() => setActiveTab(tab.id)}
+                />
+              ))}
+            </nav>
+          }
+        />
+
+        <main className="app-body">
+          <div style={{ display: activeTab === "session" ? "contents" : "none" }}>
+            <SessionTab />
+          </div>
+          <div style={{ display: activeTab === "console" ? "contents" : "none" }}>
+            <CommandsTab />
+          </div>
+          <div style={{ display: activeTab === "wizard" ? "contents" : "none" }}>
+            <WizardTab />
+          </div>
+          <div style={{ display: activeTab === "diagnostics" ? "contents" : "none" }}>
+            <DiagnosticsTab />
+          </div>
+          <div style={{ display: activeTab === "logs" ? "contents" : "none" }}>
+            <LogsTab />
+          </div>
+        </main>
+      </div>
     </div>
   );
 }
