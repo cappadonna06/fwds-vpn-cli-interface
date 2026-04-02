@@ -102,10 +102,37 @@ interface CellularDiagnostic {
 interface SatelliteDiagnostic {
   status: DiagStatus;
   summary: string;
-  enabled: boolean;
-  loopback_passed?: boolean | null;
-  loopback_time_secs?: number | null;
-  imei?: string | null;
+  controller_sid?: string | null;
+  controller_version?: string | null;
+  controller_date?: string | null;
+  sat_imei?: string | null;
+  modem_present?: boolean | null;
+  connman_state?: string | null;
+  connman_eth_connected?: boolean | null;
+  connman_wifi_connected?: boolean | null;
+  connman_cell_connected?: boolean | null;
+  connman_active_service?: string | null;
+  default_gateway?: string | null;
+  default_via_eth0?: boolean | null;
+  default_via_wlan0?: boolean | null;
+  default_via_wwan0?: boolean | null;
+  satellites_seen?: number | null;
+  light_test_ran: boolean;
+  light_test_success?: boolean | null;
+  light_test_timeout?: boolean | null;
+  light_test_blocked_in_use?: boolean | null;
+  light_test_error?: string | null;
+  loopback_test_ran: boolean;
+  loopback_test_success?: boolean | null;
+  loopback_test_timeout?: boolean | null;
+  loopback_test_blocked_in_use?: boolean | null;
+  loopback_test_error?: string | null;
+  station_sent_epoch?: number | null;
+  server_sent_epoch?: number | null;
+  current_epoch?: number | null;
+  total_time_seconds?: number | null;
+  recommended_action?: string | null;
+  other_actions?: string[] | null;
 }
 
 interface EthernetDiagnostic {
@@ -312,6 +339,64 @@ function buildCellularRows(cell?: CellularDiagnostic | null): { label: string; v
   return rows;
 }
 
+function buildSatelliteRows(sat?: SatelliteDiagnostic | null): { label: string; value: string }[] {
+  if (!sat) return [];
+  const rows: { label: string; value: string }[] = [];
+
+  rows.push({
+    label: "Modem",
+    value: sat.modem_present === true ? "Detected" : sat.modem_present === false ? "Not detected" : "—",
+  });
+
+  if (sat.sat_imei) rows.push({ label: "IMEI", value: sat.sat_imei });
+
+  if (sat.satellites_seen !== null && sat.satellites_seen !== undefined) {
+    rows.push({ label: "Satellites seen", value: String(sat.satellites_seen) });
+  }
+
+  rows.push({
+    label: "Loopback",
+    value:
+      sat.loopback_test_success === true
+        ? "Passed"
+        : sat.loopback_test_ran
+          ? sat.loopback_test_blocked_in_use
+            ? "Blocked (in use)"
+            : "Failed"
+          : "Not run",
+  });
+
+  if (sat.total_time_seconds !== null && sat.total_time_seconds !== undefined) {
+    rows.push({ label: "Loopback time", value: `${sat.total_time_seconds}s` });
+  }
+
+  rows.push({
+    label: "Network state",
+    value: sat.connman_state || "—",
+  });
+
+  rows.push({
+    label: "Primary network",
+    value: sat.connman_active_service || "—",
+  });
+
+  if (sat.recommended_action) {
+    rows.push({ label: "Recommended", value: sat.recommended_action });
+  }
+
+  if (sat.other_actions && sat.other_actions.length > 0) {
+    rows.push({ label: "Other options", value: sat.other_actions.join(" • ") });
+  }
+
+  if (sat.loopback_test_error) {
+    rows.push({ label: "Last error", value: sat.loopback_test_error });
+  } else if (sat.light_test_error) {
+    rows.push({ label: "Last error", value: sat.light_test_error });
+  }
+
+  return rows;
+}
+
 function DiagCard({ title, icon, status, summary, rows, updatedAt }: DiagCardProps) {
   const statusLabel =
     status === "green" ? "Healthy" :
@@ -494,20 +579,7 @@ export default function DiagnosticsTab() {
           icon="🛰️"
           status={satellite?.status ?? "unknown"}
           summary={satellite?.summary ?? "Run satellite-check to populate"}
-          rows={expanded.satellite ? [
-            { label: "Enabled", value: fmtBool(satellite?.enabled) },
-            {
-              label: "Loopback",
-              value:
-                satellite?.loopback_passed === true
-                  ? "Passed"
-                  : satellite?.loopback_passed === false
-                    ? "Failed"
-                    : "Not run",
-            },
-            ...(satellite?.loopback_time_secs ? [{ label: "Loopback time", value: `${satellite.loopback_time_secs.toFixed(1)}s` }] : []),
-            ...(satellite?.imei ? [{ label: "IMEI", value: satellite.imei }] : []),
-          ] : []}
+          rows={expanded.satellite ? buildSatelliteRows(satellite) : []}
           updatedAt={cardUpdatedAt.satellite}
           />
         </div>

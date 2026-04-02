@@ -280,40 +280,54 @@ export const COMMANDS: ControllerCommand[] = [
     tags: ["network", "connectivity", "dns", "link"],
   },
   {
-    id: "satellite-check-m",
-    label: "satellite-check -m",
-    command: "satellite-check -m",
+    id: "satellite-check",
+    label: "satellite-check",
+    command: "satellite-check",
     category: "diagnostic",
-    description: "Monitor satellite status continuously. After 10 minutes prints visibility uptime.",
+    description: "Satellite connectivity check.",
     reboot_required: false,
     guard: "none",
-    est_seconds: 600,
-    when_to_run: "When satellite connectivity needs to be verified. Runs for ~10 minutes.",
-    what_to_look_for: [
-      "Watch for uptime percentage — higher is better",
-      "< 50% uptime may indicate obstruction or modem issue",
-      "Press Ctrl+C to stop early",
-    ],
-    related_command_ids: ["sat-imei", "setup-satellite"],
-    tags: ["network", "iridium", "backup"],
+    est_seconds: 60,
   },
   {
-    id: "satellite-check-t",
+    id: "satellite-check-light",
+    label: "satellite-check -c 1 -W 1 -w 1",
+    command: "satellite-check -c 1 -W 1 -w 1",
+    category: "diagnostic",
+    description: "Quick satellite sanity check.",
+    reboot_required: false,
+    guard: "none",
+    est_seconds: 60,
+  },
+  {
+    id: "satellite-check-light-verbose",
+    label: "satellite-check -c 1 -W 1 -w 1 -v",
+    command: "satellite-check -c 1 -W 1 -w 1 -v",
+    category: "diagnostic",
+    description: "Quick satellite sanity check with verbose output.",
+    reboot_required: false,
+    guard: "none",
+    est_seconds: 60,
+  },
+  {
+    id: "satellite-check-loopback",
     label: "satellite-check -t",
     command: "satellite-check -t",
     category: "diagnostic",
-    description: "Run Frontline loopback satellite test. Run monitor mode first to verify visibility.",
+    description: "Satellite loopback validation test.",
     reboot_required: false,
     guard: "none",
+    est_seconds: 300,
   },
   {
-    id: "satellite-check-r",
-    label: "satellite-check -r",
-    command: "satellite-check -r",
+    id: "satellite-check-loopback-full",
+    label: "satellite-check -t -f -v -W 5 -w 10",
+    command: "satellite-check -t -f -v -W 5 -w 10",
     category: "diagnostic",
-    description: "Run receive mode satellite test. Requires initiating a server request when prompted.",
+    description: "Full satellite loopback validation with verbose/full stats.",
     reboot_required: false,
     guard: "none",
+    est_seconds: 600,
   },
 
   // Informational
@@ -339,8 +353,8 @@ export const COMMANDS: ControllerCommand[] = [
     id: "sid",
     label: "sid",
     command: "sid",
-    category: "info",
-    description: "Display controller serial number.",
+    category: "diagnostic",
+    description: "Controller serial number.",
     reboot_required: false,
     guard: "none",
     est_seconds: 1,
@@ -351,8 +365,8 @@ export const COMMANDS: ControllerCommand[] = [
     id: "date",
     label: "date",
     command: "date",
-    category: "info",
-    description: "Display controller date/time.",
+    category: "diagnostic",
+    description: "Current system time.",
     reboot_required: false,
     guard: "none",
     est_seconds: 1,
@@ -361,8 +375,8 @@ export const COMMANDS: ControllerCommand[] = [
     id: "version",
     label: "version",
     command: "version",
-    category: "info",
-    description: "Display controller firmware version.",
+    category: "diagnostic",
+    description: "Controller software version.",
     reboot_required: false,
     guard: "none",
     est_seconds: 1,
@@ -639,10 +653,11 @@ export const COMMANDS: ControllerCommand[] = [
     id: "sat-imei",
     label: "sat-imei",
     command: "sat-imei",
-    category: "info",
-    description: "Display satellite modem IMEI.",
+    category: "diagnostic",
+    description: "Satellite modem IMEI.",
     reboot_required: false,
     guard: "none",
+    est_seconds: 1,
   },
   {
     id: "help",
@@ -688,7 +703,7 @@ export const FAVORITE_COMMAND_IDS = [
   "ethernet-check",
   "wifi-check",
   "cellular-check",
-  "satellite-check-m",
+  "satellite-check-light",
   "cell-signal",
   "wifi-signal",
   "version",
@@ -896,12 +911,64 @@ cell-support --no-ofono --at
   {
     id: "satellite",
     label: "Satellite",
-    icon: "🛰",
-    description: "Iridium satellite modem sky visibility and uptime percentage. Runs continuously for ~10 minutes and reports the percentage of time the satellite was in view. Use this to confirm the modem has sufficient sky visibility before relying on satellite backup.",
-    when_to_run: "When satellite connectivity needs to be verified or when satellite-dependent alerts are not firing.",
-    light_command_ids: ["satellite-check-m"],
-    heavy_command_ids: ["satellite-check-m", "sat-imei"],
-    time_warning: "satellite-check -m runs for ~10 minutes. Do not close the terminal.",
+    icon: "🛰️",
+    description: "Satellite diagnostics — quick sanity and full loopback validation",
+    light_command_ids: [
+      "sat-imei",
+      "satellite-check-light",
+    ],
+    heavy_command_ids: [
+      "date",
+      "version",
+      "sid",
+      "sat-imei",
+      "connmanctl-technologies",
+      "connmanctl-services",
+      "connmanctl-state",
+      "ip-route",
+      "proc-net-dev",
+      "satellite-check-loopback-full",
+    ],
+    light_script: `(
+echo "===== CONTROLLER INFO ====="
+date
+version
+sid
+
+echo ""
+echo "===== SATELLITE BASIC ====="
+sat-imei
+
+echo ""
+echo "===== NETWORK STATE ====="
+connmanctl technologies
+connmanctl services
+connmanctl state
+
+echo ""
+echo "===== QUICK SATELLITE CHECK ====="
+satellite-check -c 1 -W 1 -w 1
+)`,
+    heavy_script: `(
+echo "===== CONTROLLER INFO ====="
+date
+version
+sid
+
+echo ""
+echo "===== SATELLITE BASIC ====="
+sat-imei
+
+echo ""
+echo "===== NETWORK STATE ====="
+connmanctl technologies
+connmanctl services
+connmanctl state
+
+echo ""
+echo "===== SATELLITE LOOPBACK TEST ====="
+satellite-check -t
+)`,
   },
   {
     id: "system",
@@ -932,10 +999,10 @@ cell-support --no-ofono --at
       "ethernet-check", "ethtool-eth0", "ifconfig-eth0",
       "wifi-check", "wifi-signal",
       "cellular-check", "cell-signal", "cell-provider", "cell-ccid", "cell-imei", "cell-apn", "cell-status",
-      "satellite-check-m", "sat-imei",
+      "satellite-check-loopback-full", "sat-imei",
       "version", "sid", "release",
     ],
-    time_warning: "Includes satellite-check -m (~10 min). Use 'Full Diags (no satellite)' to skip.",
+    time_warning: "Includes satellite loopback diagnostics. Use 'Full Diags (no satellite)' to skip.",
   },
   {
     id: "full-diags-no-sat",
