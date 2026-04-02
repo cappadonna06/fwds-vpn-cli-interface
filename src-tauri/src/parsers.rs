@@ -36,9 +36,16 @@ pub fn parse_log_into_state(log: &str, state: &mut DiagnosticState) {
             .or_else(|| find_latest(&latest, &["run satellite diagnostics"])),
     );
 
+    let ethernet_block = find_latest_body_contains(
+        &latest,
+        &[
+            "===== eth diagnostics start =====",
+            "===== eth diagnostics end =====",
+        ],
+    );
     let ethernet = parse_ethernet(
-        find_latest(&latest, &["ethernet-check", "run ethernet diagnostics"]),
-        find_latest(&latest, &["ethtool eth0", "run ethernet diagnostics"]),
+        find_latest(&latest, &["ethernet-check", "run ethernet diagnostics"]).or(ethernet_block),
+        find_latest(&latest, &["ethtool eth0", "run ethernet diagnostics"]).or(ethernet_block),
         find_latest(
             &latest,
             &[
@@ -47,7 +54,8 @@ pub fn parse_log_into_state(log: &str, state: &mut DiagnosticState) {
                 "run ethernet diagnostics",
                 "ethernet diags heavy",
             ],
-        ),
+        )
+        .or(ethernet_block),
         find_latest(
             &latest,
             &[
@@ -55,7 +63,8 @@ pub fn parse_log_into_state(log: &str, state: &mut DiagnosticState) {
                 "run ethernet diagnostics",
                 "ethernet diags heavy",
             ],
-        ),
+        )
+        .or(ethernet_block),
         find_latest(
             &latest,
             &[
@@ -63,7 +72,8 @@ pub fn parse_log_into_state(log: &str, state: &mut DiagnosticState) {
                 "run ethernet diagnostics",
                 "ethernet diags heavy",
             ],
-        ),
+        )
+        .or(ethernet_block),
     );
 
     let system = parse_system(
@@ -239,6 +249,7 @@ fn split_blocks(log: &str) -> Vec<CommandBlock> {
     let mut blocks = Vec::new();
     let mut current_cmd: Option<String> = None;
     let mut current_body = String::new();
+    let mut orphan_body = String::new();
 
     for line in log.lines() {
         let cleaned = ansi_re.replace_all(line, "");
@@ -253,6 +264,13 @@ fn split_blocks(log: &str) -> Vec<CommandBlock> {
 
         if let Some(candidate) = prompt_candidate {
             if let Some(cap) = prompt_re.captures(candidate) {
+                if !orphan_body.trim().is_empty() {
+                    blocks.push(CommandBlock {
+                        command: "__orphan__".to_string(),
+                        body: orphan_body.trim().to_string(),
+                    });
+                    orphan_body.clear();
+                }
                 if let Some(cmd) = current_cmd.take() {
                     blocks.push(CommandBlock {
                         command: cmd,
@@ -283,7 +301,17 @@ fn split_blocks(log: &str) -> Vec<CommandBlock> {
         if current_cmd.is_some() {
             current_body.push_str(cleaned);
             current_body.push('\n');
+        } else if !cleaned.is_empty() {
+            orphan_body.push_str(cleaned);
+            orphan_body.push('\n');
         }
+    }
+
+    if !orphan_body.trim().is_empty() {
+        blocks.push(CommandBlock {
+            command: "__orphan__".to_string(),
+            body: orphan_body.trim().to_string(),
+        });
     }
 
     if let Some(cmd) = current_cmd {
@@ -474,6 +502,15 @@ default via 100.108.114.46 dev wwan0
         assert_eq!(eth.status, crate::DiagStatus::Green);
         assert_eq!(eth.speed.as_deref(), Some("1000Mb/s"));
     }
+
+    #[test]
+    fn split_blocks_captures_orphan_output_chunk() {
+        let log = "Testing Wi-Fi...\nInternet reachability state: online\nDone: Success\n";
+        let blocks = split_blocks(log);
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].command, "__orphan__");
+        assert!(blocks[0].body.contains("Done: Success"));
+    }
 }
 
 fn parse_wifi(latest: &HashMap<String, String>) -> Option<WifiDiagnostic> {
@@ -537,20 +574,31 @@ fn parse_wifi(latest: &HashMap<String, String>) -> Option<WifiDiagnostic> {
         proc_tx_errs: None,
     };
 
-    let wifi_check = find_latest(latest, &["wifi-check", "wifi diagnostics"]);
-    let wifi_signal = find_latest(latest, &["wifi-signal", "wifi diagnostics"]);
-    let iw_dev = find_latest(latest, &["iw dev", "wifi diagnostics"]);
-    let iw_info = find_latest(latest, &["iw dev wlan0 info", "wifi diagnostics"]);
-    let iw_link = find_latest(latest, &["iw dev wlan0 link", "wifi diagnostics"]);
-    let iw_station = find_latest(latest, &["iw dev wlan0 station dump", "wifi diagnostics"]);
-    let ip_link = find_latest(latest, &["ip link show wlan0", "wifi diagnostics"]);
-    let ip_addr = find_latest(latest, &["ip addr show wlan0", "wifi diagnostics"]);
-    let ip_route = find_latest(latest, &["ip route", "wifi diagnostics"]);
-    let conn_tech = find_latest(latest, &["connmanctl technologies", "wifi diagnostics"]);
-    let conn_services = find_latest(latest, &["connmanctl services", "wifi diagnostics"]);
-    let conn_state = find_latest(latest, &["connmanctl state", "wifi diagnostics"]);
-    let ethtool_driver = find_latest(latest, &["ethtool -i wlan0", "wifi diagnostics"]);
-    let proc_net = find_latest(latest, &["cat /proc/net/dev", "wifi diagnostics"]);
+    let wifi_block = find_latest_body_contains(
+        latest,
+        &[
+            "===== wifi diagnostics start =====",
+            "===== wifi diagnostics end =====",
+        ],
+    );
+    let wifi_check = find_latest(latest, &["wifi-check", "wifi diagnostics"]).or(wifi_block);
+    let wifi_signal = find_latest(latest, &["wifi-signal", "wifi diagnostics"]).or(wifi_block);
+    let iw_dev = find_latest(latest, &["iw dev", "wifi diagnostics"]).or(wifi_block);
+    let iw_info = find_latest(latest, &["iw dev wlan0 info", "wifi diagnostics"]).or(wifi_block);
+    let iw_link = find_latest(latest, &["iw dev wlan0 link", "wifi diagnostics"]).or(wifi_block);
+    let iw_station =
+        find_latest(latest, &["iw dev wlan0 station dump", "wifi diagnostics"]).or(wifi_block);
+    let ip_link = find_latest(latest, &["ip link show wlan0", "wifi diagnostics"]).or(wifi_block);
+    let ip_addr = find_latest(latest, &["ip addr show wlan0", "wifi diagnostics"]).or(wifi_block);
+    let ip_route = find_latest(latest, &["ip route", "wifi diagnostics"]).or(wifi_block);
+    let conn_tech =
+        find_latest(latest, &["connmanctl technologies", "wifi diagnostics"]).or(wifi_block);
+    let conn_services =
+        find_latest(latest, &["connmanctl services", "wifi diagnostics"]).or(wifi_block);
+    let conn_state = find_latest(latest, &["connmanctl state", "wifi diagnostics"]).or(wifi_block);
+    let ethtool_driver =
+        find_latest(latest, &["ethtool -i wlan0", "wifi diagnostics"]).or(wifi_block);
+    let proc_net = find_latest(latest, &["cat /proc/net/dev", "wifi diagnostics"]).or(wifi_block);
 
     let has_wifi_inputs = wifi_check.is_some()
         || wifi_signal.is_some()

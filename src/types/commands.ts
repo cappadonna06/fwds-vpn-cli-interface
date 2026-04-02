@@ -718,7 +718,8 @@ export const DIAGNOSTIC_BLOCKS: DiagnosticBlock[] = [
     when_to_run: "After setup-ethernet, after any network change, or when the site reports connectivity issues.",
     light_command_ids: ["ethernet-check"],
     heavy_command_ids: ["ethernet-check", "ethtool-eth0", "ifconfig-eth0"],
-    heavy_script: `echo "===== ETH DIAGNOSTICS START ====="
+    heavy_script: `(
+echo "===== ETH DIAGNOSTICS START ====="
 
 echo ""
 echo "--- FRONTLINE ---"
@@ -759,7 +760,8 @@ ethtool -S eth0
 cat /proc/net/dev
 
 echo ""
-echo "===== ETH DIAGNOSTICS END ====="`,
+echo "===== ETH DIAGNOSTICS END ====="
+)`,
   },
   {
     id: "wifi",
