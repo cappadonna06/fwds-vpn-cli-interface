@@ -29,6 +29,13 @@ struct InnerState {
     shell_phase: String,  // disconnected | connecting | connected | failed
     shell_detail: String,
     controller_ip: Option<String>,
+
+    // Local serial connection (minicom)
+    serial_device: Option<String>,  // e.g. "/dev/cu.usbserial-XXXX"
+
+    // Path of the active script(1) session log being watched
+    // Set by open_controller_terminal and open_serial_terminal
+    active_log_file: Option<String>,
     shell_logs: Vec<String>,
     shell_log_cursor: usize, // how many lines ConsoleTab has already consumed
     // True when the last stdout flush was a wizard prompt waiting for input.
@@ -128,21 +135,75 @@ pub struct SatelliteDiagnostic {
 pub struct EthernetDiagnostic {
     pub status: DiagStatus,
     pub summary: String,
+
+    // From ethernet-check
+    pub check_result: String,
+    pub check_error: Option<String>,
     pub internet_reachable: bool,
     pub eth_state: String,
     pub ipv4: bool,
     pub ipv6: bool,
     pub dns_servers: String,
-    pub ip_address: Option<String>,
-    pub netmask: Option<String>,
+    pub check_avg_latency_ms: Option<f64>,
+    pub check_packet_loss_pct: u8,
+
+    // From ethtool eth0
+    pub link_detected: Option<bool>,
     pub speed: Option<String>,
     pub duplex: Option<String>,
-    pub link_detected: Option<bool>,
-    pub rx_errors: u64,
-    pub tx_errors: u64,
-    pub rx_dropped: u64,
-    pub check_result: String,
+    pub auto_negotiation: Option<bool>,
+
+    // From cat /sys/class/net/eth0/carrier
+    pub carrier: Option<bool>,
+
+    // From cat /sys/class/net/eth0/operstate
+    pub operstate: Option<String>,
+
+    // From ip link show eth0
+    pub no_carrier_flag: Option<bool>,
+    pub lower_up_flag: Option<bool>,
+    pub link_state: Option<String>,
+    pub mac_address: Option<String>,
+
+    // From ip addr show eth0
+    pub ipv4_address: Option<String>,
+    pub ipv4_prefix: Option<u8>,
+
+    // From ip route
+    pub default_via_eth0: Option<bool>,
+    pub default_gateway: Option<String>,
+
+    // From connmanctl technologies
+    pub connman_eth_powered: Option<bool>,
+    pub connman_eth_connected: Option<bool>,
+    pub connman_wifi_connected: Option<bool>,
+    pub connman_cell_connected: Option<bool>,
+
+    // From connmanctl services
+    pub connman_active_service: Option<String>,
+    pub connman_eth_active: Option<bool>,
+
+    // From connmanctl state
+    pub connman_state: Option<String>,
+
+    // From dmesg | grep -i eth
+    pub dmesg_link_events: Vec<String>,
     pub flap_count: u32,
+
+    // From ethtool -S eth0
+    pub hw_tx_packets: Option<u64>,
+    pub hw_rx_packets: Option<u64>,
+    pub hw_rx_crc_errors: Option<u64>,
+    pub hw_rx_align_errors: Option<u64>,
+
+    // From cat /proc/net/dev
+    pub proc_rx_bytes: Option<u64>,
+    pub proc_rx_packets: Option<u64>,
+    pub proc_rx_errs: Option<u64>,
+    pub proc_rx_drop: Option<u64>,
+    pub proc_tx_bytes: Option<u64>,
+    pub proc_tx_packets: Option<u64>,
+    pub proc_tx_errs: Option<u64>,
 }
 
 #[derive(serde::Serialize, Clone)]
@@ -711,6 +772,8 @@ fn open_controller_terminal(state: State<'_, AppState>) -> Result<(), String> {
         .map_err(|e| format!("Failed to open Terminal: {e}"))?;
 
     if out.status.success() {
+        let mut inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
+        inner.active_log_file = Some(log_path);
         Ok(())
     } else {
         let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
@@ -720,6 +783,90 @@ fn open_controller_terminal(state: State<'_, AppState>) -> Result<(), String> {
             format!("Failed to open Terminal: {stderr}")
         })
     }
+}
+
+/// Open a local serial console via minicom, wrapped with script(1) for log capture.
+/// Launches Terminal.app with: script -q ~/Desktop/fwds-serial-{device}-{date}.txt minicom -D {device} -b 115200
+#[tauri::command]
+fn open_serial_terminal(device: String, state: State<'_, AppState>) -> Result<(), String> {
+    // Enforce one session at a time
+    {
+        let inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
+        if inner.controller_ip.is_some() && inner.shell_phase == "connected" {
+            return Err("Disconnect the active VPN/SSH session before opening a serial connection.".into());
+        }
+    }
+
+    // Extract the device suffix for the log filename (e.g. "usbserial-XXXX")
+    let device_suffix = device
+        .rsplit('/')
+        .next()
+        .unwrap_or("serial")
+        .to_string();
+
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+    let date_str = Command::new("date")
+        .arg("+%Y-%m-%d")
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_else(|_| "session".into());
+
+    let log_path = format!("{}/Desktop/fwds-serial-{}-{}.txt", home, device_suffix, date_str);
+
+    let command = format!(
+        "clear; script -q {} minicom -D {} -b 115200; exit",
+        shell_quote(&log_path),
+        shell_quote(&device),
+    );
+    let script = format!(
+        "tell application \"Terminal\"\nactivate\ndo script {}\nend tell",
+        applescript_string_literal(&command)
+    );
+
+    let out = Command::new("osascript")
+        .arg("-e")
+        .arg(&script)
+        .output()
+        .map_err(|e| format!("Failed to open Terminal: {e}"))?;
+
+    if out.status.success() {
+        let mut inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
+        inner.serial_device = Some(device.clone());
+        inner.active_log_file = Some(log_path);
+        Ok(())
+    } else {
+        let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        Err(if stderr.is_empty() {
+            "Terminal launch failed.".into()
+        } else {
+            format!("Failed to open Terminal: {stderr}")
+        })
+    }
+}
+
+/// List available serial devices (cu.* ports on macOS).
+#[tauri::command]
+fn list_serial_devices() -> Result<Vec<String>, String> {
+    let output = Command::new("ls")
+        .arg("/dev/")
+        .output()
+        .map_err(|e| format!("Failed to list /dev: {e}"))?;
+    let text = String::from_utf8_lossy(&output.stdout);
+    let devices: Vec<String> = text
+        .lines()
+        .filter(|l| l.starts_with("cu."))
+        .map(|l| format!("/dev/{}", l))
+        .collect();
+    Ok(devices)
+}
+
+/// Disconnect the active serial session and clear the log watcher path.
+#[tauri::command]
+fn disconnect_serial(state: State<'_, AppState>) -> Result<(), String> {
+    let mut inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
+    inner.serial_device = None;
+    inner.active_log_file = None;
+    Ok(())
 }
 
 /// Lightweight status for the Session tab — does NOT advance the ConsoleTab cursor.
@@ -740,6 +887,7 @@ fn get_app_state(state: State<'_, AppState>) -> Result<serde_json::Value, String
         "vpn_phase": inner.vpn_phase,
         "shell_phase": inner.shell_phase,
         "controller_ip": inner.controller_ip,
+        "serial_device": inner.serial_device,
     }))
 }
 
@@ -1226,15 +1374,18 @@ fn debug_escape(s: &str) -> String {
 
 #[tauri::command]
 fn start_log_watcher(state: State<'_, AppState>) -> Result<(), String> {
-    let ip = {
+    // Prefer the explicit active_log_file (set by both terminal launchers).
+    // Fall back to deriving the path from controller_ip for backwards compatibility.
+    let log_path = {
         let inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
-        inner
-            .controller_ip
-            .clone()
-            .ok_or("No controller IP — connect first")?
+        if let Some(ref path) = inner.active_log_file {
+            PathBuf::from(path)
+        } else if let Some(ref ip) = inner.controller_ip {
+            log_file_path(ip)
+        } else {
+            return Err("No active session — launch a terminal first".into());
+        }
     };
-
-    let log_path = log_file_path(&ip);
     let diag_arc = state.diagnostic_state.clone();
 
     // Stop any existing watcher
@@ -1362,6 +1513,9 @@ pub fn run() {
             start_log_watcher,
             get_diagnostic_state,
             stop_log_watcher,
+            open_serial_terminal,
+            list_serial_devices,
+            disconnect_serial,
         ])
         .setup(|_app| Ok(()))
         .run(tauri::generate_context!())

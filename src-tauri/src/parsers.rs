@@ -364,146 +364,349 @@ fn parse_time_to_secs(s: &str) -> Option<f64> {
     }
 }
 
-fn parse_ethernet_check(block: &str) -> Option<EthernetDiagnostic> {
-    let mut internet_reachable = false;
-    let mut eth_state = String::new();
-    let mut ipv4 = false;
-    let mut ipv6 = false;
-    let mut dns_servers = String::new();
-    let mut check_result = String::new();
+// ── Comprehensive Ethernet parsers ────────────────────────────────────────────
 
+fn eth_check_from_block(block: &str, diag: &mut EthernetDiagnostic) {
     for line in block.lines() {
         if let Some(v) = extract_after(line, "Internet reachability state:") {
-            internet_reachable = v.eq_ignore_ascii_case("online");
+            diag.internet_reachable = v.eq_ignore_ascii_case("online");
         } else if let Some(v) = extract_after(line, "Ethernet state:") {
-            eth_state = v.to_string();
+            diag.eth_state = v.to_string();
         } else if let Some(v) = extract_after(line, "Ethernet supports IPv4?") {
-            ipv4 = parse_yes_no(v);
+            diag.ipv4 = parse_yes_no(v);
         } else if let Some(v) = extract_after(line, "Ethernet supports IPv6?") {
-            ipv6 = parse_yes_no(v);
+            diag.ipv6 = parse_yes_no(v);
         } else if let Some(v) = extract_after(line, "Ethernet name servers:") {
-            dns_servers = v.to_string();
+            diag.dns_servers = v.to_string();
+        } else if let Some(v) = extract_after(line, "Done: Failure:") {
+            diag.check_result = "Failure".into();
+            diag.check_error = Some(v.trim().to_string());
         } else if let Some(v) = extract_after(line, "Done:") {
-            check_result = v.to_string();
+            diag.check_result = v.trim().to_string();
         }
     }
-
-    if eth_state.is_empty() && check_result.is_empty() {
-        return None;
+    // Average all RTT lines (may have multiple ICMP targets)
+    let mut rtt_sum = 0.0f64;
+    let mut rtt_count = 0usize;
+    for line in block.lines() {
+        if line.contains("min/avg/max") && line.contains('=') {
+            if let Some(avg) = parse_rtt_avg(line) {
+                rtt_sum += avg;
+                rtt_count += 1;
+            }
+        }
     }
+    if rtt_count > 0 {
+        diag.check_avg_latency_ms = Some(rtt_sum / rtt_count as f64);
+    }
+    diag.check_packet_loss_pct = parse_packet_loss(block);
+}
 
-    let avg_latency_ms = parse_rtt_avg(block);
-    let _packet_loss_pct = parse_packet_loss(block);
+fn ethtool_from_block(block: &str, diag: &mut EthernetDiagnostic) {
+    for line in block.lines() {
+        let t = line.trim();
+        if let Some(v) = extract_after(t, "Speed:") {
+            // "Unknown!" → leave as string, frontend handles display
+            let s = v.to_string();
+            if !s.starts_with("Unknown") {
+                diag.speed = Some(s);
+            }
+        } else if let Some(v) = extract_after(t, "Duplex:") {
+            let s = v.to_string();
+            if !s.starts_with("Unknown") {
+                diag.duplex = Some(s);
+            }
+        } else if let Some(v) = extract_after(t, "Auto-negotiation:") {
+            diag.auto_negotiation = Some(v.eq_ignore_ascii_case("on"));
+        } else if let Some(v) = extract_after(t, "Link detected:") {
+            diag.link_detected = Some(v.eq_ignore_ascii_case("yes"));
+        }
+    }
+}
 
-    let success = check_result.eq_ignore_ascii_case("Success");
-    let status = if success && internet_reachable {
-        DiagStatus::Green
-    } else if internet_reachable {
-        DiagStatus::Orange
-    } else {
-        DiagStatus::Red
-    };
+fn carrier_from_block(block: &str, diag: &mut EthernetDiagnostic) {
+    for line in block.lines() {
+        let t = line.trim();
+        if t == "1" { diag.carrier = Some(true); return; }
+        if t == "0" { diag.carrier = Some(false); return; }
+    }
+}
 
-    let summary = if internet_reachable {
-        format!("Connected · {}", eth_state)
-    } else {
-        format!("Offline · {}", eth_state)
-    };
+fn operstate_from_block(block: &str, diag: &mut EthernetDiagnostic) {
+    for line in block.lines() {
+        let t = line.trim();
+        if !t.is_empty() {
+            diag.operstate = Some(t.to_string());
+            return;
+        }
+    }
+}
 
-    Some(EthernetDiagnostic {
-        status,
-        summary,
-        internet_reachable,
-        eth_state,
-        ipv4,
-        ipv6,
-        dns_servers,
-        ip_address: None,
-        netmask: None,
+fn ip_link_from_block(block: &str, diag: &mut EthernetDiagnostic) {
+    // 2: eth0: <NO-CARRIER,BROADCAST,MULTICAST,DYNAMIC,UP> mtu 1500 ... state DOWN
+    let flags_re = Regex::new(r"<([^>]+)>").unwrap();
+    let state_re = Regex::new(r"\bstate\s+(UP|DOWN|UNKNOWN)\b").unwrap();
+    let mac_re = Regex::new(r"link/ether\s+([0-9a-f:]{17})").unwrap();
+
+    for line in block.lines() {
+        if line.contains("eth0") {
+            if let Some(cap) = flags_re.captures(line) {
+                let flags = &cap[1];
+                diag.no_carrier_flag = Some(flags.contains("NO-CARRIER"));
+                diag.lower_up_flag = Some(flags.contains("LOWER_UP"));
+            }
+            if let Some(cap) = state_re.captures(line) {
+                diag.link_state = Some(cap[1].to_string());
+            }
+        }
+        if let Some(cap) = mac_re.captures(line) {
+            diag.mac_address = Some(cap[1].to_string());
+        }
+    }
+}
+
+fn ip_addr_from_block(block: &str, diag: &mut EthernetDiagnostic) {
+    // "    inet 192.168.7.42/22 brd ..."
+    let re = Regex::new(r"inet\s+(\d+\.\d+\.\d+\.\d+)/(\d+)").unwrap();
+    for line in block.lines() {
+        if line.trim_start().starts_with("inet ") && !line.contains("inet6") {
+            if let Some(cap) = re.captures(line) {
+                diag.ipv4_address = Some(cap[1].to_string());
+                diag.ipv4_prefix = cap[2].parse().ok();
+            }
+        }
+    }
+}
+
+fn ip_route_from_block(block: &str, diag: &mut EthernetDiagnostic) {
+    // "default via 192.168.4.1 dev eth0"
+    let re = Regex::new(r"default via (\d+\.\d+\.\d+\.\d+) dev (\S+)").unwrap();
+    for line in block.lines() {
+        if let Some(cap) = re.captures(line) {
+            let gw = cap[1].to_string();
+            let dev = &cap[2];
+            if dev == "eth0" {
+                diag.default_via_eth0 = Some(true);
+                diag.default_gateway = Some(gw);
+                return;
+            } else if diag.default_gateway.is_none() {
+                diag.default_via_eth0 = Some(false);
+                diag.default_gateway = Some(gw);
+            }
+        }
+    }
+    if diag.default_via_eth0.is_none() && diag.default_gateway.is_some() {
+        diag.default_via_eth0 = Some(false);
+    }
+}
+
+fn connman_tech_from_block(block: &str, diag: &mut EthernetDiagnostic) {
+    let mut current_type: Option<&str> = None;
+    for line in block.lines() {
+        let t = line.trim();
+        if t.contains("technology/ethernet") { current_type = Some("ethernet"); }
+        else if t.contains("technology/wifi") { current_type = Some("wifi"); }
+        else if t.contains("technology/cellular") || t.contains("technology/gadget") {
+            current_type = Some("cellular");
+        }
+        if let Some(v) = extract_after(t, "Connected =") {
+            let is_conn = v.trim().eq_ignore_ascii_case("true");
+            match current_type {
+                Some("ethernet") => diag.connman_eth_connected = Some(is_conn),
+                Some("wifi") => diag.connman_wifi_connected = Some(is_conn),
+                Some("cellular") => diag.connman_cell_connected = Some(is_conn),
+                _ => {}
+            }
+        }
+        if let Some(v) = extract_after(t, "Powered =") {
+            let is_on = v.trim().eq_ignore_ascii_case("true");
+            if current_type == Some("ethernet") {
+                diag.connman_eth_powered = Some(is_on);
+            }
+        }
+    }
+}
+
+fn connman_services_from_block(block: &str, diag: &mut EthernetDiagnostic) {
+    // "*AO Wired                ethernet_0004f387eb94_cable"
+    // "*AO lieberells           wifi_..."
+    for line in block.lines() {
+        if !line.contains("*AO") { continue; }
+        // Extract service name (second whitespace-separated token)
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() >= 2 {
+            let name = parts[1].to_string();
+            diag.connman_active_service = Some(name);
+        }
+        // Check if the *AO line contains ethernet service
+        diag.connman_eth_active = Some(line.contains("ethernet_"));
+        break;
+    }
+}
+
+fn connman_state_from_block(block: &str, diag: &mut EthernetDiagnostic) {
+    for line in block.lines() {
+        if let Some(v) = extract_after(line.trim(), "State =") {
+            diag.connman_state = Some(v.trim().to_string());
+            return;
+        }
+    }
+}
+
+fn dmesg_eth_from_block(block: &str, diag: &mut EthernetDiagnostic) {
+    // [13582.743270] fec 2188000.ethernet eth0: Link is Up
+    let re = Regex::new(r"\[\s*(\d+)\.\d+\].*eth0: Link is (Up|Down)").unwrap();
+    for line in block.lines() {
+        if let Some(cap) = re.captures(line) {
+            let ts: f64 = cap[1].parse().unwrap_or(0.0);
+            if ts < 30.0 { continue; } // skip boot-time events
+            diag.dmesg_link_events.push(line.trim().to_string());
+        }
+    }
+    // Count flaps: each Up→Down pair is one flap
+    let mut up_seen = false;
+    for event in &diag.dmesg_link_events {
+        if event.contains("Link is Up") { up_seen = true; }
+        else if event.contains("Link is Down") && up_seen {
+            diag.flap_count += 1;
+            up_seen = false;
+        }
+    }
+}
+
+fn ethtool_stats_from_block(block: &str, diag: &mut EthernetDiagnostic) {
+    for line in block.lines() {
+        let t = line.trim();
+        if let Some(v) = extract_after(t, "tx_packets:") {
+            diag.hw_tx_packets = v.trim().parse().ok();
+        } else if let Some(v) = extract_after(t, "rx_packets:") {
+            diag.hw_rx_packets = v.trim().parse().ok();
+        } else if let Some(v) = extract_after(t, "rx_crc_errors:") {
+            diag.hw_rx_crc_errors = v.trim().parse().ok();
+        } else if let Some(v) = extract_after(t, "IEEE_rx_align:") {
+            diag.hw_rx_align_errors = v.trim().parse().ok();
+        }
+    }
+}
+
+fn proc_net_dev_from_block(block: &str, diag: &mut EthernetDiagnostic) {
+    // eth0: rx_bytes rx_pkts rx_errs rx_drop ... tx_bytes tx_pkts tx_errs ...
+    for line in block.lines() {
+        if let Some(rest) = line.find("eth0:").map(|i| &line[i + 5..]) {
+            let cols: Vec<&str> = rest.split_whitespace().collect();
+            // RX: cols 0-7, TX: cols 8-15
+            if cols.len() >= 11 {
+                diag.proc_rx_bytes   = cols[0].parse().ok();
+                diag.proc_rx_packets = cols[1].parse().ok();
+                diag.proc_rx_errs    = cols[2].parse().ok();
+                diag.proc_rx_drop    = cols[3].parse().ok();
+                diag.proc_tx_bytes   = cols[8].parse().ok();
+                diag.proc_tx_packets = cols[9].parse().ok();
+                diag.proc_tx_errs    = cols[10].parse().ok();
+            }
+        }
+    }
+}
+
+fn determine_eth_status(diag: &mut EthernetDiagnostic) {
+    // RED: No physical link
+    if diag.link_detected == Some(false)
+        || diag.carrier == Some(false)
+        || diag.operstate.as_deref() == Some("down")
+        || diag.no_carrier_flag == Some(true)
+    {
+        diag.status = DiagStatus::Red;
+        diag.summary = "No link — cable unplugged or bad port".into();
+        return;
+    }
+    // RED: ConnMan says Ethernet technology not connected
+    if diag.check_error.as_deref().map(|e| e.contains("-65554")).unwrap_or(false) {
+        diag.status = DiagStatus::Red;
+        diag.summary = "Not connected — Ethernet technology not enabled".into();
+        return;
+    }
+    // RED: Flapping
+    if diag.flap_count > 3 {
+        diag.status = DiagStatus::Red;
+        diag.summary = format!("Flapping — {} link events detected", diag.flap_count);
+        return;
+    }
+    // GREEN: All good
+    if diag.check_result == "Success" && diag.internet_reachable {
+        let ip = diag.ipv4_address.as_deref().unwrap_or("no IP");
+        let speed = diag.speed.as_deref().unwrap_or("unknown speed");
+        let preferred = if diag.connman_eth_active == Some(true) { " · preferred" } else { "" };
+        diag.status = DiagStatus::Green;
+        diag.summary = format!("{} · {}{}", ip, speed, preferred);
+        return;
+    }
+    // ORANGE: Link up but DNS/internet failure
+    if diag.link_detected == Some(true) && diag.ipv4_address.is_some() {
+        diag.status = DiagStatus::Orange;
+        diag.summary = "Link up — DNS or internet failure".into();
+        return;
+    }
+    // ORANGE: Link up but no IP
+    if diag.link_detected == Some(true) {
+        diag.status = DiagStatus::Orange;
+        diag.summary = "Link up — no IP assigned (DHCP failure?)".into();
+        return;
+    }
+    // Incomplete data
+    if !diag.check_result.is_empty() {
+        diag.status = DiagStatus::Orange;
+        diag.summary = "Partial data".into();
+    }
+}
+
+fn make_empty_ethernet() -> EthernetDiagnostic {
+    EthernetDiagnostic {
+        status: DiagStatus::Unknown,
+        summary: String::new(),
+        check_result: String::new(),
+        check_error: None,
+        internet_reachable: false,
+        eth_state: String::new(),
+        ipv4: false,
+        ipv6: false,
+        dns_servers: String::new(),
+        check_avg_latency_ms: None,
+        check_packet_loss_pct: 0,
+        link_detected: None,
         speed: None,
         duplex: None,
-        link_detected: None,
-        rx_errors: 0,
-        tx_errors: 0,
-        rx_dropped: 0,
-        check_result,
+        auto_negotiation: None,
+        carrier: None,
+        operstate: None,
+        no_carrier_flag: None,
+        lower_up_flag: None,
+        link_state: None,
+        mac_address: None,
+        ipv4_address: None,
+        ipv4_prefix: None,
+        default_via_eth0: None,
+        default_gateway: None,
+        connman_eth_powered: None,
+        connman_eth_connected: None,
+        connman_wifi_connected: None,
+        connman_cell_connected: None,
+        connman_active_service: None,
+        connman_eth_active: None,
+        connman_state: None,
+        dmesg_link_events: Vec::new(),
         flap_count: 0,
-    })
-}
-
-/// Parse `ethtool eth0` block — extract Speed, Duplex, Link detected.
-fn parse_ethtool(block: &str) -> (Option<String>, Option<String>, Option<bool>) {
-    let mut speed: Option<String> = None;
-    let mut duplex: Option<String> = None;
-    let mut link_detected: Option<bool> = None;
-
-    for line in block.lines() {
-        if let Some(v) = extract_after(line, "Speed:") {
-            speed = Some(v.to_string());
-        } else if let Some(v) = extract_after(line, "Duplex:") {
-            duplex = Some(v.to_string());
-        } else if let Some(v) = extract_after(line, "Link detected:") {
-            link_detected = Some(v.eq_ignore_ascii_case("yes"));
-        }
+        hw_tx_packets: None,
+        hw_rx_packets: None,
+        hw_rx_crc_errors: None,
+        hw_rx_align_errors: None,
+        proc_rx_bytes: None,
+        proc_rx_packets: None,
+        proc_rx_errs: None,
+        proc_rx_drop: None,
+        proc_tx_bytes: None,
+        proc_tx_packets: None,
+        proc_tx_errs: None,
     }
-
-    (speed, duplex, link_detected)
-}
-
-/// Parse `ifconfig eth0` block — extract inet, netmask, RX errors/dropped, TX errors.
-fn parse_ifconfig(block: &str) -> (Option<String>, Option<String>, u64, u64, u64) {
-    let mut ip_address: Option<String> = None;
-    let mut netmask: Option<String> = None;
-    let mut rx_errors: u64 = 0;
-    let mut tx_errors: u64 = 0;
-    let mut rx_dropped: u64 = 0;
-
-    // RX errors pattern: "RX errors 0  dropped 0  overruns 0  frame 0"
-    let rx_re = Regex::new(r"RX errors\s+(\d+).*dropped\s+(\d+)").unwrap();
-    let tx_re = Regex::new(r"TX errors\s+(\d+)").unwrap();
-
-    for line in block.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with("inet ") {
-            // "inet 192.168.1.100  netmask 0xffffff00  broadcast ..."
-            // or "inet 192.168.1.100 netmask 255.255.255.0"
-            let parts: Vec<&str> = trimmed.split_whitespace().collect();
-            if parts.len() >= 2 {
-                ip_address = Some(parts[1].to_string());
-            }
-            // Look for netmask in same line
-            if let Some(v) = extract_after(trimmed, "netmask ") {
-                let nm = v.split_whitespace().next().unwrap_or("").to_string();
-                if !nm.is_empty() {
-                    // Convert hex netmask if needed
-                    if nm.starts_with("0x") {
-                        netmask = Some(hex_netmask_to_dotted(&nm).unwrap_or(nm));
-                    } else {
-                        netmask = Some(nm);
-                    }
-                }
-            }
-        } else if let Some(cap) = rx_re.captures(trimmed) {
-            rx_errors = cap[1].parse().unwrap_or(0);
-            rx_dropped = cap[2].parse().unwrap_or(0);
-        } else if let Some(cap) = tx_re.captures(trimmed) {
-            tx_errors = cap[1].parse().unwrap_or(0);
-        }
-    }
-
-    (ip_address, netmask, rx_errors, tx_errors, rx_dropped)
-}
-
-fn hex_netmask_to_dotted(hex: &str) -> Option<String> {
-    let stripped = hex.trim_start_matches("0x");
-    let n = u32::from_str_radix(stripped, 16).ok()?;
-    Some(format!(
-        "{}.{}.{}.{}",
-        (n >> 24) & 0xff,
-        (n >> 16) & 0xff,
-        (n >> 8) & 0xff,
-        n & 0xff
-    ))
 }
 
 fn parse_version(block: &str) -> Option<String> {
@@ -613,40 +816,66 @@ pub fn parse_log_into_state(text: &str, state: &mut DiagnosticState) {
         state.satellite = parse_satellite(sat_setup, sat_check);
     }
 
-    // ── Ethernet ──
-    if let Some(block) = latest.get("ethernet-check") {
-        state.ethernet = parse_ethernet_check(block);
-    }
-    if let Some(ref mut eth) = state.ethernet {
-        // Merge ethtool (may be "ethtool eth0" as full command)
-        let ethtool_block = latest
-            .iter()
-            .find(|(k, _)| k.starts_with("ethtool"))
-            .map(|(_, v)| v.as_str());
-        if let Some(block) = ethtool_block {
-            let (speed, duplex, link) = parse_ethtool(block);
-            eth.speed = speed;
-            eth.duplex = duplex;
-            eth.link_detected = link;
-            if eth.link_detected == Some(false) && !eth.internet_reachable {
-                eth.status = DiagStatus::Red;
-                eth.summary = "No link detected".into();
-            }
+    // ── Ethernet — build from any available command blocks ──
+    let has_eth_data = latest.keys().any(|k|
+        k == "ethernet-check"
+        || k.starts_with("ethtool")
+        || k.starts_with("ip link")
+        || k.starts_with("ip addr")
+        || k.starts_with("ip route")
+        || k.starts_with("cat /sys/class/net/eth0")
+        || k.starts_with("connmanctl")
+        || k.starts_with("dmesg")
+        || k.starts_with("cat /proc/net/dev")
+    );
+
+    if has_eth_data {
+        let mut eth = make_empty_ethernet();
+
+        if let Some(block) = latest.get("ethernet-check") {
+            eth_check_from_block(block, &mut eth);
+        }
+        if let Some(block) = latest.iter().find(|(k, _)| k.starts_with("ethtool") && !k.contains("-S")).map(|(_, v)| v.as_str()) {
+            ethtool_from_block(block, &mut eth);
+        }
+        if let Some(block) = latest.iter().find(|(k, _)| k.starts_with("ethtool -S") || k.starts_with("ethtool-stats")).map(|(_, v)| v.as_str()) {
+            ethtool_stats_from_block(block, &mut eth);
+        }
+        if let Some(block) = latest.get("cat /sys/class/net/eth0/carrier").map(|s| s.as_str()) {
+            carrier_from_block(block, &mut eth);
+        }
+        if let Some(block) = latest.get("cat /sys/class/net/eth0/operstate").map(|s| s.as_str()) {
+            operstate_from_block(block, &mut eth);
+        }
+        // "ip link show eth0" or "ip link"
+        if let Some(block) = latest.iter().find(|(k, _)| k.starts_with("ip link")).map(|(_, v)| v.as_str()) {
+            ip_link_from_block(block, &mut eth);
+        }
+        // "ip addr show eth0" or "ip addr"
+        if let Some(block) = latest.iter().find(|(k, _)| k.starts_with("ip addr")).map(|(_, v)| v.as_str()) {
+            ip_addr_from_block(block, &mut eth);
+        }
+        if let Some(block) = latest.get("ip route").map(|s| s.as_str()) {
+            ip_route_from_block(block, &mut eth);
+        }
+        if let Some(block) = latest.get("connmanctl technologies").map(|s| s.as_str()) {
+            connman_tech_from_block(block, &mut eth);
+        }
+        if let Some(block) = latest.get("connmanctl services").map(|s| s.as_str()) {
+            connman_services_from_block(block, &mut eth);
+        }
+        if let Some(block) = latest.get("connmanctl state").map(|s| s.as_str()) {
+            connman_state_from_block(block, &mut eth);
+        }
+        if let Some(block) = latest.iter().find(|(k, _)| k.starts_with("dmesg")).map(|(_, v)| v.as_str()) {
+            dmesg_eth_from_block(block, &mut eth);
+        }
+        if let Some(block) = latest.get("cat /proc/net/dev").map(|s| s.as_str()) {
+            proc_net_dev_from_block(block, &mut eth);
         }
 
-        // Merge ifconfig (may be "ifconfig eth0")
-        let ifconfig_block = latest
-            .iter()
-            .find(|(k, _)| k.starts_with("ifconfig"))
-            .map(|(_, v)| v.as_str());
-        if let Some(block) = ifconfig_block {
-            let (ip, nm, rx_err, tx_err, rx_drop) = parse_ifconfig(block);
-            eth.ip_address = ip;
-            eth.netmask = nm;
-            eth.rx_errors = rx_err;
-            eth.tx_errors = tx_err;
-            eth.rx_dropped = rx_drop;
-        }
+        determine_eth_status(&mut eth);
+        state.ethernet = Some(eth);
     }
 
     // ── System ──

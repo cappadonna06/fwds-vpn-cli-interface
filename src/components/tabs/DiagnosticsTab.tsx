@@ -53,21 +53,49 @@ interface SatelliteDiagnostic {
 interface EthernetDiagnostic {
   status: DiagStatus;
   summary: string;
+  check_result: string;
+  check_error: string | null;
   internet_reachable: boolean;
   eth_state: string;
   ipv4: boolean;
   ipv6: boolean;
   dns_servers: string;
-  ip_address: string | null;
-  netmask: string | null;
+  check_avg_latency_ms: number | null;
+  check_packet_loss_pct: number;
+  link_detected: boolean | null;
   speed: string | null;
   duplex: string | null;
-  link_detected: boolean | null;
-  rx_errors: number;
-  tx_errors: number;
-  rx_dropped: number;
-  check_result: string;
+  auto_negotiation: boolean | null;
+  carrier: boolean | null;
+  operstate: string | null;
+  no_carrier_flag: boolean | null;
+  lower_up_flag: boolean | null;
+  link_state: string | null;
+  mac_address: string | null;
+  ipv4_address: string | null;
+  ipv4_prefix: number | null;
+  default_via_eth0: boolean | null;
+  default_gateway: string | null;
+  connman_eth_powered: boolean | null;
+  connman_eth_connected: boolean | null;
+  connman_wifi_connected: boolean | null;
+  connman_cell_connected: boolean | null;
+  connman_active_service: string | null;
+  connman_eth_active: boolean | null;
+  connman_state: string | null;
+  dmesg_link_events: string[];
   flap_count: number;
+  hw_tx_packets: number | null;
+  hw_rx_packets: number | null;
+  hw_rx_crc_errors: number | null;
+  hw_rx_align_errors: number | null;
+  proc_rx_bytes: number | null;
+  proc_rx_packets: number | null;
+  proc_rx_errs: number | null;
+  proc_rx_drop: number | null;
+  proc_tx_bytes: number | null;
+  proc_tx_packets: number | null;
+  proc_tx_errs: number | null;
 }
 
 interface SystemDiagnostic {
@@ -214,30 +242,82 @@ function buildSatelliteRows(s: SatelliteDiagnostic): DiagCardRow[] {
   return rows;
 }
 
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 function buildEthernetRows(e: EthernetDiagnostic): DiagCardRow[] {
-  const rows: DiagCardRow[] = [
-    { label: "Internet", value: e.internet_reachable ? "Online" : "Offline" },
-    { label: "State", value: dash(e.eth_state) },
-  ];
-  if (e.ip_address !== null) rows.push({ label: "IP address", value: dash(e.ip_address) });
-  if (e.netmask !== null) rows.push({ label: "Netmask", value: dash(e.netmask) });
-  if (e.speed !== null) rows.push({ label: "Speed", value: dash(e.speed) });
-  if (e.duplex !== null) rows.push({ label: "Duplex", value: dash(e.duplex) });
-  if (e.link_detected !== null) {
-    rows.push({ label: "Link detected", value: yesNo(e.link_detected) });
-  }
-  rows.push(
-    { label: "IPv4", value: yesNo(e.ipv4) },
-    { label: "IPv6", value: yesNo(e.ipv6) },
-    { label: "DNS", value: dash(e.dns_servers) },
-    { label: "RX errors", value: String(e.rx_errors) },
-    { label: "TX errors", value: String(e.tx_errors) },
-    { label: "RX dropped", value: String(e.rx_dropped) },
-  );
-  if (e.flap_count > 0) {
-    rows.push({ label: "Flap events", value: String(e.flap_count) });
-  }
+  const rows: DiagCardRow[] = [];
+
+  // Check result
   rows.push({ label: "Check result", value: dash(e.check_result) });
+  if (e.check_error) rows.push({ label: "Error", value: e.check_error });
+  rows.push({ label: "Internet", value: e.internet_reachable ? "Online" : "Offline" });
+  rows.push({ label: "State", value: dash(e.eth_state) });
+
+  // Link / PHY
+  if (e.link_detected !== null) rows.push({ label: "Link detected", value: yesNo(e.link_detected) });
+  if (e.carrier !== null) rows.push({ label: "Carrier", value: e.carrier ? "Yes (1)" : "No (0)" });
+  if (e.operstate !== null) rows.push({ label: "Operstate", value: e.operstate });
+  if (e.speed !== null) rows.push({ label: "Speed", value: e.speed });
+  if (e.duplex !== null) rows.push({ label: "Duplex", value: e.duplex });
+
+  // Interface
+  if (e.ipv4_address !== null) {
+    rows.push({ label: "IP address", value: `${e.ipv4_address}${e.ipv4_prefix !== null ? `/${e.ipv4_prefix}` : ""}` });
+  }
+  rows.push({ label: "IPv4", value: yesNo(e.ipv4) });
+  rows.push({ label: "IPv6", value: yesNo(e.ipv6) });
+  if (e.mac_address !== null) rows.push({ label: "MAC", value: e.mac_address });
+
+  // Routing
+  if (e.default_gateway !== null) {
+    rows.push({
+      label: "Default route",
+      value: e.default_via_eth0 ? `${e.default_gateway} via eth0 ✓` : `${e.default_gateway} (not eth0)`,
+    });
+  }
+
+  // ConnMan
+  if (e.connman_eth_connected !== null || e.connman_eth_powered !== null) {
+    const v = e.connman_eth_connected
+      ? "Connected"
+      : e.connman_eth_powered
+        ? "Powered, not connected"
+        : "Off";
+    rows.push({ label: "ConnMan eth", value: v });
+  }
+  if (e.connman_active_service !== null) rows.push({ label: "Active service", value: e.connman_active_service });
+  if (e.connman_state !== null) rows.push({ label: "Network state", value: e.connman_state });
+
+  // DNS
+  if (e.dns_servers) rows.push({ label: "DNS", value: e.dns_servers });
+
+  // Latency / loss
+  if (e.check_avg_latency_ms !== null) {
+    rows.push({ label: "Latency (avg)", value: `${e.check_avg_latency_ms.toFixed(1)} ms` });
+  }
+  rows.push({ label: "Packet loss", value: `${e.check_packet_loss_pct}%` });
+
+  // Flap
+  if (e.flap_count > 0) {
+    rows.push({ label: "Link flaps", value: `${e.flap_count} (unstable!)` });
+  }
+
+  // Traffic — only show if non-zero
+  const rxBytes = e.proc_rx_bytes ?? 0;
+  const txBytes = e.proc_tx_bytes ?? 0;
+  if (rxBytes > 0 || txBytes > 0) {
+    rows.push({ label: "RX", value: `${e.proc_rx_packets ?? 0} pkts / ${formatBytes(rxBytes)}` });
+    rows.push({ label: "TX", value: `${e.proc_tx_packets ?? 0} pkts / ${formatBytes(txBytes)}` });
+  }
+  const rxDrop = e.proc_rx_drop ?? 0;
+  if (rxDrop > 0) rows.push({ label: "RX dropped", value: String(rxDrop) });
+  const crcErr = e.hw_rx_crc_errors ?? 0;
+  if (crcErr > 0) rows.push({ label: "CRC errors", value: String(crcErr) });
+
   return rows;
 }
 

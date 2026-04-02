@@ -335,6 +335,21 @@ export const COMMANDS: ControllerCommand[] = [
     related_command_ids: ["ethernet-check", "ethtool-eth0"],
     tags: ["network", "ethernet", "ip", "dhcp"],
   },
+
+  // Extended Ethernet diagnostics
+  { id: "cat-eth0-carrier", label: "cat /sys/class/net/eth0/carrier", command: "cat /sys/class/net/eth0/carrier", category: "diagnostic", description: "Hard link signal — 1=carrier present, 0=no carrier.", reboot_required: false, guard: "none", est_seconds: 1, tags: ["network", "ethernet", "link"] },
+  { id: "cat-eth0-operstate", label: "cat /sys/class/net/eth0/operstate", command: "cat /sys/class/net/eth0/operstate", category: "diagnostic", description: "Interface operational state — up/down.", reboot_required: false, guard: "none", est_seconds: 1, tags: ["network", "ethernet", "link"] },
+  { id: "dmesg-eth", label: "dmesg | grep -i eth", command: "dmesg | grep -i eth", category: "diagnostic", description: "Kernel log events for Ethernet — shows link up/down history and driver events.", reboot_required: false, guard: "none", est_seconds: 2, tags: ["network", "ethernet", "link", "dmesg"] },
+  { id: "ip-link-eth0", label: "ip link show eth0", command: "ip link show eth0", category: "diagnostic", description: "Network interface flags — shows NO-CARRIER, UP, LOWER_UP state.", reboot_required: false, guard: "none", est_seconds: 1, tags: ["network", "ethernet", "link"] },
+  { id: "ip-addr-eth0", label: "ip addr show eth0", command: "ip addr show eth0", category: "diagnostic", description: "IP address assignment on eth0 — confirms DHCP or static IP received.", reboot_required: false, guard: "none", est_seconds: 1, tags: ["network", "ethernet", "ip"] },
+  { id: "ip-route", label: "ip route", command: "ip route", category: "diagnostic", description: "Routing table — shows default route and which interface handles traffic.", reboot_required: false, guard: "none", est_seconds: 1, tags: ["network", "routing"] },
+  { id: "ping-8888", label: "ping -c 3 8.8.8.8", command: "ping -c 3 8.8.8.8", category: "diagnostic", description: "Raw internet reachability test — bypasses DNS.", reboot_required: false, guard: "none", est_seconds: 6, tags: ["network", "internet", "ping"] },
+  { id: "ping-google", label: "ping -c 3 google.com", command: "ping -c 3 google.com", category: "diagnostic", description: "DNS + internet reachability test.", reboot_required: false, guard: "none", est_seconds: 6, tags: ["network", "internet", "dns", "ping"] },
+  { id: "connmanctl-technologies", label: "connmanctl technologies", command: "connmanctl technologies", category: "diagnostic", description: "ConnMan technology status — shows powered/connected state for each interface.", reboot_required: false, guard: "none", est_seconds: 1, tags: ["network", "connman"] },
+  { id: "connmanctl-services", label: "connmanctl services", command: "connmanctl services", category: "diagnostic", description: "ConnMan active services — shows which networks are online.", reboot_required: false, guard: "none", est_seconds: 1, tags: ["network", "connman"] },
+  { id: "connmanctl-state", label: "connmanctl state", command: "connmanctl state", category: "diagnostic", description: "Global ConnMan network state.", reboot_required: false, guard: "none", est_seconds: 1, tags: ["network", "connman"] },
+  { id: "ethtool-stats-eth0", label: "ethtool -S eth0", command: "ethtool -S eth0", category: "diagnostic", description: "NIC hardware counters — tx/rx packets, errors, drops at the hardware level.", reboot_required: false, guard: "none", est_seconds: 1, tags: ["network", "ethernet", "stats"] },
+  { id: "proc-net-dev", label: "cat /proc/net/dev", command: "cat /proc/net/dev", category: "diagnostic", description: "Traffic baseline for all interfaces — bytes, packets, errors, drops.", reboot_required: false, guard: "none", est_seconds: 1, tags: ["network", "stats"] },
   {
     id: "sid",
     label: "sid",
@@ -517,6 +532,8 @@ export interface DiagnosticBlock {
   light_command_ids: string[];
   heavy_command_ids: string[];
   time_warning?: string;
+  /** When set, copying the heavy tier copies this verbatim script instead of joining command strings. */
+  heavy_block_script?: string;
 }
 
 export const DIAGNOSTIC_BLOCKS: DiagnosticBlock[] = [
@@ -524,10 +541,66 @@ export const DIAGNOSTIC_BLOCKS: DiagnosticBlock[] = [
     id: "ethernet",
     label: "Ethernet",
     icon: "🌐",
-    description: "Physical link, IP assignment, DNS, and internet reachability. Tests that the cable is connected, an IP is assigned via DHCP, DNS resolves, and the internet is reachable.",
+    description: "Full Ethernet diagnostic suite — link, interface, routing, connectivity, and stats.",
     when_to_run: "After setup-ethernet, after any network change, or when the site reports connectivity issues.",
     light_command_ids: ["ethernet-check"],
-    heavy_command_ids: ["ethernet-check", "ethtool-eth0", "ifconfig-eth0"],
+    heavy_command_ids: [
+      "ethernet-check",
+      "ethtool-eth0",
+      "cat-eth0-carrier",
+      "cat-eth0-operstate",
+      "dmesg-eth",
+      "ip-link-eth0",
+      "ip-addr-eth0",
+      "ip-route",
+      "ping-8888",
+      "ping-google",
+      "connmanctl-technologies",
+      "connmanctl-services",
+      "connmanctl-state",
+      "ethtool-stats-eth0",
+      "proc-net-dev",
+    ],
+    heavy_block_script: `echo "===== ETH DIAGNOSTICS START ====="
+
+echo ""
+echo "--- FRONTLINE ---"
+ethernet-check
+
+echo ""
+echo "--- LINK / PHY ---"
+ethtool eth0
+cat /sys/class/net/eth0/carrier
+cat /sys/class/net/eth0/operstate
+dmesg | grep -i eth
+
+echo ""
+echo "--- INTERFACE ---"
+ip link show eth0
+ip addr show eth0
+
+echo ""
+echo "--- ROUTING / DNS ---"
+ip route
+
+echo ""
+echo "--- CONNECTIVITY ---"
+ping -c 3 8.8.8.8
+ping -c 3 google.com
+
+echo ""
+echo "--- CONNMAN ---"
+connmanctl technologies
+connmanctl services
+connmanctl state
+
+echo ""
+echo "--- DRIVER / STATS ---"
+ethtool -S eth0
+cat /proc/net/dev
+
+echo ""
+echo "===== ETH DIAGNOSTICS END ====="`,
   },
   {
     id: "wifi",

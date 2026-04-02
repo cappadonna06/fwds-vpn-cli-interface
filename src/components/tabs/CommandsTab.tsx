@@ -728,13 +728,19 @@ export default function CommandsTab() {
   }
 
   function handleBlockCopy(block: DiagnosticBlock, tier: "light" | "heavy" | "single") {
-    const ids = tier === "light" ? block.light_command_ids : block.heavy_command_ids;
-    const text = ids
-      .map((id: string) => {
-        const c = COMMANDS.find((x) => x.id === id);
-        return c ? c.command : id;
-      })
-      .join("\n");
+    // Use the verbatim script override for heavy tier if provided
+    let text: string;
+    if ((tier === "heavy" || tier === "single") && block.heavy_block_script) {
+      text = block.heavy_block_script;
+    } else {
+      const ids = tier === "light" ? block.light_command_ids : block.heavy_command_ids;
+      text = ids
+        .map((id: string) => {
+          const c = COMMANDS.find((x) => x.id === id);
+          return c ? c.command : id;
+        })
+        .join("\n");
+    }
     navigator.clipboard.writeText(text).catch(() => {});
     const key = tier === "single" ? `${block.id}-single` : `${block.id}-${tier}`;
     setCopiedBlockId(key);
