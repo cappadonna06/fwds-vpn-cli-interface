@@ -105,6 +105,18 @@ fn find_latest<'a>(latest: &'a HashMap<String, String>, names: &[&str]) -> Optio
     })
 }
 
+fn find_latest_body_contains<'a>(
+    latest: &'a HashMap<String, String>,
+    markers: &[&str],
+) -> Option<&'a String> {
+    latest.values().find(|body| {
+        let lower = body.to_ascii_lowercase();
+        markers
+            .iter()
+            .all(|m| lower.contains(&m.to_ascii_lowercase()))
+    })
+}
+
 fn split_blocks(log: &str) -> Vec<CommandBlock> {
     let prompt_re = Regex::new(
         r"^(?:\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?[+-]\d{4}\s+)?(?:\[\d+\])?#\s*(.+)$",
@@ -232,6 +244,89 @@ mod tests {
         assert_eq!(blocks.len(), 1);
         assert_eq!(blocks[0].command, "ethernet-check");
         assert!(blocks[0].body.contains("Done: Success"));
+    }
+
+    #[test]
+    fn parse_log_parses_cellular_heavy_multiline_block() {
+        let mut state = DiagnosticState::default();
+        let log = r#"2026-04-01T10:19:20-0600 [22611067]# (
+> echo "===== CONTROLLER INFO ====="
+> date
+> version
+> sid
+> echo "===== CELLULAR CONNECTIVITY TEST ====="
+> cellular-check
+> echo "===== BASIC CELL INFO ====="
+> cell-imei
+> cell-ccid
+> cell-imsi
+> cell-hni
+> cell-provider
+> cell-status
+> cell-signal
+> cell-apn
+> echo "===== NETWORK TECHNOLOGY ====="
+> connmanctl technologies
+> connmanctl services
+> connmanctl state
+> echo "===== INTERFACE / ROUTING ====="
+> ip link show wwan0
+> ip addr show wwan0
+> ip route
+> cat /proc/net/dev
+> echo "===== MODEM / RADIO DIAGNOSTICS ====="
+> cell-support --no-ofono --at
+> )
+===== CONTROLLER INFO =====
+Thu Apr  2 10:20:00 UTC 2026
+r3.3.1
+22611067
+
+===== CELLULAR CONNECTIVITY TEST =====
+Internet reachability state: online
+Cellular state: ready
+Cellular provider: 311480
+Cellular strength: 80/100 ("strong")
+Cellular supports IPv4? Yes
+Cellular supports IPv6? No
+Done: Success
+
+===== BASIC CELL INFO =====
+868765071689128
+89148000008543971083
+311270028230364
+311480
+311480
+registered
+80
+vzwinternet
+
+===== NETWORK TECHNOLOGY =====
+/net/connman/technology/cellular
+  Powered = True
+  Connected = True
+*AR cellular_311480
+State = ready
+
+===== INTERFACE / ROUTING =====
+3: wwan0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc mq state UP mode DEFAULT group default qlen 1000
+    inet 100.108.114.41/29 brd 100.108.114.47 scope global wwan0
+default via 100.108.114.46 dev wwan0
+
+===== MODEM / RADIO DIAGNOSTICS =====
++CPIN: READY
++CGATT: 1
++CREG: 0,1
++QCSQ: "CAT-M1",-62,-92,93,-14
++COPS: 0,0,"Verizon ",8
+"#;
+        parse_log_into_state(log, &mut state);
+        let cell = state
+            .cellular
+            .expect("cellular should parse from heavy block");
+        assert_eq!(cell.status, crate::DiagStatus::Green);
+        assert_eq!(cell.check_result, "Success");
+        assert_eq!(cell.wwan_ipv4_address.as_deref(), Some("100.108.114.41"));
     }
 }
 
@@ -526,24 +621,36 @@ fn parse_cellular_from_latest(latest: &HashMap<String, String>) -> Option<Cellul
     let mut diag = default_cellular();
     let mut has_any = false;
 
+    if let Some(block) = find_latest_body_contains(
+        latest,
+        &[
+            "===== cellular connectivity test =====",
+            "===== basic cell info =====",
+            "===== modem / radio diagnostics =====",
+        ],
+    ) {
+        parse_cellular_block(block, &mut diag);
+        has_any = true;
+    }
+
     if let Some(block) = find_latest(latest, &["run cellular diagnostics"]) {
         parse_cellular_block(block, &mut diag);
         has_any = true;
     }
 
-    if let Some(text) = latest.get("date") {
-        diag.controller_date = parse_single_value(Some(text));
+    if let Some(text) = find_latest(latest, &["date"]) {
+        diag.controller_date = parse_single_value(Some(text)).or(diag.controller_date);
         has_any = has_any || !text.trim().is_empty();
     }
-    if let Some(text) = latest.get("version") {
-        diag.controller_version = parse_single_value(Some(text));
+    if let Some(text) = find_latest(latest, &["version"]) {
+        diag.controller_version = parse_single_value(Some(text)).or(diag.controller_version);
         has_any = has_any || !text.trim().is_empty();
     }
-    if let Some(text) = latest.get("sid") {
-        diag.controller_sid = parse_single_value(Some(text));
+    if let Some(text) = find_latest(latest, &["sid"]) {
+        diag.controller_sid = parse_single_value(Some(text)).or(diag.controller_sid);
         has_any = has_any || !text.trim().is_empty();
     }
-    if let Some(text) = latest.get("cellular-check") {
+    if let Some(text) = find_latest(latest, &["cellular-check"]) {
         parse_cellular_check_text(text, &mut diag);
         has_any = true;
     }
@@ -559,7 +666,7 @@ fn parse_cellular_from_latest(latest: &HashMap<String, String>) -> Option<Cellul
     ];
     let mut basic_lines: Vec<String> = Vec::new();
     for cmd in basic_cmds {
-        if let Some(text) = latest.get(cmd) {
+        if let Some(text) = find_latest(latest, &[cmd]) {
             has_any = true;
             if let Some(v) = parse_single_value(Some(text)) {
                 basic_lines.push(v);
@@ -569,35 +676,35 @@ fn parse_cellular_from_latest(latest: &HashMap<String, String>) -> Option<Cellul
     if !basic_lines.is_empty() {
         parse_basic_cell_info(&basic_lines.join("\n"), &mut diag);
     }
-    if let Some(text) = latest.get("connmanctl technologies") {
+    if let Some(text) = find_latest(latest, &["connmanctl technologies"]) {
         parse_connman_cellular(text, &mut diag);
         has_any = true;
     }
-    if let Some(text) = latest.get("connmanctl services") {
+    if let Some(text) = find_latest(latest, &["connmanctl services"]) {
         parse_connman_cellular(text, &mut diag);
         has_any = true;
     }
-    if let Some(text) = latest.get("connmanctl state") {
+    if let Some(text) = find_latest(latest, &["connmanctl state"]) {
         parse_connman_cellular(text, &mut diag);
         has_any = true;
     }
-    if let Some(text) = latest.get("ip link show wwan0") {
+    if let Some(text) = find_latest(latest, &["ip link show wwan0"]) {
         parse_wwan_interface(text, &mut diag);
         has_any = true;
     }
-    if let Some(text) = latest.get("ip addr show wwan0") {
+    if let Some(text) = find_latest(latest, &["ip addr show wwan0"]) {
         parse_wwan_interface(text, &mut diag);
         has_any = true;
     }
-    if let Some(text) = latest.get("ip route") {
+    if let Some(text) = find_latest(latest, &["ip route"]) {
         parse_wwan_interface(text, &mut diag);
         has_any = true;
     }
-    if let Some(text) = latest.get("cat /proc/net/dev") {
+    if let Some(text) = find_latest(latest, &["cat /proc/net/dev"]) {
         parse_proc_net_dev(text, &mut diag);
         has_any = true;
     }
-    if let Some(text) = latest.get("cell-support --no-ofono --at") {
+    if let Some(text) = find_latest(latest, &["cell-support --no-ofono --at"]) {
         parse_cell_support_at(text, &mut diag);
         has_any = true;
     }
