@@ -1167,7 +1167,7 @@ fn parse_satellite_routing_context(text: &str, diag: &mut SatelliteDiagnostic) {
             }
             if trimmed.contains(" dev eth0") {
                 diag.default_via_eth0 = Some(true);
-                diag.default_gateway = Some(gw);
+                diag.default_gateway = Some(gw.clone());
             } else {
                 diag.default_via_eth0.get_or_insert(false);
             }
@@ -1179,7 +1179,7 @@ fn parse_satellite_routing_context(text: &str, diag: &mut SatelliteDiagnostic) {
             }
             if trimmed.contains(" dev wwan0") {
                 diag.default_via_wwan0 = Some(true);
-                diag.default_gateway = Some(gw);
+                diag.default_gateway = Some(gw.clone());
             } else {
                 diag.default_via_wwan0.get_or_insert(false);
             }
