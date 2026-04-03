@@ -266,7 +266,7 @@ export default function SessionTab() {
       localStorage.setItem("local_serial_device", serialDevice);
       await invoke("open_local_serial_terminal", { device: serialDevice });
       await invoke("start_log_watcher").catch(() => {});
-      setSerialDetail(`Launched minicom on ${serialDevice}`);
+      setSerialDetail("Connected");
     } catch (e) {
       setSerialDetail(String(e));
     }
@@ -293,7 +293,7 @@ export default function SessionTab() {
 
   const localState: { label: string; tone: LocalStatusTone } = useMemo(() => {
     const normalized = serialDetail.toLowerCase();
-    if (normalized.includes("launched")) return { label: "Connected", tone: "ok" };
+    if (normalized.includes("connected")) return { label: "Connected", tone: "ok" };
     if (normalized.includes("error") || normalized.includes("failed")) return { label: "Failed", tone: "fail" };
     if (normalized.includes("disconnected")) return { label: "Idle", tone: "neutral" };
     return { label: "Idle", tone: "neutral" };
@@ -345,9 +345,9 @@ export default function SessionTab() {
               </div>
             </div>
 
-            <div className="flow-group">
+            <div className="flow-group flow-group-soft">
               <div className="flow-row">
-                <div className="row-label">Bundle</div>
+                <div className="row-context">Bundle</div>
                 {bundlePath ? (
                   <span className="bundle-path" title={bundlePath}>{bundlePath}</span>
                 ) : (
@@ -356,17 +356,12 @@ export default function SessionTab() {
                 <button className="btn btn-secondary" onClick={selectFolder}>{bundlePath ? "Change" : "Choose bundle"}</button>
               </div>
               {validation !== null && (
-                allFilesOk ? (
-                  <div className="hint session-hint success">Bundle ready.</div>
-                ) : (
+                !allFilesOk && (
                   <div className="hint session-hint error">Missing: {missingFiles.join(", ")}</div>
                 )
               )}
-            </div>
-
-            <div className="flow-group">
               <div className="flow-row">
-                <div className="row-label">OpenVPN</div>
+                <div className="row-context">VPN</div>
                 <span className={`status-chip ${statusTone(vpnStatus)}`}>{VPN_LABELS[vpnStatus]}</span>
                 <div className="btn-group">
                   <button
@@ -390,7 +385,7 @@ export default function SessionTab() {
 
             <div className="flow-group">
               <div className="flow-row ip-row">
-                <div className="row-label">Controller IP</div>
+                <div className="row-context">IP</div>
                 <div className="ip-input-group">
                   <span className="ip-prefix">10.9.0.</span>
                   <input
@@ -456,13 +451,12 @@ export default function SessionTab() {
               </div>
               <div className="status-chip-row">
                 <span className={`status-chip ${localState.tone}`}>{localState.label}</span>
-                {serialDevice && <span className="status-chip neutral">{serialDevice}</span>}
               </div>
             </div>
 
-            <div className="flow-group">
+            <div className="flow-group flow-group-soft">
               <div className="flow-row">
-                <div className="row-label">Serial device</div>
+                <div className="row-context">Device</div>
                 <div className="serial-picker-row">
                   <input
                     value={serialDevice}
