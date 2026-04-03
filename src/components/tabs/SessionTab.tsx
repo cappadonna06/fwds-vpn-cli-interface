@@ -1,12 +1,13 @@
-import { useState, useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
 type VpnStatus = "disconnected" | "connecting" | "connected" | "failed";
 type ControllerStatus = "disconnected" | "connecting" | "connected" | "failed";
+type LocalStatusTone = "neutral" | "ok" | "fail";
 type ConnectionMode = "vpn" | "local";
 
 const VPN_LABELS: Record<VpnStatus, string> = {
-  disconnected: "Disconnected",
+  disconnected: "Not connected",
   connecting: "Connecting…",
   connected: "Connected",
   failed: "Failed",
@@ -35,6 +36,13 @@ interface PreflightResult {
   detail: string;
 }
 
+function statusTone(status: VpnStatus | ControllerStatus): "neutral" | "ok" | "warn" | "fail" {
+  if (status === "connected") return "ok";
+  if (status === "connecting") return "warn";
+  if (status === "failed") return "fail";
+  return "neutral";
+}
+
 export default function SessionTab() {
   const [connectionMode, setConnectionMode] = useState<ConnectionMode>("vpn");
   const [bundlePath, setBundlePath] = useState("");
@@ -60,7 +68,6 @@ export default function SessionTab() {
   const prevCtrlPhaseRef = useRef<string>("disconnected");
   const prevVpnPhaseRef = useRef<string>("disconnected");
 
-  // Restore last-used bundle folder and VPN octet on mount
   useEffect(() => {
     const savedPath = localStorage.getItem("vpn_bundle_path");
     if (savedPath) loadFolder(savedPath);
@@ -72,7 +79,6 @@ export default function SessionTab() {
     if (savedSerial) setSerialDevice(savedSerial);
   }, []);
 
-  // VPN polling
   useEffect(() => {
     const active = vpnStatus === "connecting" || vpnStatus === "connected";
     if (active && !vpnPollRef.current) {
@@ -82,11 +88,13 @@ export default function SessionTab() {
       vpnPollRef.current = null;
     }
     return () => {
-      if (vpnPollRef.current) { clearInterval(vpnPollRef.current); vpnPollRef.current = null; }
+      if (vpnPollRef.current) {
+        clearInterval(vpnPollRef.current);
+        vpnPollRef.current = null;
+      }
     };
   }, [vpnStatus]);
 
-  // Controller status polling — uses get_controller_status (no cursor side-effect)
   useEffect(() => {
     const active = ctrlStatus === "connecting" || ctrlStatus === "connected";
     if (active && !ctrlPollRef.current) {
@@ -96,7 +104,10 @@ export default function SessionTab() {
       ctrlPollRef.current = null;
     }
     return () => {
-      if (ctrlPollRef.current) { clearInterval(ctrlPollRef.current); ctrlPollRef.current = null; }
+      if (ctrlPollRef.current) {
+        clearInterval(ctrlPollRef.current);
+        ctrlPollRef.current = null;
+      }
     };
   }, [ctrlStatus]);
 
@@ -107,7 +118,6 @@ export default function SessionTab() {
       prevVpnPhaseRef.current = r.phase;
       setVpnStatus(r.phase as VpnStatus);
       setVpnDetail(r.detail);
-      // Auto-run preflight once when VPN first becomes connected and IP is already set
       if (prev !== "connected" && r.phase === "connected") {
         setVpnIp((ip) => {
           if (ip) {
@@ -117,7 +127,9 @@ export default function SessionTab() {
           return ip;
         });
       }
-    } catch { /* ignore */ }
+    } catch {
+      // ignore
+    }
   }
 
   async function pollController() {
@@ -126,7 +138,9 @@ export default function SessionTab() {
       prevCtrlPhaseRef.current = r.phase;
       setCtrlStatus(r.phase as ControllerStatus);
       setCtrlDetail(r.detail);
-    } catch { /* ignore */ }
+    } catch {
+      // ignore
+    }
   }
 
   async function runPreflight(ip: string) {
@@ -136,8 +150,11 @@ export default function SessionTab() {
     try {
       const r = await invoke<PreflightResult>("run_preflight", { ip });
       setPreflight(r);
-    } catch { /* ignore */ }
-    finally { setPreflightRunning(false); }
+    } catch {
+      // ignore
+    } finally {
+      setPreflightRunning(false);
+    }
   }
 
   async function loadFolder(path: string) {
@@ -146,7 +163,9 @@ export default function SessionTab() {
     try {
       const results = await invoke<Record<string, boolean>>("validate_bundle", { folder: path });
       setValidation(results);
-    } catch { /* folder may no longer exist */ }
+    } catch {
+      // folder may no longer exist
+    }
   }
 
   async function selectFolder() {
@@ -154,7 +173,9 @@ export default function SessionTab() {
       const path = await invoke<string>("select_vpn_folder");
       localStorage.setItem("vpn_bundle_path", path);
       await loadFolder(path);
-    } catch { /* cancelled */ }
+    } catch {
+      // cancelled
+    }
   }
 
   function handleOctetChange(raw: string) {
@@ -166,7 +187,7 @@ export default function SessionTab() {
 
   function handleOctetBlur() {
     const n = parseInt(lastOctet, 10);
-    if (!lastOctet || isNaN(n) || n < 1 || n > 254) return;
+    if (!lastOctet || Number.isNaN(n) || n < 1 || n > 254) return;
     if (vpnStatus === "connected") {
       runPreflight(vpnIp);
     }
@@ -184,7 +205,11 @@ export default function SessionTab() {
   }
 
   async function stopVpn() {
-    try { await invoke("stop_vpn"); } catch { /* best effort */ }
+    try {
+      await invoke("stop_vpn");
+    } catch {
+      // best effort
+    }
     setVpnStatus("disconnected");
     setVpnDetail("");
     setPreflight(null);
@@ -206,7 +231,11 @@ export default function SessionTab() {
   }
 
   async function disconnectController() {
-    try { await invoke("disconnect_controller"); } catch { /* best effort */ }
+    try {
+      await invoke("disconnect_controller");
+    } catch {
+      // best effort
+    }
     setCtrlStatus("disconnected");
     setCtrlDetail("");
     prevCtrlPhaseRef.current = "disconnected";
@@ -237,7 +266,7 @@ export default function SessionTab() {
       localStorage.setItem("local_serial_device", serialDevice);
       await invoke("open_local_serial_terminal", { device: serialDevice });
       await invoke("start_log_watcher").catch(() => {});
-      setSerialDetail(`Launched minicom on ${serialDevice}`);
+      setSerialDetail("Connected");
     } catch (e) {
       setSerialDetail(String(e));
     }
@@ -253,11 +282,22 @@ export default function SessionTab() {
   }
 
   const allFilesOk = validation !== null && BUNDLE_FILES.every((f) => validation[f] === true);
-  const bundleValid = allFilesOk;
+  const missingFiles = useMemo(
+    () => (validation === null ? [] : BUNDLE_FILES.filter((f) => validation[f] !== true)),
+    [validation],
+  );
   const octetNum = parseInt(lastOctet, 10);
-  const octetValid = lastOctet !== "" && !isNaN(octetNum) && octetNum >= 1 && octetNum <= 254;
+  const octetValid = lastOctet !== "" && !Number.isNaN(octetNum) && octetNum >= 1 && octetNum <= 254;
   const canConnect = octetValid && vpnStatus === "connected";
   const showPreflight = vpnStatus === "connected" && octetValid;
+
+  const localState: { label: string; tone: LocalStatusTone } = useMemo(() => {
+    const normalized = serialDetail.toLowerCase();
+    if (normalized.includes("connected")) return { label: "Connected", tone: "ok" };
+    if (normalized.includes("error") || normalized.includes("failed")) return { label: "Failed", tone: "fail" };
+    if (normalized.includes("disconnected")) return { label: "Idle", tone: "neutral" };
+    return { label: "Idle", tone: "neutral" };
+  }, [serialDetail]);
 
   function preflightDotClass(ok: boolean | undefined): string {
     if (preflight === null) return "idle";
@@ -265,207 +305,203 @@ export default function SessionTab() {
   }
 
   return (
-    <div className="tab-content" style={{ alignItems: "center", overflowY: "auto" }}>
-      <div style={{ width: "100%", maxWidth: 480, display: "flex", flexDirection: "column", gap: 12 }}>
+    <div className="tab-content session-tab">
+      <div className="session-shell">
+        <div className="session-heading">
+          <h1>Connect</h1>
+          <p>Choose one connection mode at a time.</p>
+        </div>
 
-        {/* VPN Bundle */}
-        <div className="card">
-          <div className="card-title">VPN Bundle</div>
-          {bundlePath ? (
-            <div className="folder-selected">
-              <span className="file-check-icon ok">✓</span>
-              <span className="bundle-path" title={bundlePath} style={{ flex: 1 }}>{bundlePath}</span>
-              <button className="btn-link" onClick={selectFolder}>Change</button>
-            </div>
-          ) : (
-            <button className="btn btn-secondary" style={{ width: "100%", marginBottom: 8 }} onClick={selectFolder}>
-              Select VPN Bundle Folder
-            </button>
-          )}
-          {validation !== null && (
-            allFilesOk ? (
-              <div className="bundle-ready">✓ Bundle ready</div>
-            ) : (
-              <div className="file-checklist">
-                {BUNDLE_FILES.filter((f) => validation[f] !== true).map((f) => (
-                  <div key={f} className="file-check-row">
-                    <span className="file-check-icon missing">✗</span>
-                    <span className="file-name" style={{ color: "var(--danger)" }}>{f}</span>
-                  </div>
-                ))}
+        <div className="connect-mode-toggle" role="tablist" aria-label="Connection mode">
+          <button
+            className={`mode-toggle-btn ${connectionMode === "vpn" ? "active" : ""}`}
+            onClick={() => setConnectionMode("vpn")}
+            role="tab"
+            aria-selected={connectionMode === "vpn"}
+          >
+            VPN
+          </button>
+          <button
+            className={`mode-toggle-btn ${connectionMode === "local" ? "active" : ""}`}
+            onClick={() => setConnectionMode("local")}
+            role="tab"
+            aria-selected={connectionMode === "local"}
+          >
+            Local
+          </button>
+        </div>
+
+        {connectionMode === "vpn" ? (
+          <section className="connect-card connect-card-single">
+            <div className="connect-card-head">
+              <div>
+                <h2>Connect via VPN</h2>
+                <p>Remote controller access</p>
               </div>
-            )
-          )}
-        </div>
-
-        {/* OpenVPN */}
-        <div className="card">
-          <div className="card-title">OpenVPN</div>
-          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: vpnDetail ? 6 : 0 }}>
-            <span className={`badge badge-${vpnStatus}`}>{VPN_LABELS[vpnStatus]}</span>
-            <div className="btn-group" style={{ marginLeft: "auto" }}>
-              <button
-                className="btn btn-primary"
-                disabled={!bundleValid || vpnStatus === "connected" || vpnStatus === "connecting"}
-                onClick={startVpn}
-              >
-                Start VPN
-              </button>
-              <button
-                className="btn btn-danger"
-                disabled={vpnStatus === "disconnected" || vpnStatus === "failed"}
-                onClick={stopVpn}
-              >
-                Stop
-              </button>
+              <div className="status-chip-row">
+                <span className={`status-chip ${allFilesOk ? "ok" : "neutral"}`}>{allFilesOk ? "Bundle ready" : "Bundle needed"}</span>
+                <span className={`status-chip ${statusTone(vpnStatus)}`}>{vpnStatus === "connected" ? "VPN connected" : VPN_LABELS[vpnStatus]}</span>
+                {showPreflight && preflight?.port_ok && <span className="status-chip ok">SSH reachable</span>}
+              </div>
             </div>
-          </div>
-          {vpnDetail && <div className="hint">{vpnDetail}</div>}
-        </div>
 
-        {/* Controller */}
-        <div className="card">
-          <div className="card-title">Controller</div>
-          <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
-            <button className={`btn ${connectionMode === "vpn" ? "btn-primary" : "btn-secondary"}`} onClick={() => setConnectionMode("vpn")}>
-              VPN / SSH
-            </button>
-            <button className={`btn ${connectionMode === "local" ? "btn-primary" : "btn-secondary"}`} onClick={() => setConnectionMode("local")}>
-              Local Serial
-            </button>
-          </div>
-          {connectionMode === "vpn" && (
-            <>
-          <div className="field-row" style={{ marginBottom: savedOctet && !lastOctet ? 4 : 10 }}>
-            <label>VPN IP</label>
-            <div className="ip-input-group">
-              <span className="ip-prefix">10.9.0.</span>
-              <input
-                className="ip-octet-input"
-                type="text"
-                inputMode="numeric"
-                placeholder="x"
-                maxLength={3}
-                value={lastOctet}
-                onChange={(e) => handleOctetChange(e.target.value)}
-                onBlur={handleOctetBlur}
-              />
+            <div className="flow-group flow-group-soft">
+              <div className="flow-row">
+                <div className="row-context">Bundle</div>
+                {bundlePath ? (
+                  <span className="bundle-path" title={bundlePath}>{bundlePath}</span>
+                ) : (
+                  <span className="muted">No bundle selected</span>
+                )}
+                <button className="btn btn-secondary" onClick={selectFolder}>{bundlePath ? "Change" : "Choose bundle"}</button>
+              </div>
+              {validation !== null && (
+                !allFilesOk && (
+                  <div className="hint session-hint error">Missing: {missingFiles.join(", ")}</div>
+                )
+              )}
+              <div className="flow-row">
+                <div className="row-context">VPN</div>
+                <span className={`status-chip ${statusTone(vpnStatus)}`}>{VPN_LABELS[vpnStatus]}</span>
+                <div className="btn-group">
+                  <button
+                    className="btn btn-secondary"
+                    disabled={!allFilesOk || vpnStatus === "connected" || vpnStatus === "connecting"}
+                    onClick={startVpn}
+                  >
+                    Start
+                  </button>
+                  <button
+                    className="btn btn-secondary"
+                    disabled={vpnStatus === "disconnected" || vpnStatus === "failed"}
+                    onClick={stopVpn}
+                  >
+                    Stop
+                  </button>
+                </div>
+              </div>
+              {vpnDetail && <div className="hint session-hint">{vpnDetail}</div>}
             </div>
-          </div>
-          {savedOctet && !lastOctet && (
-            <div style={{ marginBottom: 10 }}>
-              <button className="btn-link" onClick={() => handleOctetChange(savedOctet)}>
-                Use last: .{savedOctet}
-              </button>
-            </div>
-          )}
 
-          {/* Pre-flight diagnostics */}
-          {showPreflight && (
-            <div className="preflight-row">
-              <div className="preflight-checks">
-                <span className={`preflight-dot ${preflightDotClass(preflight?.ping_ok)}`}>
-                  Ping
-                </span>
-                <span className={`preflight-dot ${preflightDotClass(preflight?.port_ok)}`}>
-                  Port 22
-                </span>
-                {preflight && (
-                  <span className="preflight-detail">{preflight.detail}</span>
+            <div className="flow-group">
+              <div className="flow-row ip-row">
+                <div className="row-context">IP</div>
+                <div className="ip-input-group">
+                  <span className="ip-prefix">10.9.0.</span>
+                  <input
+                    className="ip-octet-input"
+                    type="text"
+                    inputMode="numeric"
+                    placeholder="x"
+                    maxLength={3}
+                    value={lastOctet}
+                    onChange={(e) => handleOctetChange(e.target.value)}
+                    onBlur={handleOctetBlur}
+                  />
+                </div>
+                {savedOctet && !lastOctet && (
+                  <button className="btn-link" onClick={() => handleOctetChange(savedOctet)}>
+                    Use last .{savedOctet}
+                  </button>
                 )}
               </div>
-              <button
-                className="btn-link"
-                onClick={() => runPreflight(vpnIp)}
-                disabled={preflightRunning}
-              >
-                {preflightRunning ? "Checking…" : preflight ? "Re-check" : "Check"}
-              </button>
-            </div>
-          )}
 
-          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: ctrlDetail ? 6 : 0 }}>
-            <span className={`badge badge-${ctrlStatus === "disconnected" ? "disconnected" : ctrlStatus}`}>
-              {CTRL_LABELS[ctrlStatus]}
-            </span>
-            <div style={{ marginLeft: "auto" }}>
+              {showPreflight && (
+                <div className="preflight-row">
+                  <div className="preflight-checks">
+                    <span className={`preflight-dot ${preflightDotClass(preflight?.ping_ok)}`}>Ping</span>
+                    <span className={`preflight-dot ${preflightDotClass(preflight?.port_ok)}`}>Port 22</span>
+                    {preflight && <span className="preflight-detail">{preflight.detail}</span>}
+                  </div>
+                  <button className="btn-link" onClick={() => runPreflight(vpnIp)} disabled={preflightRunning}>
+                    {preflightRunning ? "Checking…" : preflight ? "Re-check" : "Check"}
+                  </button>
+                </div>
+              )}
+            </div>
+
+            <div className="card-actions">
               {ctrlStatus === "disconnected" || ctrlStatus === "failed" ? (
-                <button
-                  className="btn btn-primary"
-                  disabled={!canConnect}
-                  onClick={connectToController}
-                >
-                  Connect to Controller
+                <button className="btn btn-primary" disabled={!canConnect} onClick={connectToController}>
+                  Connect
                 </button>
               ) : (
                 <button className="btn btn-secondary" onClick={disconnectController}>
                   Disconnect
                 </button>
               )}
+              {ctrlStatus === "connected" && (
+                <button className="btn btn-secondary" onClick={launchTerminal}>
+                  Controller Shell
+                </button>
+              )}
             </div>
-          </div>
-          {ctrlDetail && <div className="hint">{ctrlDetail}</div>}
-          {!canConnect && (ctrlStatus === "disconnected" || ctrlStatus === "failed") && !!lastOctet && vpnStatus !== "connected" && (
-            <div className="hint" style={{ marginTop: 4 }}>Start VPN first.</div>
-          )}
 
-          {/* Launch Controller Terminal */}
-          {ctrlStatus === "connected" && (
-            <div style={{ marginTop: 10 }}>
-              <button
-                className="btn btn-primary"
-                style={{ width: "100%" }}
-                onClick={launchTerminal}
-              >
-                Launch Controller Terminal
-              </button>
-            </div>
-          )}
-            </>
-          )}
-          {connectionMode === "local" && (
-            <>
-              <div className="field-row">
-                <label>Serial</label>
-                <input
-                  value={serialDevice}
-                  onChange={(e) => setSerialDevice(e.target.value)}
-                  placeholder="/dev/cu.usbserial-XXXX"
-                />
+            <div className="hint session-hint">Controller: {CTRL_LABELS[ctrlStatus]}{ctrlDetail ? ` — ${ctrlDetail}` : ""}</div>
+            {!canConnect && (ctrlStatus === "disconnected" || ctrlStatus === "failed") && Boolean(lastOctet) && vpnStatus !== "connected" && (
+              <div className="hint session-hint">Start VPN first.</div>
+            )}
+          </section>
+        ) : (
+          <section className="connect-card connect-card-single">
+            <div className="connect-card-head">
+              <div>
+                <h2>Connect locally</h2>
+                <p>USB / serial access</p>
               </div>
-              <div style={{ display: "flex", gap: 8 }}>
-                <button className="btn btn-secondary" onClick={detectSerialDevices}>
-                  Detect Devices
-                </button>
-                <button className="btn btn-primary" disabled={!serialDevice} onClick={launchLocalSerialTerminal}>
-                  Launch Serial Terminal
-                </button>
-                <button className="btn btn-secondary" onClick={disconnectLocalSession}>
-                  Disconnect Local
-                </button>
+              <div className="status-chip-row">
+                <span className={`status-chip ${localState.tone}`}>{localState.label}</span>
+              </div>
+            </div>
+
+            <div className="flow-group flow-group-soft">
+              <div className="flow-row">
+                <div className="row-context">Device</div>
+                <div className="serial-picker-row">
+                  <input
+                    value={serialDevice}
+                    onChange={(e) => setSerialDevice(e.target.value)}
+                    placeholder="Select or enter a serial path"
+                    list="serial-device-options"
+                  />
+                  <datalist id="serial-device-options">
+                    {serialDevices.map((device) => (
+                      <option key={device} value={device} />
+                    ))}
+                  </datalist>
+                  <button className="btn btn-secondary" onClick={detectSerialDevices}>Refresh</button>
+                </div>
               </div>
               {serialDevices.length > 0 && (
-                <div style={{ marginTop: 8, fontSize: 12, color: "var(--text-secondary)" }}>
-                  {serialDevices.slice(0, 5).map((d) => (
-                    <div key={d}>{d}</div>
+                <div className="serial-quick-picks">
+                  {serialDevices.slice(0, 6).map((device) => (
+                    <button
+                      key={device}
+                      className={`chip-button ${serialDevice === device ? "active" : ""}`}
+                      onClick={() => setSerialDevice(device)}
+                      type="button"
+                    >
+                      {device}
+                    </button>
                   ))}
                 </div>
               )}
-              {serialDetail && <div className="hint" style={{ marginTop: 8 }}>{serialDetail}</div>}
-            </>
-          )}
-          <div style={{ marginTop: 10 }}>
-            <button
-              className="btn btn-secondary"
-              style={{ width: "100%" }}
-              onClick={() => navigator.clipboard.writeText("sid\nversion\nrelease").catch(() => {})}
-              title="Copy startup identity commands"
-            >
-              Copy Session Bootstrap (SID / Version / Release)
-            </button>
-          </div>
-        </div>
+            </div>
 
+            <div className="card-actions">
+              <button className="btn btn-primary" disabled={!serialDevice} onClick={launchLocalSerialTerminal}>
+                Connect
+              </button>
+              {localState.tone === "ok" && (
+                <button className="btn btn-secondary" onClick={disconnectLocalSession}>
+                  Disconnect
+                </button>
+              )}
+            </div>
+
+            {serialDetail && <div className="hint session-hint">{serialDetail}</div>}
+          </section>
+        )}
       </div>
     </div>
   );
