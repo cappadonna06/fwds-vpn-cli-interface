@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 type VpnStatus = "disconnected" | "connecting" | "connected" | "failed";
 type ControllerStatus = "disconnected" | "connecting" | "connected" | "failed";
 type LocalStatusTone = "neutral" | "ok" | "fail";
+type ConnectionMode = "vpn" | "local";
 
 const VPN_LABELS: Record<VpnStatus, string> = {
   disconnected: "Not connected",
@@ -43,6 +44,7 @@ function statusTone(status: VpnStatus | ControllerStatus): "neutral" | "ok" | "w
 }
 
 export default function SessionTab() {
+  const [connectionMode, setConnectionMode] = useState<ConnectionMode>("vpn");
   const [bundlePath, setBundlePath] = useState("");
   const [validation, setValidation] = useState<Record<string, boolean> | null>(null);
 
@@ -291,9 +293,9 @@ export default function SessionTab() {
 
   const localState: { label: string; tone: LocalStatusTone } = useMemo(() => {
     const normalized = serialDetail.toLowerCase();
-    if (normalized.includes("launched")) return { label: "Session active", tone: "ok" };
-    if (normalized.includes("error") || normalized.includes("failed")) return { label: "Session issue", tone: "fail" };
-    if (normalized.includes("disconnected")) return { label: "Not connected", tone: "neutral" };
+    if (normalized.includes("launched")) return { label: "Connected", tone: "ok" };
+    if (normalized.includes("error") || normalized.includes("failed")) return { label: "Failed", tone: "fail" };
+    if (normalized.includes("disconnected")) return { label: "Idle", tone: "neutral" };
     return { label: "Idle", tone: "neutral" };
   }, [serialDetail]);
 
@@ -304,191 +306,208 @@ export default function SessionTab() {
 
   return (
     <div className="tab-content session-tab">
-      <div className="session-heading">
-        <h1>Connect</h1>
-        <p>Choose a remote VPN path or local serial path.</p>
-      </div>
+      <div className="session-shell">
+        <div className="session-heading">
+          <h1>Connect</h1>
+          <p>Choose one connection mode at a time.</p>
+        </div>
 
-      <div className="connect-grid">
-        <section className="connect-card">
-          <div className="connect-card-head">
-            <div>
-              <h2>Connect via VPN</h2>
-              <p>Remote controller access</p>
-            </div>
-            <div className="status-chip-row">
-              <span className={`status-chip ${allFilesOk ? "ok" : "neutral"}`}>{allFilesOk ? "Bundle ready" : "Bundle needed"}</span>
-              <span className={`status-chip ${statusTone(vpnStatus)}`}>{vpnStatus === "connected" ? "VPN connected" : VPN_LABELS[vpnStatus]}</span>
-              {showPreflight && preflight?.port_ok && <span className="status-chip ok">SSH reachable</span>}
-            </div>
-          </div>
+        <div className="connect-mode-toggle" role="tablist" aria-label="Connection mode">
+          <button
+            className={`mode-toggle-btn ${connectionMode === "vpn" ? "active" : ""}`}
+            onClick={() => setConnectionMode("vpn")}
+            role="tab"
+            aria-selected={connectionMode === "vpn"}
+          >
+            VPN
+          </button>
+          <button
+            className={`mode-toggle-btn ${connectionMode === "local" ? "active" : ""}`}
+            onClick={() => setConnectionMode("local")}
+            role="tab"
+            aria-selected={connectionMode === "local"}
+          >
+            Local
+          </button>
+        </div>
 
-          <div className="flow-group">
-            <div className="flow-title">1. Bundle</div>
-            <div className="flow-row">
-              {bundlePath ? (
-                <>
+        {connectionMode === "vpn" ? (
+          <section className="connect-card connect-card-single">
+            <div className="connect-card-head">
+              <div>
+                <h2>Connect via VPN</h2>
+                <p>Remote controller access</p>
+              </div>
+              <div className="status-chip-row">
+                <span className={`status-chip ${allFilesOk ? "ok" : "neutral"}`}>{allFilesOk ? "Bundle ready" : "Bundle needed"}</span>
+                <span className={`status-chip ${statusTone(vpnStatus)}`}>{vpnStatus === "connected" ? "VPN connected" : VPN_LABELS[vpnStatus]}</span>
+                {showPreflight && preflight?.port_ok && <span className="status-chip ok">SSH reachable</span>}
+              </div>
+            </div>
+
+            <div className="flow-group">
+              <div className="flow-row">
+                <div className="row-label">Bundle</div>
+                {bundlePath ? (
                   <span className="bundle-path" title={bundlePath}>{bundlePath}</span>
-                  <button className="btn btn-secondary" onClick={selectFolder}>Change</button>
-                </>
-              ) : (
-                <>
+                ) : (
                   <span className="muted">No bundle selected</span>
-                  <button className="btn btn-secondary" onClick={selectFolder}>Choose bundle</button>
-                </>
-              )}
-            </div>
-            {validation !== null && (
-              allFilesOk ? (
-                <div className="hint session-hint success">All required bundle files are present.</div>
-              ) : (
-                <div className="hint session-hint error">Missing: {missingFiles.join(", ")}</div>
-              )
-            )}
-          </div>
-
-          <div className="flow-group">
-            <div className="flow-title">2. VPN</div>
-            <div className="flow-row">
-              <span className={`status-chip ${statusTone(vpnStatus)}`}>{VPN_LABELS[vpnStatus]}</span>
-              <div className="btn-group">
-                <button
-                  className="btn btn-secondary"
-                  disabled={!allFilesOk || vpnStatus === "connected" || vpnStatus === "connecting"}
-                  onClick={startVpn}
-                >
-                  Start VPN
-                </button>
-                <button
-                  className="btn btn-secondary"
-                  disabled={vpnStatus === "disconnected" || vpnStatus === "failed"}
-                  onClick={stopVpn}
-                >
-                  Stop
-                </button>
+                )}
+                <button className="btn btn-secondary" onClick={selectFolder}>{bundlePath ? "Change" : "Choose bundle"}</button>
               </div>
-            </div>
-            {vpnDetail && <div className="hint session-hint">{vpnDetail}</div>}
-          </div>
-
-          <div className="flow-group">
-            <div className="flow-title">3. Controller IP</div>
-            <div className="field-row session-field-row">
-              <label>IP</label>
-              <div className="ip-input-group">
-                <span className="ip-prefix">10.9.0.</span>
-                <input
-                  className="ip-octet-input"
-                  type="text"
-                  inputMode="numeric"
-                  placeholder="x"
-                  maxLength={3}
-                  value={lastOctet}
-                  onChange={(e) => handleOctetChange(e.target.value)}
-                  onBlur={handleOctetBlur}
-                />
-              </div>
-              {savedOctet && !lastOctet && (
-                <button className="btn-link" onClick={() => handleOctetChange(savedOctet)}>
-                  Use last .{savedOctet}
-                </button>
+              {validation !== null && (
+                allFilesOk ? (
+                  <div className="hint session-hint success">Bundle ready.</div>
+                ) : (
+                  <div className="hint session-hint error">Missing: {missingFiles.join(", ")}</div>
+                )
               )}
             </div>
 
-            {showPreflight && (
-              <div className="preflight-row">
-                <div className="preflight-checks">
-                  <span className={`preflight-dot ${preflightDotClass(preflight?.ping_ok)}`}>Ping</span>
-                  <span className={`preflight-dot ${preflightDotClass(preflight?.port_ok)}`}>Port 22</span>
-                  {preflight && <span className="preflight-detail">{preflight.detail}</span>}
+            <div className="flow-group">
+              <div className="flow-row">
+                <div className="row-label">OpenVPN</div>
+                <span className={`status-chip ${statusTone(vpnStatus)}`}>{VPN_LABELS[vpnStatus]}</span>
+                <div className="btn-group">
+                  <button
+                    className="btn btn-secondary"
+                    disabled={!allFilesOk || vpnStatus === "connected" || vpnStatus === "connecting"}
+                    onClick={startVpn}
+                  >
+                    Start
+                  </button>
+                  <button
+                    className="btn btn-secondary"
+                    disabled={vpnStatus === "disconnected" || vpnStatus === "failed"}
+                    onClick={stopVpn}
+                  >
+                    Stop
+                  </button>
                 </div>
-                <button className="btn-link" onClick={() => runPreflight(vpnIp)} disabled={preflightRunning}>
-                  {preflightRunning ? "Checking…" : preflight ? "Re-check" : "Check"}
-                </button>
               </div>
-            )}
-          </div>
+              {vpnDetail && <div className="hint session-hint">{vpnDetail}</div>}
+            </div>
 
-          <div className="card-actions">
-            {ctrlStatus === "disconnected" || ctrlStatus === "failed" ? (
-              <button className="btn btn-primary" disabled={!canConnect} onClick={connectToController}>
+            <div className="flow-group">
+              <div className="flow-row ip-row">
+                <div className="row-label">Controller IP</div>
+                <div className="ip-input-group">
+                  <span className="ip-prefix">10.9.0.</span>
+                  <input
+                    className="ip-octet-input"
+                    type="text"
+                    inputMode="numeric"
+                    placeholder="x"
+                    maxLength={3}
+                    value={lastOctet}
+                    onChange={(e) => handleOctetChange(e.target.value)}
+                    onBlur={handleOctetBlur}
+                  />
+                </div>
+                {savedOctet && !lastOctet && (
+                  <button className="btn-link" onClick={() => handleOctetChange(savedOctet)}>
+                    Use last .{savedOctet}
+                  </button>
+                )}
+              </div>
+
+              {showPreflight && (
+                <div className="preflight-row">
+                  <div className="preflight-checks">
+                    <span className={`preflight-dot ${preflightDotClass(preflight?.ping_ok)}`}>Ping</span>
+                    <span className={`preflight-dot ${preflightDotClass(preflight?.port_ok)}`}>Port 22</span>
+                    {preflight && <span className="preflight-detail">{preflight.detail}</span>}
+                  </div>
+                  <button className="btn-link" onClick={() => runPreflight(vpnIp)} disabled={preflightRunning}>
+                    {preflightRunning ? "Checking…" : preflight ? "Re-check" : "Check"}
+                  </button>
+                </div>
+              )}
+            </div>
+
+            <div className="card-actions">
+              {ctrlStatus === "disconnected" || ctrlStatus === "failed" ? (
+                <button className="btn btn-primary" disabled={!canConnect} onClick={connectToController}>
+                  Connect
+                </button>
+              ) : (
+                <button className="btn btn-secondary" onClick={disconnectController}>
+                  Disconnect
+                </button>
+              )}
+              {ctrlStatus === "connected" && (
+                <button className="btn btn-secondary" onClick={launchTerminal}>
+                  Controller Shell
+                </button>
+              )}
+            </div>
+
+            <div className="hint session-hint">Controller: {CTRL_LABELS[ctrlStatus]}{ctrlDetail ? ` — ${ctrlDetail}` : ""}</div>
+            {!canConnect && (ctrlStatus === "disconnected" || ctrlStatus === "failed") && Boolean(lastOctet) && vpnStatus !== "connected" && (
+              <div className="hint session-hint">Start VPN first.</div>
+            )}
+          </section>
+        ) : (
+          <section className="connect-card connect-card-single">
+            <div className="connect-card-head">
+              <div>
+                <h2>Connect locally</h2>
+                <p>USB / serial access</p>
+              </div>
+              <div className="status-chip-row">
+                <span className={`status-chip ${localState.tone}`}>{localState.label}</span>
+                {serialDevice && <span className="status-chip neutral">{serialDevice}</span>}
+              </div>
+            </div>
+
+            <div className="flow-group">
+              <div className="flow-row">
+                <div className="row-label">Serial device</div>
+                <div className="serial-picker-row">
+                  <input
+                    value={serialDevice}
+                    onChange={(e) => setSerialDevice(e.target.value)}
+                    placeholder="Select or enter a serial path"
+                    list="serial-device-options"
+                  />
+                  <datalist id="serial-device-options">
+                    {serialDevices.map((device) => (
+                      <option key={device} value={device} />
+                    ))}
+                  </datalist>
+                  <button className="btn btn-secondary" onClick={detectSerialDevices}>Refresh</button>
+                </div>
+              </div>
+              {serialDevices.length > 0 && (
+                <div className="serial-quick-picks">
+                  {serialDevices.slice(0, 6).map((device) => (
+                    <button
+                      key={device}
+                      className={`chip-button ${serialDevice === device ? "active" : ""}`}
+                      onClick={() => setSerialDevice(device)}
+                      type="button"
+                    >
+                      {device}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="card-actions">
+              <button className="btn btn-primary" disabled={!serialDevice} onClick={launchLocalSerialTerminal}>
                 Connect
               </button>
-            ) : (
-              <button className="btn btn-secondary" onClick={disconnectController}>
-                Disconnect
-              </button>
-            )}
-            {ctrlStatus === "connected" && (
-              <button className="btn btn-secondary" onClick={launchTerminal}>
-                Launch Terminal
-              </button>
-            )}
-          </div>
-
-          <div className="hint session-hint">Controller status: {CTRL_LABELS[ctrlStatus]}{ctrlDetail ? ` — ${ctrlDetail}` : ""}</div>
-          {!canConnect && (ctrlStatus === "disconnected" || ctrlStatus === "failed") && Boolean(lastOctet) && vpnStatus !== "connected" && (
-            <div className="hint session-hint">Start VPN first.</div>
-          )}
-        </section>
-
-        <section className="connect-card">
-          <div className="connect-card-head">
-            <div>
-              <h2>Connect locally</h2>
-              <p>USB / serial access</p>
+              {localState.tone === "ok" && (
+                <button className="btn btn-secondary" onClick={disconnectLocalSession}>
+                  Disconnect
+                </button>
+              )}
             </div>
-            <div className="status-chip-row">
-              <span className={`status-chip ${localState.tone}`}>{localState.label}</span>
-              {serialDevice && <span className="status-chip neutral">{serialDevice}</span>}
-            </div>
-          </div>
 
-          <div className="flow-group">
-            <div className="flow-title">1. Serial device</div>
-            <div className="serial-picker-row">
-              <input
-                value={serialDevice}
-                onChange={(e) => setSerialDevice(e.target.value)}
-                placeholder="Select or enter a serial path"
-                list="serial-device-options"
-              />
-              <datalist id="serial-device-options">
-                {serialDevices.map((device) => (
-                  <option key={device} value={device} />
-                ))}
-              </datalist>
-              <button className="btn btn-secondary" onClick={detectSerialDevices}>Refresh</button>
-            </div>
-            {serialDevices.length > 0 && (
-              <div className="serial-quick-picks">
-                {serialDevices.slice(0, 6).map((device) => (
-                  <button
-                    key={device}
-                    className={`chip-button ${serialDevice === device ? "active" : ""}`}
-                    onClick={() => setSerialDevice(device)}
-                    type="button"
-                  >
-                    {device}
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
-
-          <div className="card-actions">
-            <button className="btn btn-primary" disabled={!serialDevice} onClick={launchLocalSerialTerminal}>
-              Launch Terminal
-            </button>
-            {localState.tone === "ok" && (
-              <button className="btn btn-secondary" onClick={disconnectLocalSession}>
-                Disconnect
-              </button>
-            )}
-          </div>
-
-          {serialDetail && <div className="hint session-hint">{serialDetail}</div>}
-        </section>
+            {serialDetail && <div className="hint session-hint">{serialDetail}</div>}
+          </section>
+        )}
       </div>
     </div>
   );
