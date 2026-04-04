@@ -230,6 +230,17 @@ export default function SessionTab() {
     }
   }
 
+  async function connectAndLaunch() {
+    if (!canConnect) return;
+    await connectToController();
+    try {
+      await invoke("open_controller_terminal");
+      await invoke("start_log_watcher").catch(() => {});
+    } catch (e) {
+      setCtrlDetail(String(e));
+    }
+  }
+
   async function disconnectController() {
     try {
       await invoke("disconnect_controller");
@@ -239,15 +250,6 @@ export default function SessionTab() {
     setCtrlStatus("disconnected");
     setCtrlDetail("");
     prevCtrlPhaseRef.current = "disconnected";
-  }
-
-  async function launchTerminal() {
-    try {
-      await invoke("open_controller_terminal");
-      await invoke("start_log_watcher").catch(() => {});
-    } catch (e) {
-      setCtrlDetail(String(e));
-    }
   }
 
   async function detectSerialDevices() {
@@ -336,10 +338,10 @@ export default function SessionTab() {
             <div className="connect-card-head">
               <div>
                 <h2>Connect via VPN</h2>
-                <p>Remote controller access</p>
+                <p>Main flow: Open VPN → Enter VPN ID → Connect + Launch</p>
               </div>
               <div className="status-chip-row">
-                <span className={`status-chip ${allFilesOk ? "ok" : "neutral"}`}>{allFilesOk ? "Bundle ready" : "Bundle needed"}</span>
+                <span className={`status-chip ${allFilesOk ? "ok" : "neutral"}`}>{allFilesOk ? "Bundle ok" : "Bundle needed"}</span>
                 <span className={`status-chip ${statusTone(vpnStatus)}`}>{vpnStatus === "connected" ? "VPN connected" : VPN_LABELS[vpnStatus]}</span>
                 {showPreflight && preflight?.port_ok && <span className="status-chip ok">SSH reachable</span>}
               </div>
@@ -353,7 +355,7 @@ export default function SessionTab() {
                 ) : (
                   <span className="muted">No bundle selected</span>
                 )}
-                <button className="btn btn-secondary" onClick={selectFolder}>{bundlePath ? "Change" : "Choose bundle"}</button>
+                <button className="btn-link" onClick={selectFolder}>{bundlePath ? "Change bundle" : "Select bundle"}</button>
               </div>
               {validation !== null && (
                 !allFilesOk && (
@@ -361,15 +363,15 @@ export default function SessionTab() {
                 )
               )}
               <div className="flow-row">
-                <div className="row-context">VPN</div>
+                <div className="row-context">1) VPN</div>
                 <span className={`status-chip ${statusTone(vpnStatus)}`}>{VPN_LABELS[vpnStatus]}</span>
                 <div className="btn-group">
                   <button
-                    className="btn btn-secondary"
+                    className="btn btn-primary"
                     disabled={!allFilesOk || vpnStatus === "connected" || vpnStatus === "connecting"}
                     onClick={startVpn}
                   >
-                    Start
+                    Open VPN
                   </button>
                   <button
                     className="btn btn-secondary"
@@ -385,7 +387,7 @@ export default function SessionTab() {
 
             <div className="flow-group">
               <div className="flow-row ip-row">
-                <div className="row-context">IP</div>
+                <div className="row-context">2) VPN ID</div>
                 <div className="ip-input-group">
                   <span className="ip-prefix">10.9.0.</span>
                   <input
@@ -422,17 +424,12 @@ export default function SessionTab() {
 
             <div className="card-actions">
               {ctrlStatus === "disconnected" || ctrlStatus === "failed" ? (
-                <button className="btn btn-primary" disabled={!canConnect} onClick={connectToController}>
-                  Connect
+                <button className="btn btn-primary" disabled={!canConnect} onClick={connectAndLaunch}>
+                  3) Connect + Launch
                 </button>
               ) : (
                 <button className="btn btn-secondary" onClick={disconnectController}>
                   Disconnect
-                </button>
-              )}
-              {ctrlStatus === "connected" && (
-                <button className="btn btn-secondary" onClick={launchTerminal}>
-                  Controller Shell
                 </button>
               )}
             </div>
