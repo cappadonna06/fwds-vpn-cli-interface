@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { DIAGNOSTIC_BLOCKS, DiagnosticBlock } from "../../types/commands";
 
 type DiagStatus = "grey" | "green" | "orange" | "red" | "unknown";
 type HealthTone = "healthy" | "warning" | "error" | "neutral";
@@ -185,6 +186,9 @@ interface DiagCardProps {
   updatedAt?: string | null;
   expanded: boolean;
   onToggle: () => void;
+  commandHint?: string;
+  onCopyCommand?: () => void;
+  copied?: boolean;
 }
 
 function fmtBool(v: boolean | null | undefined): string {
@@ -196,6 +200,13 @@ function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function resolveBlockScript(block: DiagnosticBlock, tier: "light" | "heavy"): string {
+  const custom = tier === "light" ? block.light_script : block.heavy_script;
+  if (custom && custom.trim().length > 0) return custom;
+  const ids = tier === "light" ? block.light_command_ids : block.heavy_command_ids;
+  return ids.join("\n");
 }
 
 function toneFromStatus(status?: DiagStatus | null): HealthTone {
@@ -420,7 +431,20 @@ function buildEthernetSections(ethernet?: EthernetDiagnostic | null): DiagSectio
   ];
 }
 
-function DiagCard({ title, icon, health, primaryStatus, summaryFacts, sections, updatedAt, expanded, onToggle }: DiagCardProps) {
+function DiagCard({
+  title,
+  icon,
+  health,
+  primaryStatus,
+  summaryFacts,
+  sections,
+  updatedAt,
+  expanded,
+  onToggle,
+  commandHint,
+  onCopyCommand,
+  copied,
+}: DiagCardProps) {
   return (
     <article className={`diag-card diag-card-${health} ${expanded ? "diag-card-open" : ""}`}>
       <button className="diag-card-head" onClick={onToggle}>
@@ -458,6 +482,15 @@ function DiagCard({ title, icon, health, primaryStatus, summaryFacts, sections, 
         </div>
       )}
 
+      {commandHint && onCopyCommand && (
+        <div className="diag-card-action-row">
+          <span>{commandHint}</span>
+          <button className="diag-copy-link" onClick={onCopyCommand}>
+            {copied ? "Copied" : "Copy command block"}
+          </button>
+        </div>
+      )}
+
       <div className="diag-card-updated">Updated {updatedAt ?? "—"}</div>
     </article>
   );
@@ -486,6 +519,7 @@ export default function DiagnosticsTab() {
   });
   const prevSystemRef = useRef<string>("");
   const [systemUpdatedAt, setSystemUpdatedAt] = useState<string | null>(null);
+  const [copiedCommandId, setCopiedCommandId] = useState<string | null>(null);
 
   useEffect(() => {
     invoke("start_log_watcher").catch(() => {});
@@ -550,7 +584,24 @@ export default function DiagnosticsTab() {
     setCardUpdatedAt({ wifi: null, cellular: null, satellite: null, ethernet: null });
     prevCardsRef.current = { wifi: "", cellular: "", satellite: "", ethernet: "" };
     prevSystemRef.current = "";
+    setCopiedCommandId(null);
   }
+
+  async function copyDiagnosticBlock(blockId: string) {
+    const block = DIAGNOSTIC_BLOCKS.find((item) => item.id === blockId);
+    if (!block) return;
+    const script = resolveBlockScript(block, "heavy");
+    if (!script) return;
+    await navigator.clipboard.writeText(script).catch(() => {});
+    setCopiedCommandId(blockId);
+    setTimeout(() => setCopiedCommandId((prev) => (prev === blockId ? null : prev)), 1400);
+  }
+
+  const wifiNeedsRefresh = !wifi || !wifi.ipv4_address || (!wifi.ssid && !wifi.access_point);
+  const cellularNeedsRefresh = !cellular || cellular.modem_present === false || !cellular.wwan_ipv4_address;
+  const satelliteNeedsRefresh = !satellite || satellite.modem_present !== true;
+  const ethernetNeedsRefresh = !ethernet || ethernet.link_detected !== true || !ethernet.ip_address;
+  const fullDiagBlockId = satellite?.modem_present === true ? "full-diags" : "full-diags-no-sat";
 
   const systemIdentity = [
     system?.sid ? `SID ${system.sid}` : null,
@@ -577,6 +628,9 @@ export default function DiagnosticsTab() {
         <div className="diag-empty">
           <div className="diag-empty-title">No data yet</div>
           <div>Waiting for diagnostics from this session.</div>
+          <button className="diag-copy-link" onClick={() => copyDiagnosticBlock(fullDiagBlockId)}>
+            {copiedCommandId === fullDiagBlockId ? "Copied" : "Copy full diagnostics block"}
+          </button>
         </div>
       )}
 
@@ -591,6 +645,9 @@ export default function DiagnosticsTab() {
           expanded={expanded.wifi}
           onToggle={() => setExpanded((p) => ({ ...p, wifi: !p.wifi }))}
           updatedAt={cardUpdatedAt.wifi}
+          commandHint={wifiNeedsRefresh ? "Limited data available." : undefined}
+          onCopyCommand={wifiNeedsRefresh ? () => copyDiagnosticBlock("wifi") : undefined}
+          copied={copiedCommandId === "wifi"}
         />
 
         <DiagCard
@@ -603,6 +660,9 @@ export default function DiagnosticsTab() {
           expanded={expanded.cellular}
           onToggle={() => setExpanded((p) => ({ ...p, cellular: !p.cellular }))}
           updatedAt={cardUpdatedAt.cellular}
+          commandHint={cellularNeedsRefresh ? "Limited data available." : undefined}
+          onCopyCommand={cellularNeedsRefresh ? () => copyDiagnosticBlock("cellular") : undefined}
+          copied={copiedCommandId === "cellular"}
         />
 
         <DiagCard
@@ -615,6 +675,9 @@ export default function DiagnosticsTab() {
           expanded={expanded.satellite}
           onToggle={() => setExpanded((p) => ({ ...p, satellite: !p.satellite }))}
           updatedAt={cardUpdatedAt.satellite}
+          commandHint={satelliteNeedsRefresh ? "Limited data available." : undefined}
+          onCopyCommand={satelliteNeedsRefresh ? () => copyDiagnosticBlock("satellite") : undefined}
+          copied={copiedCommandId === "satellite"}
         />
 
         <DiagCard
@@ -627,6 +690,9 @@ export default function DiagnosticsTab() {
           expanded={expanded.ethernet}
           onToggle={() => setExpanded((p) => ({ ...p, ethernet: !p.ethernet }))}
           updatedAt={cardUpdatedAt.ethernet}
+          commandHint={ethernetNeedsRefresh ? "Limited data available." : undefined}
+          onCopyCommand={ethernetNeedsRefresh ? () => copyDiagnosticBlock("ethernet") : undefined}
+          copied={copiedCommandId === "ethernet"}
         />
       </div>
     </section>

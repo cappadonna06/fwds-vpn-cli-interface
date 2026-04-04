@@ -1929,10 +1929,10 @@
   background: var(--bg-1);
   border: 1px solid var(--border);
   border-radius: 12px;
-  padding: 12px 14px;
+  padding: 14px 16px;
   display: flex;
   flex-direction: column;
-  min-height: 168px;
+  min-height: 182px;
   transition: border-color 140ms ease, box-shadow 140ms ease;
 }
 
@@ -2002,9 +2002,21 @@
 
 .diag-card-updated {
   margin-top: auto;
-  padding-top: 8px;
+  padding-top: 10px;
   color: var(--text-muted);
   font-size: 11px;
+}
+
+.diag-card-action-row {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 11px;
+  color: var(--text-muted);
 }
 
 .diag-details-wrap {
@@ -2074,6 +2086,17 @@
   font-size: 13px;
   font-weight: 600;
   color: var(--text-primary);
+}
+
+.diag-copy-link {
+  border: none;
+  background: none;
+  padding: 0;
+  color: var(--accent);
+  font-size: 11px;
+  text-decoration: underline;
+  cursor: pointer;
+  flex-shrink: 0;
 }
 
 .cmd-drawer-script {
