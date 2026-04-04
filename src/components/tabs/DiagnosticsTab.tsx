@@ -181,7 +181,8 @@ interface DiagCardProps {
   icon: string;
   health: HealthTone;
   badgeLabel: string;
-  summaryLine: string;
+  primaryLine: string;
+  secondaryLine?: string | null;
   role?: string | null;
   signalLabel?: string | null;
   signalScore?: number | null;
@@ -192,6 +193,7 @@ interface DiagCardProps {
   commandHint?: string;
   onCopyCommand?: () => void;
   copied?: boolean;
+  compact?: boolean;
 }
 
 function resolveBlockScript(block: DiagnosticBlock, tier: "light" | "heavy"): string {
@@ -345,8 +347,9 @@ function buildSatelliteSections(sat?: SatelliteDiagnostic | null): DiagSection[]
 function buildEthernetSections(ethernet?: EthernetDiagnostic | null): DiagSection[] {
   if (!ethernet) return [{ title: "Status", rows: [{ label: "Status", value: "No diagnostics run" }, { label: "Last test", value: "—" }] }];
 
+  const connected = ethernet.internet_reachable || ethernet.link_detected === true;
   const actions: DiagRow[] = [];
-  if (ethernet.link_detected === false) actions.push({ label: "Recommended action", value: "Check cable or switch" });
+  if (!ethernet.internet_reachable && ethernet.link_detected === false) actions.push({ label: "Recommended action", value: "Check cable or switch" });
   else if (!ethernet.ip_address) actions.push({ label: "Recommended action", value: "Check DHCP / static IP configuration" });
   else if (ethernet.flap_count > 0) actions.push({ label: "Recommended action", value: "Inspect link stability and port health" });
 
@@ -354,9 +357,9 @@ function buildEthernetSections(ethernet?: EthernetDiagnostic | null): DiagSectio
     {
       title: "Ethernet",
       rows: [
-        { label: "Connection", value: ethernet.link_detected ? "Connected" : "No link" },
+        { label: "Connection", value: connected ? "Connected" : "No link" },
         { label: "Speed", value: speedLabel(ethernet.speed) + (ethernet.duplex ? ` (${ethernet.duplex})` : "") },
-        { label: "Role", value: ethernet.link_detected ? "Active" : "Inactive" },
+        { label: "Role", value: connected ? "Connected path" : "Inactive" },
         { label: "Internet test", value: ethernet.internet_reachable ? "Passed" : "Failed" },
         { label: "Stability", value: ethernet.flap_count > 0 ? "Recent link flaps" : "Stable" },
       ],
@@ -368,64 +371,84 @@ function buildEthernetSections(ethernet?: EthernetDiagnostic | null): DiagSectio
 type CardSummary = {
   health: HealthTone;
   badgeLabel: string;
-  summaryLine: string;
-  role?: string | null;
+  primaryLine: string;
+  secondaryLine?: string | null;
   signalLabel?: string | null;
   signalScore?: number | null;
 };
 
+function resolvePrimaryNetwork(diag: { wifi?: WifiDiagnostic | null; cellular?: CellularDiagnostic | null; satellite?: SatelliteDiagnostic | null; ethernet?: EthernetDiagnostic | null }): "wifi" | "cellular" | "ethernet" | null {
+  if (diag.satellite?.default_via_eth0 === true) return "ethernet";
+  if (diag.satellite?.default_via_wlan0 === true || diag.wifi?.default_via_wlan0 === true) return "wifi";
+  if (diag.satellite?.default_via_wwan0 === true) return "cellular";
+
+  const active = (diag.wifi?.connman_active_service || diag.cellular?.connman_active_service || diag.satellite?.connman_active_service || "").toLowerCase();
+  if (active.includes("eth")) return "ethernet";
+  if (active.includes("wlan") || active.includes("wifi")) return "wifi";
+  if (active.includes("wwan") || active.includes("cell")) return "cellular";
+
+  if (diag.ethernet?.internet_reachable) return "ethernet";
+  if (diag.wifi?.connected || diag.wifi?.connman_wifi_connected) return "wifi";
+  if (diag.cellular?.connman_cell_connected) return "cellular";
+  return null;
+}
+
+function resolveRole(network: "wifi" | "cellular" | "ethernet", primary: "wifi" | "cellular" | "ethernet" | null, connected: boolean): string | null {
+  if (!connected) return "Inactive";
+  return primary === network ? "Primary" : "Backup";
+}
+
 function summarizeWifi(wifi?: WifiDiagnostic | null): CardSummary {
-  if (!wifi) return { health: "neutral", badgeLabel: "Inactive", summaryLine: "No diagnostics run", role: "Not validated" };
+  if (!wifi) return { health: "neutral", badgeLabel: "Inactive", primaryLine: "No diagnostics run" };
   const connected = wifi.connected === true || wifi.connman_wifi_connected === true;
   const ssid = wifi.ssid || wifi.access_point || "Wi-Fi";
-  if (!connected) return { health: "neutral", badgeLabel: "Inactive", summaryLine: "Not connected", role: "Inactive" };
+  if (!connected) return { health: "neutral", badgeLabel: "Inactive", primaryLine: "Not connected", secondaryLine: ssid };
   const sig = signalLabel(wifi.strength_score);
-  const role = wifi.default_via_wlan0 === true ? "Active" : "Backup";
   if ((wifi.strength_score ?? 0) > 0 && (wifi.strength_score ?? 0) < 25) {
-    return { health: "warning", badgeLabel: "Warning", summaryLine: `${ssid} · Weak · Monitoring recommended`, role, signalLabel: sig, signalScore: wifi.strength_score };
+    return { health: "warning", badgeLabel: "Warning", primaryLine: ssid, secondaryLine: "Monitoring recommended", signalLabel: sig, signalScore: wifi.strength_score };
   }
   if (!wifi.internet_reachable) {
-    return { health: "warning", badgeLabel: "Warning", summaryLine: `${ssid} · Connected · Limited data`, role, signalLabel: sig, signalScore: wifi.strength_score };
+    return { health: "warning", badgeLabel: "Warning", primaryLine: ssid, secondaryLine: "Connected · limited data", signalLabel: sig, signalScore: wifi.strength_score };
   }
-  return { health: "healthy", badgeLabel: "Healthy", summaryLine: `${ssid} · ${sig} · ${role}`, role, signalLabel: sig, signalScore: wifi.strength_score };
+  return { health: "healthy", badgeLabel: "Healthy", primaryLine: ssid, secondaryLine: "Connected", signalLabel: sig, signalScore: wifi.strength_score };
 }
 
 function summarizeCellular(cell?: CellularDiagnostic | null): CardSummary {
-  if (!cell) return { health: "neutral", badgeLabel: "Inactive", summaryLine: "No diagnostics run", role: "Not validated" };
-  if (cell.modem_present === false) return { health: "error", badgeLabel: "Issue", summaryLine: "No modem detected" };
-  if (cell.sim_inserted === false) return { health: "error", badgeLabel: "Issue", summaryLine: "No SIM detected" };
-  if (cell.qcsq === "NOSERVICE") return { health: "error", badgeLabel: "Issue", summaryLine: "No service" };
+  if (!cell) return { health: "neutral", badgeLabel: "Inactive", primaryLine: "No diagnostics run" };
+  if (cell.modem_present === false) return { health: "error", badgeLabel: "Issue", primaryLine: "No modem detected" };
+  if (cell.sim_inserted === false) return { health: "error", badgeLabel: "Issue", primaryLine: "No SIM detected" };
+  if (cell.qcsq === "NOSERVICE") return { health: "error", badgeLabel: "Issue", primaryLine: "No service" };
   const carrier = cell.operator_name || cell.basic_provider || cell.provider_code || "Cellular";
-  const role = roleLabel(cell.role) || "Inactive";
   const connected = cell.connman_cell_connected === true;
   const sig = signalLabel(cell.strength_score);
   if (!connected && cell.connman_cell_ready === true) {
-    return { health: "warning", badgeLabel: "Warning", summaryLine: `${carrier} · Registered · not connected`, role, signalLabel: sig, signalScore: cell.strength_score };
+    return { health: "warning", badgeLabel: "Warning", primaryLine: carrier, secondaryLine: "Registered · not connected", signalLabel: sig, signalScore: cell.strength_score };
   }
-  if (!connected) return { health: "neutral", badgeLabel: "Inactive", summaryLine: "Cellular disabled", role: "Inactive" };
+  if (!connected && cell.connman_cell_powered === false) return { health: "neutral", badgeLabel: "Inactive", primaryLine: "Cellular disabled" };
+  if (!connected) return { health: "warning", badgeLabel: "Warning", primaryLine: carrier, secondaryLine: "Searching for service", signalLabel: sig, signalScore: cell.strength_score };
   if ((cell.strength_score ?? 0) > 0 && (cell.strength_score ?? 0) < 25) {
-    return { health: "warning", badgeLabel: "Warning", summaryLine: `${carrier} · Weak · ${role}`, role, signalLabel: sig, signalScore: cell.strength_score };
+    return { health: "warning", badgeLabel: "Warning", primaryLine: carrier, secondaryLine: "Weak signal", signalLabel: sig, signalScore: cell.strength_score };
   }
-  return { health: "healthy", badgeLabel: "Healthy", summaryLine: `${carrier} · ${sig} · ${role}`, role, signalLabel: sig, signalScore: cell.strength_score };
+  return { health: "healthy", badgeLabel: "Healthy", primaryLine: carrier, secondaryLine: "Connected", signalLabel: sig, signalScore: cell.strength_score };
 }
 
 function summarizeEthernet(ethernet?: EthernetDiagnostic | null): CardSummary {
-  if (!ethernet) return { health: "neutral", badgeLabel: "Inactive", summaryLine: "No diagnostics run", role: "Not validated" };
-  if (ethernet.link_detected === false) return { health: "neutral", badgeLabel: "Inactive", summaryLine: "No link detected", role: "Inactive" };
-  if (!ethernet.ip_address) return { health: "error", badgeLabel: "Issue", summaryLine: "Connected · no IP assigned", role: "Active" };
-  if (ethernet.flap_count > 0) return { health: "warning", badgeLabel: "Warning", summaryLine: "Connected · Unstable", role: "Active" };
-  if (!ethernet.internet_reachable) return { health: "warning", badgeLabel: "Warning", summaryLine: "Connected · Limited internet", role: "Active" };
-  return { health: "healthy", badgeLabel: "Healthy", summaryLine: `Connected · ${speedLabel(ethernet.speed)} · Active`, role: "Active" };
+  if (!ethernet) return { health: "neutral", badgeLabel: "Inactive", primaryLine: "No diagnostics run" };
+  if (ethernet.internet_reachable === true) return { health: "healthy", badgeLabel: "Healthy", primaryLine: "Connected", secondaryLine: "Internet reachable" };
+  if (ethernet.link_detected === false) return { health: "neutral", badgeLabel: "Inactive", primaryLine: "No link detected" };
+  if (ethernet.flap_count > 0) return { health: "warning", badgeLabel: "Warning", primaryLine: "Connected", secondaryLine: "Unstable link" };
+  if (!ethernet.ip_address) return { health: "error", badgeLabel: "Issue", primaryLine: "Connected", secondaryLine: "No IP assigned" };
+  return { health: "warning", badgeLabel: "Warning", primaryLine: "Connected", secondaryLine: "Limited internet" };
 }
 
 function summarizeSatellite(sat?: SatelliteDiagnostic | null): CardSummary {
-  if (!sat) return { health: "neutral", badgeLabel: "Not validated", summaryLine: "No diagnostics run", role: "Not validated" };
-  if (sat.modem_present === false) return { health: "error", badgeLabel: "Issue", summaryLine: "No satellite modem detected" };
-  if (sat.loopback_test_success === true) return { health: "healthy", badgeLabel: "Verified", summaryLine: "Link verified", role: "Backup" };
-  if (sat.loopback_test_blocked_in_use) return { health: "warning", badgeLabel: "Warning", summaryLine: "Test blocked" };
-  if (sat.loopback_test_ran && sat.loopback_test_success === false) return { health: "error", badgeLabel: "Issue", summaryLine: "Loopback failed" };
-  if (sat.satellites_seen === 0) return { health: "error", badgeLabel: "Issue", summaryLine: "No satellites visible" };
-  return { health: "neutral", badgeLabel: "Not validated", summaryLine: "Modem present · full test not run", role: "Not validated" };
+  if (!sat) return { health: "neutral", badgeLabel: "Not validated", primaryLine: "No diagnostics run" };
+  if (sat.modem_present === false) return { health: "error", badgeLabel: "Issue", primaryLine: "No satellite modem detected" };
+  if (sat.loopback_test_success === true) return { health: "healthy", badgeLabel: "Verified", primaryLine: "Link verified" };
+  if (sat.loopback_test_blocked_in_use) return { health: "warning", badgeLabel: "Warning", primaryLine: "Test blocked" };
+  if (sat.loopback_test_ran && sat.loopback_test_success === false) return { health: "error", badgeLabel: "Issue", primaryLine: "Loopback failed" };
+  if (sat.satellites_seen === 0) return { health: "error", badgeLabel: "Issue", primaryLine: "No satellites visible" };
+  return { health: "neutral", badgeLabel: "Not validated", primaryLine: "Modem present", secondaryLine: "Full test not run" };
 }
 
 function signalBars(score?: number | null): number {
@@ -442,7 +465,8 @@ function DiagCard({
   icon,
   health,
   badgeLabel,
-  summaryLine,
+  primaryLine,
+  secondaryLine,
   role,
   signalLabel: cardSignalLabel,
   signalScore,
@@ -453,9 +477,10 @@ function DiagCard({
   commandHint,
   onCopyCommand,
   copied,
+  compact,
 }: DiagCardProps) {
   return (
-    <article className={`diag-card diag-card-${health} ${expanded ? "diag-card-open" : ""}`}>
+    <article className={`diag-card diag-card-${health} ${expanded ? "diag-card-open" : ""} ${compact ? "diag-card-compact" : ""}`}>
       <button className="diag-card-head" onClick={onToggle}>
         <div className="diag-card-title-wrap">
           <span className="diag-card-icon" aria-hidden>{icon}</span>
@@ -470,7 +495,8 @@ function DiagCard({
         </div>
       </button>
 
-      <div className="diag-card-status-line">{summaryLine}</div>
+      <div className="diag-card-status-line">{primaryLine}</div>
+      {secondaryLine && <div className="diag-card-secondary-line">{secondaryLine}</div>}
       <div className="diag-card-subline">
         {signalScore !== null && signalScore !== undefined && (
           <span className={`diag-signal-bars tone-${signalBars(signalScore) >= 3 ? "good" : signalBars(signalScore) >= 2 ? "warn" : "bad"}`} aria-hidden>
@@ -511,7 +537,7 @@ function DiagCard({
         </div>
       )}
 
-      <div className="diag-card-updated">Updated {updatedAt ?? "—"}</div>
+      {updatedAt && <div className="diag-card-updated">Updated {updatedAt}</div>}
     </article>
   );
 }
@@ -591,6 +617,10 @@ export default function DiagnosticsTab() {
   const cellularSummary = summarizeCellular(cellular);
   const satelliteSummary = summarizeSatellite(satellite);
   const ethernetSummary = summarizeEthernet(ethernet);
+  const primaryNetwork = resolvePrimaryNetwork({ wifi, cellular, satellite, ethernet });
+  const wifiRole = resolveRole("wifi", primaryNetwork, !!(wifi?.connected || wifi?.connman_wifi_connected));
+  const cellularRole = resolveRole("cellular", primaryNetwork, cellular?.connman_cell_connected === true);
+  const ethernetRole = resolveRole("ethernet", primaryNetwork, !!(ethernet?.link_detected || ethernet?.internet_reachable));
 
   async function clearCards() {
     await invoke("clear_diagnostic_state").catch(() => {});
@@ -664,8 +694,9 @@ export default function DiagnosticsTab() {
           icon="🌐"
           health={wifiSummary.health || toneFromStatus(wifi?.status)}
           badgeLabel={wifiSummary.badgeLabel}
-          summaryLine={wifiSummary.summaryLine}
-          role={wifiSummary.role}
+          primaryLine={wifiSummary.primaryLine}
+          secondaryLine={wifiSummary.secondaryLine}
+          role={wifiRole}
           signalLabel={wifiSummary.signalLabel}
           signalScore={wifiSummary.signalScore}
           sections={buildWifiSections(wifi)}
@@ -675,6 +706,7 @@ export default function DiagnosticsTab() {
           commandHint={wifiNeedsRefresh ? "Limited data available." : undefined}
           onCopyCommand={wifiNeedsRefresh ? () => copyDiagnosticBlock("wifi") : undefined}
           copied={copiedCommandId === "wifi"}
+          compact={wifiSummary.health === "neutral"}
         />
 
         <DiagCard
@@ -682,8 +714,9 @@ export default function DiagnosticsTab() {
           icon="📶"
           health={cellularSummary.health || toneFromStatus(cellular?.status)}
           badgeLabel={cellularSummary.badgeLabel}
-          summaryLine={cellularSummary.summaryLine}
-          role={cellularSummary.role}
+          primaryLine={cellularSummary.primaryLine}
+          secondaryLine={cellularSummary.secondaryLine}
+          role={cellularRole}
           signalLabel={cellularSummary.signalLabel}
           signalScore={cellularSummary.signalScore}
           sections={buildCellularSections(cellular)}
@@ -693,6 +726,7 @@ export default function DiagnosticsTab() {
           commandHint={cellularNeedsRefresh ? "Limited data available." : undefined}
           onCopyCommand={cellularNeedsRefresh ? () => copyDiagnosticBlock("cellular") : undefined}
           copied={copiedCommandId === "cellular"}
+          compact={cellularSummary.health === "neutral"}
         />
 
         <DiagCard
@@ -700,8 +734,9 @@ export default function DiagnosticsTab() {
           icon="🛰️"
           health={satelliteSummary.health || toneFromStatus(satellite?.status)}
           badgeLabel={satelliteSummary.badgeLabel}
-          summaryLine={satelliteSummary.summaryLine}
-          role={satelliteSummary.role}
+          primaryLine={satelliteSummary.primaryLine}
+          secondaryLine={satelliteSummary.secondaryLine}
+          role={satelliteSummary.health === "healthy" ? "Backup" : undefined}
           signalLabel={satelliteSummary.signalLabel}
           signalScore={satelliteSummary.signalScore}
           sections={buildSatelliteSections(satellite)}
@@ -711,6 +746,7 @@ export default function DiagnosticsTab() {
           commandHint={satelliteNeedsRefresh ? "Limited data available." : undefined}
           onCopyCommand={satelliteNeedsRefresh ? () => copyDiagnosticBlock("satellite") : undefined}
           copied={copiedCommandId === "satellite"}
+          compact={satelliteSummary.health === "neutral"}
         />
 
         <DiagCard
@@ -718,8 +754,9 @@ export default function DiagnosticsTab() {
           icon="🔌"
           health={ethernetSummary.health || toneFromStatus(ethernet?.status)}
           badgeLabel={ethernetSummary.badgeLabel}
-          summaryLine={ethernetSummary.summaryLine}
-          role={ethernetSummary.role}
+          primaryLine={ethernetSummary.primaryLine}
+          secondaryLine={ethernetSummary.secondaryLine}
+          role={ethernetRole}
           signalLabel={ethernetSummary.signalLabel}
           signalScore={ethernetSummary.signalScore}
           sections={buildEthernetSections(ethernet)}
@@ -729,6 +766,7 @@ export default function DiagnosticsTab() {
           commandHint={ethernetNeedsRefresh ? "Limited data available." : undefined}
           onCopyCommand={ethernetNeedsRefresh ? () => copyDiagnosticBlock("ethernet") : undefined}
           copied={copiedCommandId === "ethernet"}
+          compact={ethernetSummary.health === "neutral"}
         />
       </div>
     </section>

@@ -1936,6 +1936,10 @@
   transition: border-color 140ms ease, box-shadow 140ms ease;
 }
 
+.diag-card-compact {
+  min-height: 132px;
+}
+
 .diag-card-open {
   box-shadow: 0 6px 18px color-mix(in srgb, var(--text-primary) 8%, transparent);
 }
@@ -2037,6 +2041,12 @@
   line-height: 1.2;
 }
 
+.diag-card-secondary-line {
+  margin-top: 4px;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
 .diag-summary-list {
   margin: 8px 0 0;
   padding-left: 16px;
@@ -2063,6 +2073,10 @@
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
+}
+
+.diag-card-compact .diag-card-subline:empty {
+  display: none;
 }
 
 .diag-role-pill {
