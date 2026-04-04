@@ -567,6 +567,51 @@ ERROR: device "/dev/ttyUSB2" does not exist
         assert_eq!(cell.status, crate::DiagStatus::Red);
         assert_eq!(cell.summary, "No modem detected");
     }
+
+    #[test]
+    fn parse_cellular_basic_info_ignores_raw_at_lines_for_apn_and_provider() {
+        let block = r#"
+===== CELLULAR CONNECTIVITY TEST =====
+Internet reachability state: offline
+Done: Failure: timeout
+
+===== BASIC CELL INFO =====
+868765071689128
+89148000008543971083
+311270028230364
+311480
++CGPADDR: 1,0.0.0.0
+registered
+80
++QCSQ: "NOSERVICE"
+"#;
+        let cell = parse_cellular(block);
+        assert_eq!(cell.basic_provider, None);
+        assert_eq!(cell.basic_apn, None);
+    }
+
+    #[test]
+    fn parse_cellular_basic_info_parses_keyed_fields() {
+        let block = r#"
+===== CELLULAR CONNECTIVITY TEST =====
+Internet reachability state: online
+Done: Success
+
+===== BASIC CELL INFO =====
+IMEI: 868765071689128
+ICCID: 89148000008543971083
+IMSI: 311270028230364
+HNI: 311480
+Provider: Verizon
+Status: registered
+Signal: 80
+APN: vzwinternet
+"#;
+        let cell = parse_cellular(block);
+        assert_eq!(cell.imei.as_deref(), Some("868765071689128"));
+        assert_eq!(cell.basic_provider.as_deref(), Some("Verizon"));
+        assert_eq!(cell.basic_apn.as_deref(), Some("vzwinternet"));
+    }
 }
 
 fn parse_wifi(latest: &HashMap<String, String>) -> Option<WifiDiagnostic> {
@@ -1843,15 +1888,74 @@ fn parse_basic_cell_info(text: &str, diag: &mut CellularDiagnostic) {
     let lines: Vec<String> = text
         .lines()
         .map(|l| l.trim().to_string())
-        .filter(|l| !l.is_empty())
+        .filter(|l| !l.is_empty() && !l.starts_with("====="))
         .collect();
     if lines.is_empty() {
         return;
     }
+    let mut keyed = false;
+    for line in &lines {
+        let lower = line.to_ascii_lowercase();
+        let value = line.split_once(':').map(|(_, rhs)| rhs.trim().to_string());
+        if lower.starts_with("imei:") {
+            diag.imei = diag
+                .imei
+                .clone()
+                .or_else(|| value.and_then(clean_cell_display_value));
+            keyed = true;
+        } else if lower.starts_with("iccid:") || lower.starts_with("ccid:") {
+            diag.iccid = diag
+                .iccid
+                .clone()
+                .or_else(|| value.and_then(clean_cell_display_value));
+            keyed = true;
+        } else if lower.starts_with("imsi:") {
+            diag.imsi = diag
+                .imsi
+                .clone()
+                .or_else(|| value.and_then(clean_cell_display_value));
+            keyed = true;
+        } else if lower.starts_with("hni:") {
+            diag.hni = diag
+                .hni
+                .clone()
+                .or_else(|| value.and_then(clean_cell_display_value));
+            keyed = true;
+        } else if lower.starts_with("provider:") {
+            diag.basic_provider = diag
+                .basic_provider
+                .clone()
+                .or_else(|| value.and_then(clean_cell_display_value));
+            keyed = true;
+        } else if lower.starts_with("status:") {
+            diag.basic_status = diag
+                .basic_status
+                .clone()
+                .or_else(|| value.and_then(clean_cell_display_value));
+            keyed = true;
+        } else if lower.starts_with("signal:") {
+            diag.basic_signal = diag
+                .basic_signal
+                .clone()
+                .or_else(|| value.and_then(clean_cell_display_value));
+            keyed = true;
+        } else if lower.starts_with("apn:") {
+            diag.basic_apn = diag
+                .basic_apn
+                .clone()
+                .or_else(|| value.and_then(clean_cell_display_value));
+            keyed = true;
+        }
+    }
+
+    if keyed {
+        return;
+    }
+
     let mut vals: Vec<Option<String>> = vec![None; 8];
     for (i, line) in lines.iter().take(8).enumerate() {
         if !line.to_ascii_lowercase().starts_with("error:") {
-            vals[i] = Some(line.clone());
+            vals[i] = clean_cell_display_value(line.to_string());
         }
     }
     diag.imei = diag.imei.clone().or(vals[0].clone());
@@ -1862,6 +1966,31 @@ fn parse_basic_cell_info(text: &str, diag: &mut CellularDiagnostic) {
     diag.basic_status = diag.basic_status.clone().or(vals[5].clone());
     diag.basic_signal = diag.basic_signal.clone().or(vals[6].clone());
     diag.basic_apn = diag.basic_apn.clone().or(vals[7].clone());
+}
+
+fn clean_cell_display_value(value: String) -> Option<String> {
+    let trimmed = value
+        .trim()
+        .trim_matches('"')
+        .trim_end_matches(',')
+        .trim()
+        .to_string();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let upper = trimmed.to_ascii_uppercase();
+    if upper == "0.0.0.0" || upper == "—" || upper == "-" {
+        return None;
+    }
+    if upper.starts_with('+')
+        || upper.starts_with("ERROR")
+        || upper.contains("CGPADDR")
+        || upper.contains("CGACT")
+        || upper.contains("QCSQ")
+    {
+        return None;
+    }
+    Some(trimmed)
 }
 
 fn parse_connman_cellular(text: &str, diag: &mut CellularDiagnostic) {
