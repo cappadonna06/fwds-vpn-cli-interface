@@ -2018,6 +2018,59 @@
   gap: 4px;
 }
 
+.diag-summary-metrics {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.diag-metric-row {
+  display: grid;
+  grid-template-columns: 68px 1fr;
+  gap: 8px;
+  align-items: center;
+}
+
+.diag-metric-label {
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.diag-metric-value {
+  color: var(--text-primary);
+  font-size: 13px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.diag-signal-bars {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 11px;
+}
+
+.diag-signal-bars i {
+  display: block;
+  width: 3px;
+  border-radius: 1px;
+  background: color-mix(in srgb, var(--text-muted) 45%, white);
+}
+
+.diag-signal-bars i:nth-child(1) { height: 4px; }
+.diag-signal-bars i:nth-child(2) { height: 6px; }
+.diag-signal-bars i:nth-child(3) { height: 8px; }
+.diag-signal-bars i:nth-child(4) { height: 10px; }
+
+.diag-signal-bars.tone-good i.on { background: var(--success); }
+.diag-signal-bars.tone-warn i.on { background: var(--warning); }
+.diag-signal-bars.tone-bad i.on { background: var(--danger); }
+
 .diag-card-updated {
   margin-top: auto;
   padding-top: 10px;

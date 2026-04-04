@@ -181,7 +181,7 @@ interface DiagCardProps {
   icon: string;
   health: HealthTone;
   primaryStatus: string;
-  summaryFacts: string[];
+  summaryMetrics: { label: string; value: string; signalScore?: number | null }[];
   sections: DiagSection[];
   updatedAt?: string | null;
   expanded: boolean;
@@ -222,17 +222,6 @@ function labelFromStatus(status?: DiagStatus | null): string {
   if (status === "red") return "Offline";
   if (status === "grey") return "Disabled";
   return "No data";
-}
-
-function buildWifiSummary(wifi?: WifiDiagnostic | null): string[] {
-  if (!wifi) return ["Waiting for diagnostics"];
-  return [
-    wifi.ssid || wifi.access_point || "SSID unavailable",
-    wifi.strength_score !== null && wifi.strength_score !== undefined
-      ? `${wifi.strength_score}/100${wifi.strength_label ? ` (${wifi.strength_label})` : ""}`
-      : "Signal unavailable",
-    wifi.ipv4_address || "No IPv4 address",
-  ];
 }
 
 function buildWifiSections(wifi?: WifiDiagnostic | null): DiagSection[] {
@@ -289,17 +278,6 @@ function buildWifiSections(wifi?: WifiDiagnostic | null): DiagSection[] {
   ];
 }
 
-function buildCellularSummary(cell?: CellularDiagnostic | null): string[] {
-  if (!cell) return ["Waiting for diagnostics"];
-  return [
-    cell.operator_name || cell.basic_provider || cell.provider_code || "Carrier unavailable",
-    cell.strength_score !== null && cell.strength_score !== undefined
-      ? `${cell.strength_score}/100${cell.strength_label ? ` (${cell.strength_label})` : ""}`
-      : cell.qcsq || "Signal unavailable",
-    cell.wwan_ipv4_address || "No IPv4 address",
-  ];
-}
-
 function buildCellularSections(cell?: CellularDiagnostic | null): DiagSection[] {
   if (!cell) return [{ title: "Status", rows: [{ label: "Details", value: "No recent data" }] }];
 
@@ -343,15 +321,6 @@ function buildCellularSections(cell?: CellularDiagnostic | null): DiagSection[] 
   ];
 }
 
-function buildSatelliteSummary(sat?: SatelliteDiagnostic | null): string[] {
-  if (!sat) return ["Waiting for diagnostics"];
-  return [
-    sat.modem_present === true ? "Modem detected" : sat.modem_present === false ? "Modem not detected" : "Modem state unknown",
-    sat.satellites_seen !== null && sat.satellites_seen !== undefined ? `${sat.satellites_seen} satellites seen` : "Satellite count unavailable",
-    sat.connman_active_service || sat.connman_state || "No active network",
-  ];
-}
-
 function buildSatelliteSections(sat?: SatelliteDiagnostic | null): DiagSection[] {
   if (!sat) return [{ title: "Status", rows: [{ label: "Details", value: "No recent data" }] }];
 
@@ -385,13 +354,63 @@ function buildSatelliteSections(sat?: SatelliteDiagnostic | null): DiagSection[]
   ];
 }
 
-function buildEthernetSummary(ethernet?: EthernetDiagnostic | null): string[] {
-  if (!ethernet) return ["Waiting for diagnostics"];
+function buildWifiMetrics(wifi?: WifiDiagnostic | null): { label: string; value: string; signalScore?: number | null }[] {
+  if (!wifi) return [{ label: "Status", value: "No recent data" }];
   return [
-    ethernet.ip_address || "No IP address",
-    ethernet.speed || "Speed unavailable",
-    ethernet.link_detected === true ? "Link detected" : ethernet.link_detected === false ? "No link" : "Link unknown",
+    { label: "SSID", value: wifi.ssid || wifi.access_point || "Unavailable" },
+    {
+      label: "Signal",
+      value:
+        wifi.strength_score !== null && wifi.strength_score !== undefined
+          ? `${wifi.strength_score}/100${wifi.strength_label ? ` (${wifi.strength_label})` : ""}`
+          : "Unavailable",
+      signalScore: wifi.strength_score,
+    },
+    { label: "IP", value: wifi.ipv4_address || "No IPv4" },
   ];
+}
+
+function buildCellularMetrics(cell?: CellularDiagnostic | null): { label: string; value: string; signalScore?: number | null }[] {
+  if (!cell) return [{ label: "Status", value: "No recent data" }];
+  return [
+    { label: "Carrier", value: cell.operator_name || cell.basic_provider || cell.provider_code || "Unavailable" },
+    {
+      label: "Signal",
+      value:
+        cell.strength_score !== null && cell.strength_score !== undefined
+          ? `${cell.strength_score}/100${cell.strength_label ? ` (${cell.strength_label})` : ""}`
+          : cell.qcsq || "Unavailable",
+      signalScore: cell.strength_score,
+    },
+    { label: "IP", value: cell.wwan_ipv4_address || "No IPv4" },
+  ];
+}
+
+function buildSatelliteMetrics(sat?: SatelliteDiagnostic | null): { label: string; value: string; signalScore?: number | null }[] {
+  if (!sat) return [{ label: "Status", value: "No recent data" }];
+  return [
+    { label: "Modem", value: sat.modem_present === true ? "Detected" : sat.modem_present === false ? "Not detected" : "Unknown" },
+    { label: "Satellites", value: sat.satellites_seen !== null && sat.satellites_seen !== undefined ? String(sat.satellites_seen) : "Unavailable" },
+    { label: "Network", value: sat.connman_active_service || sat.connman_state || "Unavailable" },
+  ];
+}
+
+function buildEthernetMetrics(ethernet?: EthernetDiagnostic | null): { label: string; value: string; signalScore?: number | null }[] {
+  if (!ethernet) return [{ label: "Status", value: "No recent data" }];
+  return [
+    { label: "IP", value: ethernet.ip_address || "No IP" },
+    { label: "Link", value: ethernet.link_detected === true ? "Detected" : ethernet.link_detected === false ? "No link" : "Unknown" },
+    { label: "Speed", value: ethernet.speed || "Unavailable" },
+  ];
+}
+
+function signalBars(score?: number | null): number {
+  if (score === null || score === undefined || Number.isNaN(score)) return 0;
+  if (score >= 75) return 4;
+  if (score >= 50) return 3;
+  if (score >= 25) return 2;
+  if (score > 0) return 1;
+  return 0;
 }
 
 function buildEthernetSections(ethernet?: EthernetDiagnostic | null): DiagSection[] {
@@ -436,7 +455,7 @@ function DiagCard({
   icon,
   health,
   primaryStatus,
-  summaryFacts,
+  summaryMetrics,
   sections,
   updatedAt,
   expanded,
@@ -462,9 +481,27 @@ function DiagCard({
 
       <div className="diag-card-status-line">{primaryStatus}</div>
 
-      <ul className="diag-summary-list">
-        {summaryFacts.slice(0, 3).map((fact) => <li key={`${title}-${fact}`}>{fact}</li>)}
-      </ul>
+      <div className="diag-summary-metrics">
+        {summaryMetrics.slice(0, 3).map((metric) => (
+          <div key={`${title}-${metric.label}`} className="diag-metric-row">
+            <span className="diag-metric-label">{metric.label}</span>
+            <span className="diag-metric-value">
+              {metric.signalScore !== undefined && (
+                <span
+                  className={`diag-signal-bars tone-${signalBars(metric.signalScore) >= 3 ? "good" : signalBars(metric.signalScore) >= 2 ? "warn" : "bad"}`}
+                  aria-hidden
+                >
+                  <i className={signalBars(metric.signalScore) >= 1 ? "on" : ""} />
+                  <i className={signalBars(metric.signalScore) >= 2 ? "on" : ""} />
+                  <i className={signalBars(metric.signalScore) >= 3 ? "on" : ""} />
+                  <i className={signalBars(metric.signalScore) >= 4 ? "on" : ""} />
+                </span>
+              )}
+              {metric.value}
+            </span>
+          </div>
+        ))}
+      </div>
 
       {expanded && (
         <div className="diag-details-wrap">
@@ -642,7 +679,7 @@ export default function DiagnosticsTab() {
           icon="🌐"
           health={toneFromStatus(wifi?.status)}
           primaryStatus={wifi?.summary || labelFromStatus(wifi?.status)}
-          summaryFacts={buildWifiSummary(wifi)}
+          summaryMetrics={buildWifiMetrics(wifi)}
           sections={buildWifiSections(wifi)}
           expanded={expanded.wifi}
           onToggle={() => setExpanded((p) => ({ ...p, wifi: !p.wifi }))}
@@ -657,7 +694,7 @@ export default function DiagnosticsTab() {
           icon="📶"
           health={toneFromStatus(cellular?.status)}
           primaryStatus={cellular?.summary || labelFromStatus(cellular?.status)}
-          summaryFacts={buildCellularSummary(cellular)}
+          summaryMetrics={buildCellularMetrics(cellular)}
           sections={buildCellularSections(cellular)}
           expanded={expanded.cellular}
           onToggle={() => setExpanded((p) => ({ ...p, cellular: !p.cellular }))}
@@ -672,7 +709,7 @@ export default function DiagnosticsTab() {
           icon="🛰️"
           health={toneFromStatus(satellite?.status)}
           primaryStatus={satellite?.summary || labelFromStatus(satellite?.status)}
-          summaryFacts={buildSatelliteSummary(satellite)}
+          summaryMetrics={buildSatelliteMetrics(satellite)}
           sections={buildSatelliteSections(satellite)}
           expanded={expanded.satellite}
           onToggle={() => setExpanded((p) => ({ ...p, satellite: !p.satellite }))}
@@ -687,7 +724,7 @@ export default function DiagnosticsTab() {
           icon="🔌"
           health={toneFromStatus(ethernet?.status)}
           primaryStatus={ethernet?.summary || labelFromStatus(ethernet?.status)}
-          summaryFacts={buildEthernetSummary(ethernet)}
+          summaryMetrics={buildEthernetMetrics(ethernet)}
           sections={buildEthernetSections(ethernet)}
           expanded={expanded.ethernet}
           onToggle={() => setExpanded((p) => ({ ...p, ethernet: !p.ethernet }))}
