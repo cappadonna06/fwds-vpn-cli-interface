@@ -454,7 +454,9 @@ function DiagCard({
         </div>
         <div className="diag-card-head-right">
           <span className={`diag-status-dot diag-status-${health}`} />
-          <span className={`diag-chevron ${expanded ? "open" : ""}`} aria-hidden>▾</span>
+          <span className={`diag-expand-chip ${expanded ? "open" : ""}`}>
+            {expanded ? "Hide" : "Details"} <span className="diag-chevron" aria-hidden>▾</span>
+          </span>
         </div>
       </button>
 

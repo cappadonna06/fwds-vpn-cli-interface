@@ -1874,7 +1874,7 @@
   display: flex;
   flex-direction: column;
   gap: 14px;
-  padding-right: 2px;
+  padding-right: 16px;
 }
 
 .diag-header {
@@ -1968,16 +1968,34 @@
 .diag-card-head-right {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
+}
+
+.diag-expand-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+  background: var(--bg-2);
+  border-radius: 999px;
+  padding: 2px 8px;
+  line-height: 1.2;
+}
+
+.diag-expand-chip.open {
+  color: var(--text-primary);
+  border-color: color-mix(in srgb, var(--accent) 30%, var(--border));
 }
 
 .diag-chevron {
-  color: var(--text-muted);
-  font-size: 14px;
+  color: inherit;
+  font-size: 13px;
   transition: transform 150ms ease;
 }
 
-.diag-chevron.open {
+.diag-expand-chip.open .diag-chevron {
   transform: rotate(180deg);
 }
 
