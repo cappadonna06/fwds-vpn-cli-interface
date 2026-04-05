@@ -20,7 +20,7 @@ const TABS: { id: Tab; label: string }[] = [
   { id: "console", label: "Commands" },
   { id: "wizard", label: "Setup Wizard" },
   { id: "diagnostics", label: "Diagnostics" },
-  { id: "logs", label: "Logs" },
+  { id: "logs", label: "Session Report" },
 ];
 
 interface AppStatus {
