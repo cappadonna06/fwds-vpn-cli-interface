@@ -234,6 +234,18 @@ function roleLabel(role?: string | null): string | null {
   return "Inactive";
 }
 
+function cleanCellValue(value?: string | null): string | null {
+  if (!value) return null;
+  const v = value.trim().replace(/^"+|"+$/g, "").replace(/,+$/, "");
+  if (!v) return null;
+  const upper = v.toUpperCase();
+  if (v === "0.0.0.0" || v === "—" || v === "-") return null;
+  if (upper.startsWith("+")) return null;
+  if (upper.includes("CGPADDR") || upper.includes("CGACT") || upper.includes("QCSQ")) return null;
+  if (upper.startsWith("ERROR")) return null;
+  return v;
+}
+
 function formatLoopback(seconds?: number | null): string {
   if (seconds === null || seconds === undefined) return "—";
   const m = Math.floor(seconds / 60);
@@ -266,24 +278,32 @@ function buildWifiSections(wifi?: WifiDiagnostic | null): DiagSection[] {
 function buildCellularSections(cell?: CellularDiagnostic | null): DiagSection[] {
   if (!cell) return [{ title: "Status", rows: [{ label: "Details", value: "No recent data" }] }];
 
-  const actions: DiagRow[] = [];
-  if (cell.sim_inserted === false) actions.push({ label: "Recommended action", value: "Insert SIM card" });
-  else if (cell.modem_present === false) actions.push({ label: "Recommended action", value: "Check modem hardware/firmware" });
-  else if ((cell.strength_score ?? 0) > 0 && (cell.strength_score ?? 0) < 25) actions.push({ label: "Recommended action", value: "Check coverage or antenna" });
-  else if (cell.recommended_action) actions.push({ label: "Recommended action", value: cell.recommended_action });
+  const primaryAction = cell.recommended_action
+    || (cell.sim_inserted === false ? "Insert SIM card" : null)
+    || (cell.modem_present === false ? "Check modem hardware/firmware" : null)
+    || (((cell.strength_score ?? 0) > 0 && (cell.strength_score ?? 0) < 25) ? "Check coverage or antenna" : null);
+
+  const heuristicOptions: string[] = [];
+  if (cell.sim_inserted === false) heuristicOptions.push("Insert SIM card");
+  if (cell.modem_present === false) heuristicOptions.push("Check modem hardware/firmware");
+  if ((cell.strength_score ?? 0) > 0 && (cell.strength_score ?? 0) < 25) heuristicOptions.push("Check coverage or antenna");
+  const otherOptions = Array.from(new Set([
+    ...(cell.other_actions ?? []),
+    ...heuristicOptions,
+  ].filter((opt) => !!opt && opt !== primaryAction)));
 
   return [
     {
       title: "Cellular",
       rows: [
-        { label: "Carrier", value: cell.operator_name || cell.basic_provider || cell.provider_code || "—" },
+        { label: "Carrier", value: cleanCellValue(cell.operator_name) || cleanCellValue(cell.provider_code) || cleanCellValue(cell.basic_provider) || "—" },
         { label: "Signal", value: signalLabel(cell.strength_score) + (cell.strength_score !== null && cell.strength_score !== undefined ? ` (${cell.strength_score}/100)` : "") },
         { label: "Connection", value: cell.connman_cell_connected === true ? "Connected" : "Not connected" },
         { label: "Role", value: roleLabel(cell.role) || "Inactive" },
         { label: "SIM", value: cell.sim_inserted === false ? "Missing" : cell.sim_ready === true ? "Ready" : "Unknown" },
         { label: "Modem", value: cell.modem_present === true ? "Detected" : "Not detected" },
         { label: "Network", value: [cell.rat, cell.band].filter(Boolean).join(" / ") || "—" },
-        { label: "APN", value: cell.at_apn || cell.basic_apn || "—" },
+        { label: "APN", value: cleanCellValue(cell.at_apn) || cleanCellValue(cell.basic_apn) || "—" },
       ],
     },
     {
@@ -294,11 +314,11 @@ function buildCellularSections(cell?: CellularDiagnostic | null): DiagSection[] 
         { label: "Latency", value: cell.check_avg_latency_ms !== null && cell.check_avg_latency_ms !== undefined ? `${cell.check_avg_latency_ms.toFixed(1)} ms` : "—" },
       ],
     },
-    ...(actions.length ? [{
+    ...((primaryAction || otherOptions.length > 0) ? [{
       title: "Next action",
       rows: [
-        ...actions,
-        ...(cell.other_actions && cell.other_actions.length > 0 ? [{ label: "Other options", value: cell.other_actions.join(" • ") }] : []),
+        ...(primaryAction ? [{ label: "Recommended action", value: primaryAction }] : []),
+        ...(otherOptions.length > 0 ? [{ label: "Other options", value: otherOptions.join(" • ") }] : []),
       ],
     }] : []),
   ];
