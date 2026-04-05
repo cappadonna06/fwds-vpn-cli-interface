@@ -4,7 +4,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import SessionTab from "./components/tabs/SessionTab";
 import CommandsTab from "./components/tabs/CommandsTab";
 import WizardTab from "./components/tabs/WizardTab";
-import LogsTab from "./components/tabs/LogsTab";
+import ReportTab from "./components/tabs/ReportTab";
 import DiagnosticsTab from "./components/tabs/DiagnosticsTab";
 import Sidebar from "./components/shell/Sidebar";
 import SidebarHeader from "./components/shell/SidebarHeader";
@@ -13,14 +13,14 @@ import { StatusPillState } from "./components/shell/StatusPill";
 import "./App.css";
 import "./components/tabs/tabs.css";
 
-type Tab = "session" | "console" | "wizard" | "logs" | "diagnostics";
+type Tab = "session" | "console" | "wizard" | "report" | "diagnostics";
 
 const TABS: { id: Tab; label: string }[] = [
   { id: "session", label: "Connect" },
   { id: "console", label: "Commands" },
   { id: "wizard", label: "Setup Wizard" },
   { id: "diagnostics", label: "Diagnostics" },
-  { id: "logs", label: "Logs" },
+  { id: "report", label: "Report" },
 ];
 
 interface AppStatus {
@@ -151,8 +151,8 @@ export default function App() {
           <div style={{ display: activeTab === "diagnostics" ? "contents" : "none" }}>
             <DiagnosticsTab />
           </div>
-          <div style={{ display: activeTab === "logs" ? "contents" : "none" }}>
-            <LogsTab />
+          <div style={{ display: activeTab === "report" ? "contents" : "none" }}>
+            <ReportTab />
           </div>
         </main>
       </div>
