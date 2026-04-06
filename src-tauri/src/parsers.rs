@@ -1304,7 +1304,7 @@ fn parse_satellite_check(text: &str, diag: &mut SatelliteDiagnostic) {
 }
 
 fn determine_satellite_status(diag: &mut SatelliteDiagnostic) {
-    if diag.modem_present == Some(false) || diag.sat_imei.is_none() {
+    if diag.modem_present == Some(false) {
         diag.status = DiagStatus::Red;
         diag.summary = "No satellite modem detected".into();
         diag.recommended_action = Some("Check satellite modem / hardware connection".into());

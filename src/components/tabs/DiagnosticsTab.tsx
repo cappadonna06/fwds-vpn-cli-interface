@@ -197,6 +197,7 @@ interface DiagCardProps {
   onCopyCommand?: () => void;
   copied?: boolean;
   compact?: boolean;
+  onClear?: () => void;
 }
 
 function resolveBlockScript(block: DiagnosticBlock, tier: "light" | "heavy"): string {
@@ -501,6 +502,7 @@ function DiagCard({
   onCopyCommand,
   copied,
   compact,
+  onClear,
 }: DiagCardProps) {
   return (
     <article className={`diag-card diag-card-${health} ${expanded ? "diag-card-open" : ""} ${compact ? "diag-card-compact" : ""}`}>
@@ -512,6 +514,13 @@ function DiagCard({
         <div className="diag-card-head-right">
           <span className={`diag-status-badge diag-status-badge-${health}`}>{badgeLabel}</span>
           <span className={`diag-status-dot diag-status-${health}`} />
+          {onClear && (
+            <button
+              className="diag-card-clear-btn"
+              onClick={e => { e.stopPropagation(); onClear(); }}
+              title="Clear card data"
+            >×</button>
+          )}
           <span className={`diag-expand-chip ${expanded ? "open" : ""}`}>
             {expanded ? "Hide" : "Details"} <span className="diag-chevron" aria-hidden>▾</span>
           </span>
@@ -587,6 +596,7 @@ export default function DiagnosticsTab() {
     ethernet: "",
   });
   const prevSystemRef = useRef<string>("");
+  const postClearUntilRef = useRef<number>(0);
   const [systemUpdatedAt, setSystemUpdatedAt] = useState<string | null>(null);
   const [copiedCommandId, setCopiedCommandId] = useState<string | null>(null);
 
@@ -594,6 +604,7 @@ export default function DiagnosticsTab() {
     invoke("start_log_watcher").catch(() => {});
 
     const id = setInterval(async () => {
+      if (Date.now() < postClearUntilRef.current) return; // post-clear cooldown
       try {
         const state = await invoke<DiagnosticState>("get_diagnostic_state");
         const now = new Date().toLocaleTimeString();
@@ -647,6 +658,7 @@ export default function DiagnosticsTab() {
 
   async function clearCards() {
     await invoke("clear_diagnostic_state").catch(() => {});
+    postClearUntilRef.current = Date.now() + 3000;
     setDiag({
       wifi: null,
       cellular: null,
@@ -730,6 +742,11 @@ export default function DiagnosticsTab() {
           onCopyCommand={() => copyDiagnosticBlock("wifi")}
           copied={copiedCommandId === "wifi"}
           compact={wifiSummary.health === "neutral"}
+          onClear={async () => {
+            await invoke("clear_diagnostic_interface", { interface: "wifi" }).catch(() => {});
+            setDiag(prev => prev ? { ...prev, wifi: null } : prev);
+            setCardUpdatedAt(prev => ({ ...prev, wifi: null }));
+          }}
         />
 
         <DiagCard
@@ -750,6 +767,11 @@ export default function DiagnosticsTab() {
           onCopyCommand={() => copyDiagnosticBlock("cellular")}
           copied={copiedCommandId === "cellular"}
           compact={cellularSummary.health === "neutral"}
+          onClear={async () => {
+            await invoke("clear_diagnostic_interface", { interface: "cellular" }).catch(() => {});
+            setDiag(prev => prev ? { ...prev, cellular: null } : prev);
+            setCardUpdatedAt(prev => ({ ...prev, cellular: null }));
+          }}
         />
 
         <DiagCard
@@ -770,6 +792,11 @@ export default function DiagnosticsTab() {
           onCopyCommand={() => copyDiagnosticBlock("satellite")}
           copied={copiedCommandId === "satellite"}
           compact={satelliteSummary.health === "neutral"}
+          onClear={async () => {
+            await invoke("clear_diagnostic_interface", { interface: "satellite" }).catch(() => {});
+            setDiag(prev => prev ? { ...prev, satellite: null } : prev);
+            setCardUpdatedAt(prev => ({ ...prev, satellite: null }));
+          }}
         />
 
         <DiagCard
@@ -790,6 +817,11 @@ export default function DiagnosticsTab() {
           onCopyCommand={() => copyDiagnosticBlock("ethernet")}
           copied={copiedCommandId === "ethernet"}
           compact={ethernetSummary.health === "neutral"}
+          onClear={async () => {
+            await invoke("clear_diagnostic_interface", { interface: "ethernet" }).catch(() => {});
+            setDiag(prev => prev ? { ...prev, ethernet: null } : prev);
+            setCardUpdatedAt(prev => ({ ...prev, ethernet: null }));
+          }}
         />
       </div>
     </section>
