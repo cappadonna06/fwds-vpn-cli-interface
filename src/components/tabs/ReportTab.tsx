@@ -17,7 +17,7 @@ import {
 
 const IFACE_ICON: Record<string, string> = {
   Ethernet: "🔌",
-  "Wi-Fi": "📶",
+  "Wi-Fi": "🛜",
   Cellular: "📡",
   Satellite: "🛰️",
 };

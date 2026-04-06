@@ -86,11 +86,14 @@ pub fn parse_log_into_state(log: &str, state: &mut DiagnosticState) {
         None
     };
 
-    let system = parse_system(
-        latest.get("sid"),
-        latest.get("version"),
-        latest.get("release"),
+    let mut system = parse_system(
+        find_latest(&latest, &["sid"]),
+        find_latest(&latest, &["version"]),
+        find_latest(&latest, &["release"]),
     );
+    if system.sid.is_none() {
+        system.sid = parse_sid_from_prompt(log);
+    }
 
     if wifi.is_some() {
         if let Some(next) = wifi {
@@ -243,6 +246,26 @@ fn find_latest_body_contains<'a>(
             .iter()
             .all(|m| lower.contains(&m.to_ascii_lowercase()))
     })
+}
+
+fn find_latest_body_contains_any<'a>(
+    latest: &'a HashMap<String, String>,
+    markers: &[&str],
+) -> Option<&'a String> {
+    latest.values().find(|body| {
+        let lower = body.to_ascii_lowercase();
+        markers
+            .iter()
+            .any(|m| lower.contains(&m.to_ascii_lowercase()))
+    })
+}
+
+fn parse_sid_from_prompt(log: &str) -> Option<String> {
+    let sid_re = Regex::new(r"\[(\d{6,10})\]#").ok()?;
+    sid_re
+        .captures_iter(log)
+        .filter_map(|caps| caps.get(1).map(|m| m.as_str().to_string()))
+        .last()
 }
 
 fn build_satellite_parse_block(latest: &HashMap<String, String>) -> Option<String> {
@@ -423,6 +446,16 @@ mod tests {
             .map(|w| w.summary.clone())
             .unwrap_or_default();
         assert_eq!(first_summary, second_summary);
+    }
+
+    #[test]
+    fn parse_log_extracts_system_sid_from_prompt_when_sid_command_missing() {
+        let mut state = DiagnosticState::default();
+        let log =
+            "2026-04-01T10:33:10-0600 [22611067]# wifi-check\nTesting Wi-Fi...\nDone: Success\n";
+        parse_log_into_state(log, &mut state);
+        let sid = state.system.as_ref().and_then(|s| s.sid.as_deref());
+        assert_eq!(sid, Some("22611067"));
     }
 
     #[test]
@@ -698,7 +731,18 @@ fn parse_wifi(latest: &HashMap<String, String>) -> Option<WifiDiagnostic> {
             "===== wifi diagnostics start =====",
             "===== wifi diagnostics end =====",
         ],
-    );
+    )
+    .or_else(|| {
+        find_latest_body_contains_any(
+            latest,
+            &[
+                "===== wifi diagnostics start =====",
+                "wifi-check",
+                "wifi-signal",
+                "iw dev wlan0",
+            ],
+        )
+    });
     let wifi_check = find_latest(latest, &["wifi-check", "wifi diagnostics"]).or(wifi_block);
     let wifi_signal = find_latest(latest, &["wifi-signal", "wifi diagnostics"]).or(wifi_block);
     let iw_dev = find_latest(latest, &["iw dev", "wifi diagnostics"]).or(wifi_block);

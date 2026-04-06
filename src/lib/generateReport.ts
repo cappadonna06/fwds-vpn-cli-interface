@@ -22,6 +22,10 @@ interface WifiDiag {
   check_result?: string | null;
   strength_score?: number | null;
   strength_label?: string | null;
+  signal_dbm?: number | null;
+  tx_bitrate_mbps?: number | null;
+  ssid?: string | null;
+  access_point?: string | null;
 }
 
 interface CellularDiag {
@@ -34,6 +38,7 @@ interface CellularDiag {
   imsi?: string | null;
   operator_name?: string | null;
   strength_score?: number | null;
+  strength_label?: string | null;
   modem_not_present?: boolean;
 }
 
@@ -68,6 +73,48 @@ function statusEmoji(status: DiagStatus | string): string {
     : status === "orange" ? "⚠"
     : status === "red" ? "✗"
     : "—";
+}
+
+function titleCase(value?: string | null): string | null {
+  if (!value) return null;
+  const clean = value.replace(/^"+|"+$/g, "").trim();
+  if (!clean) return null;
+  return clean.charAt(0).toUpperCase() + clean.slice(1).toLowerCase();
+}
+
+function qualityLabel(score?: number | null, label?: string | null): string {
+  const fromLabel = titleCase(label);
+  if (fromLabel) return fromLabel;
+  if (score === null || score === undefined) return "Unknown";
+  if (score >= 75) return "Strong";
+  if (score >= 50) return "Average";
+  if (score >= 25) return "Fair";
+  if (score > 0) return "Weak";
+  return "No service";
+}
+
+function formatWifiSummary(wifi: WifiDiag): string {
+  const network = wifi.ssid || wifi.access_point || "Unknown network";
+  const quality = qualityLabel(wifi.strength_score, wifi.strength_label);
+  const scorePart = wifi.strength_score !== null && wifi.strength_score !== undefined
+    ? ` ${wifi.strength_score}/100`
+    : "";
+  const dbmPart = wifi.signal_dbm !== null && wifi.signal_dbm !== undefined
+    ? ` (${wifi.signal_dbm} dBm)`
+    : "";
+  const speedPart = wifi.tx_bitrate_mbps !== null && wifi.tx_bitrate_mbps !== undefined
+    ? ` · ${wifi.tx_bitrate_mbps.toFixed(1)} Mbps`
+    : "";
+  return `${network} · 📶 ${quality}${scorePart}${dbmPart}${speedPart}`;
+}
+
+function formatCellSummary(cell: CellularDiag): string {
+  const carrier = cell.operator_name || cell.provider_code || "Cellular";
+  const quality = qualityLabel(cell.strength_score, cell.strength_label);
+  const scorePart = cell.strength_score !== null && cell.strength_score !== undefined
+    ? ` ${cell.strength_score}/100`
+    : "";
+  return `${carrier} · 📶 ${quality}${scorePart}`;
 }
 
 // ── generateActions ───────────────────────────────────────────────────────────
@@ -118,12 +165,12 @@ export function generateNetworkRows(diag: DiagnosticState): NetworkStatusRow[] {
     {
       interface: "Wi-Fi",
       status: toStatus(diag.wifi?.status),
-      summary: diag.wifi?.summary ?? "Run Wi-Fi diagnostics to populate",
+      summary: diag.wifi ? formatWifiSummary(diag.wifi) : "Run Wi-Fi diagnostics to populate",
     },
     {
       interface: "Cellular",
       status: toStatus(diag.cellular?.status),
-      summary: diag.cellular?.summary ?? "Run cellular diagnostics to populate",
+      summary: diag.cellular ? formatCellSummary(diag.cellular) : "Run cellular diagnostics to populate",
     },
     {
       interface: "Satellite",
@@ -293,6 +340,12 @@ export function generateRecommendedActions(
 
 export function formatSlack(report: SessionReport): string {
   const lines: string[] = [];
+  const ifaceIcon: Record<string, string> = {
+    Ethernet: "🔌",
+    "Wi-Fi": "🛜",
+    Cellular: "📡",
+    Satellite: "🛰️",
+  };
 
   lines.push(`*Controller Session — ${report.date}*`);
   lines.push(`*SID:* ${report.sid || "—"} · ${report.version || "—"} · ${report.ip || "—"}`);
@@ -313,7 +366,8 @@ export function formatSlack(report: SessionReport): string {
       : "⚪";
     const note = report.networkNotes[row.interface];
     const noteSuffix = note ? ` — ${note}` : "";
-    lines.push(`• ${dot} ${row.interface}: ${row.summary}${noteSuffix}`);
+    const icon = ifaceIcon[row.interface] ? `${ifaceIcon[row.interface]} ` : "";
+    lines.push(`• ${dot} ${icon}${row.interface}: ${row.summary}${noteSuffix}`);
   });
   lines.push("");
 
