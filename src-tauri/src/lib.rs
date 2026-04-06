@@ -223,6 +223,8 @@ pub struct CellularDiagnostic {
 
     pub recommended_action: Option<String>,
     pub other_actions: Vec<String>,
+    pub full_block_run: bool,
+    pub modem_not_present: bool,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
@@ -299,6 +301,7 @@ pub struct EthernetDiagnostic {
     pub rx_dropped: u64,
     pub check_result: String,
     pub flap_count: u32,
+    pub full_block_run: bool,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
@@ -1234,6 +1237,19 @@ fn clear_diagnostic_state(state: State<'_, AppState>) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn clear_diagnostic_interface(state: State<'_, AppState>, interface: String) -> Result<(), String> {
+    let mut diag = state.diagnostic_state.lock().map_err(|_| "lock poisoned")?;
+    match interface.as_str() {
+        "wifi"      => diag.wifi = None,
+        "cellular"  => diag.cellular = None,
+        "satellite" => diag.satellite = None,
+        "ethernet"  => diag.ethernet = None,
+        _ => {}
+    }
+    Ok(())
+}
+
+#[tauri::command]
 fn stop_log_watcher(state: State<'_, AppState>) -> Result<(), String> {
     stop_log_watcher_internal(&state)
 }
@@ -1791,6 +1807,7 @@ pub fn run() {
             start_log_watcher,
             get_diagnostic_state,
             clear_diagnostic_state,
+            clear_diagnostic_interface,
             stop_log_watcher,
         ])
         .setup(|_app| Ok(()))

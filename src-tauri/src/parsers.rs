@@ -36,6 +36,7 @@ pub fn parse_log_into_state(log: &str, state: &mut DiagnosticState) {
             "===== eth diagnostics end =====",
         ],
     );
+    let full_eth_block_run = ethernet_block.is_some();
     let ethernet = parse_ethernet(
         find_latest(&latest, &["ethernet-check", "run ethernet diagnostics"]).or(ethernet_block),
         find_latest(&latest, &["ethtool eth0", "run ethernet diagnostics"]).or(ethernet_block),
@@ -67,6 +68,7 @@ pub fn parse_log_into_state(log: &str, state: &mut DiagnosticState) {
             ],
         )
         .or(ethernet_block),
+        full_eth_block_run,
     );
 
     let system = parse_system(
@@ -1007,6 +1009,7 @@ fn parse_cellular_from_latest(latest: &HashMap<String, String>) -> Option<Cellul
     if !has_any {
         return None;
     }
+    diag.full_block_run = latest.contains_key("cell-support --no-ofono --at");
     determine_cellular_status(&mut diag);
     Some(diag)
 }
@@ -1088,6 +1091,8 @@ fn default_cellular() -> CellularDiagnostic {
         at_apn: None,
         recommended_action: None,
         other_actions: vec![],
+        full_block_run: false,
+        modem_not_present: false,
     }
 }
 
@@ -1299,7 +1304,7 @@ fn parse_satellite_check(text: &str, diag: &mut SatelliteDiagnostic) {
 }
 
 fn determine_satellite_status(diag: &mut SatelliteDiagnostic) {
-    if diag.modem_present == Some(false) || diag.sat_imei.is_none() {
+    if diag.modem_present == Some(false) {
         diag.status = DiagStatus::Red;
         diag.summary = "No satellite modem detected".into();
         diag.recommended_action = Some("Check satellite modem / hardware connection".into());
@@ -1379,6 +1384,7 @@ fn parse_ethernet(
     interface_info: Option<&String>,
     proc_net_dev: Option<&String>,
     operstate: Option<&String>,
+    full_block_run: bool,
 ) -> Option<EthernetDiagnostic> {
     if ethernet_check.is_none()
         && ethtool.is_none()
@@ -1434,7 +1440,9 @@ fn parse_ethernet(
         .unwrap_or(0);
 
     let check_failed = check_result.to_ascii_lowercase().starts_with("failure");
-    let status = if check_failed || (!internet_reachable && check_result != "Unknown") {
+    let status = if link_detected == Some(false) {
+        DiagStatus::Unknown
+    } else if check_failed || (!internet_reachable && check_result != "Unknown") {
         DiagStatus::Red
     } else if check_result.eq_ignore_ascii_case("success") {
         DiagStatus::Green
@@ -1468,6 +1476,7 @@ fn parse_ethernet(
         rx_dropped,
         check_result,
         flap_count: 0,
+        full_block_run,
     })
 }
 
@@ -2195,6 +2204,7 @@ fn determine_cellular_status(diag: &mut CellularDiagnostic) {
     {
         diag.status = DiagStatus::Red;
         diag.summary = "No modem detected".into();
+        diag.modem_not_present = true;
         diag.recommended_action = Some("Check modem connection / seating".into());
         diag.other_actions = vec!["Reboot controller".into()];
         return;

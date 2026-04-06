@@ -68,6 +68,12 @@
   justify-content: flex-end;
 }
 
+.top-header-controller-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .top-header-controller {
   font-family: var(--mono);
   font-size: 12px;
@@ -79,6 +85,17 @@
 
 .top-header-controller.invalid {
   color: var(--danger-ink);
+}
+
+.badge-info {
+  font-family: var(--mono);
+  font-size: 11px;
+  padding: 2px 7px;
+  border-radius: 4px;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  white-space: nowrap;
 }
 
 .app-shell {

@@ -4,7 +4,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import SessionTab from "./components/tabs/SessionTab";
 import CommandsTab from "./components/tabs/CommandsTab";
 import WizardTab from "./components/tabs/WizardTab";
-import LogsTab from "./components/tabs/LogsTab";
+import ReportTab from "./components/tabs/ReportTab";
 import DiagnosticsTab from "./components/tabs/DiagnosticsTab";
 import Sidebar from "./components/shell/Sidebar";
 import SidebarHeader from "./components/shell/SidebarHeader";
@@ -13,14 +13,14 @@ import { StatusPillState } from "./components/shell/StatusPill";
 import "./App.css";
 import "./components/tabs/tabs.css";
 
-type Tab = "session" | "console" | "wizard" | "logs" | "diagnostics";
+type Tab = "session" | "console" | "wizard" | "report" | "diagnostics";
 
 const TABS: { id: Tab; label: string }[] = [
   { id: "session", label: "Connect" },
   { id: "console", label: "Commands" },
   { id: "wizard", label: "Setup Wizard" },
   { id: "diagnostics", label: "Diagnostics" },
-  { id: "logs", label: "Logs" },
+  { id: "report", label: "Report" },
 ];
 
 interface AppStatus {
@@ -31,7 +31,9 @@ interface AppStatus {
   local_serial_device?: string | null;
 }
 interface HeaderDiagnosticState {
-  system?: { sid?: string | null } | null;
+  system?: { sid?: string | null; version?: string | null } | null;
+  cellular?: { controller_sid?: string | null } | null;
+  wifi?: { controller_sid?: string | null } | null;
 }
 
 function mapVpnState(vpnPhase: string): StatusPillState {
@@ -62,6 +64,7 @@ export default function App() {
     controller_ip: null,
   });
   const [localSid, setLocalSid] = useState<string | null>(null);
+  const [systemVersion, setSystemVersion] = useState<string | null>(null);
 
   useEffect(() => {
     const appWindow = getCurrentWindow();
@@ -88,9 +91,14 @@ export default function App() {
       try {
         const s = await invoke<AppStatus>("get_app_state");
         setAppStatus(s);
+        const diag = await invoke<HeaderDiagnosticState>("get_diagnostic_state");
+        setSystemVersion(diag.system?.version ?? null);
         if (s.connection_mode === "local") {
-          const diag = await invoke<HeaderDiagnosticState>("get_diagnostic_state");
-          setLocalSid(diag.system?.sid ?? null);
+          const sid = diag.system?.sid
+            ?? diag.cellular?.controller_sid
+            ?? diag.wifi?.controller_sid
+            ?? null;
+          setLocalSid(sid);
         } else {
           setLocalSid(null);
         }
@@ -109,7 +117,10 @@ export default function App() {
   const localState = mapLocalState(appStatus.connection_mode, appStatus.local_serial_device);
 
   const controllerDisplay = localSid ?? appStatus.controller_ip ?? appStatus.local_serial_device ?? "No controller";
-  const controllerValid = Boolean(localSid);
+  const controllerValid =
+    Boolean(localSid) ||
+    Boolean(appStatus.controller_ip) ||
+    Boolean(appStatus.local_serial_device);
 
   return (
     <div className="app">
@@ -120,6 +131,7 @@ export default function App() {
         localState={localState}
         controllerDisplay={controllerDisplay}
         controllerValid={controllerValid}
+        systemVersion={systemVersion}
       />
 
       <div className="app-shell">
@@ -151,8 +163,8 @@ export default function App() {
           <div style={{ display: activeTab === "diagnostics" ? "contents" : "none" }}>
             <DiagnosticsTab />
           </div>
-          <div style={{ display: activeTab === "logs" ? "contents" : "none" }}>
-            <LogsTab />
+          <div style={{ display: activeTab === "report" ? "contents" : "none" }}>
+            <ReportTab />
           </div>
         </main>
       </div>

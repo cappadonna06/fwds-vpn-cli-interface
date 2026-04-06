@@ -7,6 +7,7 @@ interface SidebarHeaderProps {
   showLocal: boolean;
   controllerDisplay: string;
   controllerValid: boolean;
+  systemVersion?: string | null;
 }
 
 export default function SidebarHeader({
@@ -16,6 +17,7 @@ export default function SidebarHeader({
   showLocal,
   controllerDisplay,
   controllerValid,
+  systemVersion,
 }: SidebarHeaderProps) {
   return (
     <header className="app-top-header">
@@ -32,8 +34,13 @@ export default function SidebarHeader({
           {showVpn && vpnState && <StatusPill label="VPN" state={vpnState} />}
           {showLocal && localState && <StatusPill label="Local" state={localState} />}
         </div>
-        <div className={`top-header-controller ${controllerValid ? "valid" : "invalid"}`}>
-          {controllerDisplay}
+        <div className="top-header-controller-group">
+          <div className={`top-header-controller ${controllerValid ? "valid" : "invalid"}`}>
+            {controllerDisplay}
+          </div>
+          {systemVersion && (
+            <span className="badge-info">{systemVersion}</span>
+          )}
         </div>
       </div>
     </header>

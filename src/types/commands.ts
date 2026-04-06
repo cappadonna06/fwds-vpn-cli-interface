@@ -734,6 +734,12 @@ export const DIAGNOSTIC_BLOCKS: DiagnosticBlock[] = [
     light_command_ids: ["ethernet-check"],
     heavy_command_ids: ["ethernet-check", "ethtool-eth0", "ifconfig-eth0"],
     heavy_script: `(
+echo "===== CONTROLLER INFO ====="
+date
+version
+sid
+
+echo ""
 echo "===== ETH DIAGNOSTICS START ====="
 
 echo ""
@@ -802,6 +808,12 @@ echo "===== ETH DIAGNOSTICS END ====="
       "proc-net-dev",
     ],
     heavy_script: `(
+echo "===== CONTROLLER INFO ====="
+date
+version
+sid
+
+echo ""
 echo "===== WIFI DIAGNOSTICS START ====="
 
 echo ""

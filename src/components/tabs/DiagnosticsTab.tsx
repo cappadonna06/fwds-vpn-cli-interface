@@ -99,6 +99,8 @@ interface CellularDiagnostic {
   at_apn?: string | null;
   recommended_action?: string | null;
   other_actions?: string[] | null;
+  full_block_run?: boolean;
+  modem_not_present?: boolean;
 }
 
 interface SatelliteDiagnostic {
@@ -155,6 +157,7 @@ interface EthernetDiagnostic {
   rx_dropped: number;
   check_result: string;
   flap_count: number;
+  full_block_run?: boolean;
 }
 
 interface SystemDiagnostic {
@@ -194,6 +197,7 @@ interface DiagCardProps {
   onCopyCommand?: () => void;
   copied?: boolean;
   compact?: boolean;
+  onClear?: () => void;
 }
 
 function resolveBlockScript(block: DiagnosticBlock, tier: "light" | "heavy"): string {
@@ -498,6 +502,7 @@ function DiagCard({
   onCopyCommand,
   copied,
   compact,
+  onClear,
 }: DiagCardProps) {
   return (
     <article className={`diag-card diag-card-${health} ${expanded ? "diag-card-open" : ""} ${compact ? "diag-card-compact" : ""}`}>
@@ -509,6 +514,13 @@ function DiagCard({
         <div className="diag-card-head-right">
           <span className={`diag-status-badge diag-status-badge-${health}`}>{badgeLabel}</span>
           <span className={`diag-status-dot diag-status-${health}`} />
+          {onClear && (
+            <button
+              className="diag-card-clear-btn"
+              onClick={e => { e.stopPropagation(); onClear(); }}
+              title="Clear card data"
+            >×</button>
+          )}
           <span className={`diag-expand-chip ${expanded ? "open" : ""}`}>
             {expanded ? "Hide" : "Details"} <span className="diag-chevron" aria-hidden>▾</span>
           </span>
@@ -548,9 +560,9 @@ function DiagCard({
         </div>
       )}
 
-      {commandHint && onCopyCommand && (
+      {onCopyCommand && (
         <div className="diag-card-action-row">
-          <span>{commandHint}</span>
+          {commandHint && <span>{commandHint}</span>}
           <button className="diag-copy-link" onClick={onCopyCommand}>
             {copied ? "Copied" : "Copy command block"}
           </button>
@@ -584,6 +596,7 @@ export default function DiagnosticsTab() {
     ethernet: "",
   });
   const prevSystemRef = useRef<string>("");
+  const postClearUntilRef = useRef<number>(0);
   const [systemUpdatedAt, setSystemUpdatedAt] = useState<string | null>(null);
   const [copiedCommandId, setCopiedCommandId] = useState<string | null>(null);
 
@@ -591,6 +604,7 @@ export default function DiagnosticsTab() {
     invoke("start_log_watcher").catch(() => {});
 
     const id = setInterval(async () => {
+      if (Date.now() < postClearUntilRef.current) return; // post-clear cooldown
       try {
         const state = await invoke<DiagnosticState>("get_diagnostic_state");
         const now = new Date().toLocaleTimeString();
@@ -644,6 +658,7 @@ export default function DiagnosticsTab() {
 
   async function clearCards() {
     await invoke("clear_diagnostic_state").catch(() => {});
+    postClearUntilRef.current = Date.now() + 3000;
     setDiag({
       wifi: null,
       cellular: null,
@@ -672,9 +687,9 @@ export default function DiagnosticsTab() {
   }
 
   const wifiNeedsRefresh = !wifi || !wifi.ipv4_address || (!wifi.ssid && !wifi.access_point);
-  const cellularNeedsRefresh = !cellular || cellular.modem_present === false || !cellular.wwan_ipv4_address;
+  const cellularNeedsRefresh = !cellular || !cellular.full_block_run;
   const satelliteNeedsRefresh = !satellite || satellite.modem_present !== true;
-  const ethernetNeedsRefresh = !ethernet || ethernet.link_detected !== true || !ethernet.ip_address;
+  const ethernetNeedsRefresh = !ethernet || !ethernet.full_block_run;
   const fullDiagBlockId = satellite?.modem_present === true ? "full-diags" : "full-diags-no-sat";
 
   const systemIdentity = [
@@ -724,9 +739,14 @@ export default function DiagnosticsTab() {
           onToggle={() => setExpanded((p) => ({ ...p, wifi: !p.wifi }))}
           updatedAt={cardUpdatedAt.wifi}
           commandHint={wifiNeedsRefresh ? "Limited data available." : undefined}
-          onCopyCommand={wifiNeedsRefresh ? () => copyDiagnosticBlock("wifi") : undefined}
+          onCopyCommand={() => copyDiagnosticBlock("wifi")}
           copied={copiedCommandId === "wifi"}
           compact={wifiSummary.health === "neutral"}
+          onClear={async () => {
+            await invoke("clear_diagnostic_interface", { interface: "wifi" }).catch(() => {});
+            setDiag(prev => prev ? { ...prev, wifi: null } : prev);
+            setCardUpdatedAt(prev => ({ ...prev, wifi: null }));
+          }}
         />
 
         <DiagCard
@@ -744,9 +764,14 @@ export default function DiagnosticsTab() {
           onToggle={() => setExpanded((p) => ({ ...p, cellular: !p.cellular }))}
           updatedAt={cardUpdatedAt.cellular}
           commandHint={cellularNeedsRefresh ? "Limited data available." : undefined}
-          onCopyCommand={cellularNeedsRefresh ? () => copyDiagnosticBlock("cellular") : undefined}
+          onCopyCommand={() => copyDiagnosticBlock("cellular")}
           copied={copiedCommandId === "cellular"}
           compact={cellularSummary.health === "neutral"}
+          onClear={async () => {
+            await invoke("clear_diagnostic_interface", { interface: "cellular" }).catch(() => {});
+            setDiag(prev => prev ? { ...prev, cellular: null } : prev);
+            setCardUpdatedAt(prev => ({ ...prev, cellular: null }));
+          }}
         />
 
         <DiagCard
@@ -764,9 +789,14 @@ export default function DiagnosticsTab() {
           onToggle={() => setExpanded((p) => ({ ...p, satellite: !p.satellite }))}
           updatedAt={cardUpdatedAt.satellite}
           commandHint={satelliteNeedsRefresh ? "Limited data available." : undefined}
-          onCopyCommand={satelliteNeedsRefresh ? () => copyDiagnosticBlock("satellite") : undefined}
+          onCopyCommand={() => copyDiagnosticBlock("satellite")}
           copied={copiedCommandId === "satellite"}
           compact={satelliteSummary.health === "neutral"}
+          onClear={async () => {
+            await invoke("clear_diagnostic_interface", { interface: "satellite" }).catch(() => {});
+            setDiag(prev => prev ? { ...prev, satellite: null } : prev);
+            setCardUpdatedAt(prev => ({ ...prev, satellite: null }));
+          }}
         />
 
         <DiagCard
@@ -784,9 +814,14 @@ export default function DiagnosticsTab() {
           onToggle={() => setExpanded((p) => ({ ...p, ethernet: !p.ethernet }))}
           updatedAt={cardUpdatedAt.ethernet}
           commandHint={ethernetNeedsRefresh ? "Limited data available." : undefined}
-          onCopyCommand={ethernetNeedsRefresh ? () => copyDiagnosticBlock("ethernet") : undefined}
+          onCopyCommand={() => copyDiagnosticBlock("ethernet")}
           copied={copiedCommandId === "ethernet"}
           compact={ethernetSummary.health === "neutral"}
+          onClear={async () => {
+            await invoke("clear_diagnostic_interface", { interface: "ethernet" }).catch(() => {});
+            setDiag(prev => prev ? { ...prev, ethernet: null } : prev);
+            setCardUpdatedAt(prev => ({ ...prev, ethernet: null }));
+          }}
         />
       </div>
     </section>
