@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
   SessionReport,
@@ -26,7 +26,7 @@ const STATUS_EMOJI: Record<string, string> = {
   green: "🟢",
   orange: "🟠",
   red: "🔴",
-  unknown: "⚫",
+  unknown: "⚪",
 };
 
 // ── SlackPreview ──────────────────────────────────────────────────────────────
@@ -134,8 +134,10 @@ export default function ReportTab() {
   const [report, setReport] = useState<SessionReport>(emptyReport());
   const [copiedSlack, setCopiedSlack] = useState(false);
   const [copiedJira, setCopiedJira] = useState(false);
+  const reportRef = useRef(report);
+  reportRef.current = report;
 
-  async function handleGenerate() {
+  async function fetchAndUpdate() {
     try {
       const [diagState, appState] = await Promise.all([
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -158,12 +160,19 @@ export default function ReportTab() {
         actions,
         networkRows,
         recommendedActions,
-        // notes and networkNotes preserved from prev on Regenerate
+        // notes and networkNotes preserved from prev
       }));
     } catch (e) {
       console.error("Failed to generate report:", e);
     }
   }
+
+  useEffect(() => {
+    fetchAndUpdate();
+    const id = setInterval(fetchAndUpdate, 5000);
+    return () => clearInterval(id);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   function addAction() {
     setReport(r => ({
@@ -229,33 +238,14 @@ export default function ReportTab() {
           </span>
         </div>
         <div className="report-header-actions">
-          {report.generated && (
-            <button className="btn btn-secondary" onClick={() => setReport(emptyReport())}>
-              Clear
-            </button>
-          )}
-          <button className="btn btn-primary" onClick={handleGenerate}>
-            {report.generated ? "Regenerate" : "Generate"}
+          <button className="btn btn-secondary" onClick={() => setReport(emptyReport())}>
+            Clear
           </button>
         </div>
       </div>
 
-      {/* ── Empty state ── */}
-      {!report.generated && (
-        <div className="report-empty">
-          <div className="report-empty-icon">📋</div>
-          <p className="report-empty-title">No report yet</p>
-          <p className="report-empty-sub">
-            Run diagnostics first, then press Generate to build a session report.
-          </p>
-          <button className="btn btn-primary" onClick={handleGenerate}>
-            Generate Report
-          </button>
-        </div>
-      )}
-
       {/* ── Split body ── */}
-      {report.generated && (
+      {(
         <div className="report-split">
 
           {/* Left — editor */}
@@ -405,7 +395,7 @@ export default function ReportTab() {
       )}
 
       {/* ── Footer ── */}
-      {report.generated && (
+      {(
         <div className="report-footer">
           <button
             className="btn btn-secondary"

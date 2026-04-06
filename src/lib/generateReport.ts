@@ -34,6 +34,7 @@ interface CellularDiag {
   imsi?: string | null;
   operator_name?: string | null;
   strength_score?: number | null;
+  modem_not_present?: boolean;
 }
 
 interface SatelliteDiag {
@@ -212,6 +213,16 @@ export function generateRecommendedActions(
   // ── CELLULAR ──────────────────────────────────────────────────────────────
   if (diag.cellular) {
     const cell = diag.cellular;
+
+    if (cell.modem_not_present) {
+      actions.push({
+        id: mkId(), interface: "Cellular",
+        text: "Check modem connection / seating",
+        detail: "No modem detected. Verify modem board is seated, then reboot controller.",
+        dismissed: false, checked: false, custom: false,
+      });
+    }
+
     const noService = !cell.connman_cell_connected && !cell.pdp_active;
 
     if (noService && !cell.sim_inserted) {
@@ -311,7 +322,7 @@ export function formatSlack(report: SessionReport): string {
     const dot = row.status === "green" ? "🟢"
       : row.status === "orange" ? "🟠"
       : row.status === "red" ? "🔴"
-      : "⚫";
+      : "⚪";
     const note = report.networkNotes[row.interface];
     const noteSuffix = note ? ` — ${note}` : "";
     lines.push(`• ${dot} ${row.interface}: ${row.summary}${noteSuffix}`);

@@ -223,6 +223,8 @@ pub struct CellularDiagnostic {
 
     pub recommended_action: Option<String>,
     pub other_actions: Vec<String>,
+    pub full_block_run: bool,
+    pub modem_not_present: bool,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
@@ -299,6 +301,7 @@ pub struct EthernetDiagnostic {
     pub rx_dropped: u64,
     pub check_result: String,
     pub flap_count: u32,
+    pub full_block_run: bool,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone)]

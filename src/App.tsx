@@ -31,7 +31,7 @@ interface AppStatus {
   local_serial_device?: string | null;
 }
 interface HeaderDiagnosticState {
-  system?: { sid?: string | null } | null;
+  system?: { sid?: string | null; version?: string | null } | null;
 }
 
 function mapVpnState(vpnPhase: string): StatusPillState {
@@ -62,6 +62,7 @@ export default function App() {
     controller_ip: null,
   });
   const [localSid, setLocalSid] = useState<string | null>(null);
+  const [systemVersion, setSystemVersion] = useState<string | null>(null);
 
   useEffect(() => {
     const appWindow = getCurrentWindow();
@@ -88,8 +89,9 @@ export default function App() {
       try {
         const s = await invoke<AppStatus>("get_app_state");
         setAppStatus(s);
+        const diag = await invoke<HeaderDiagnosticState>("get_diagnostic_state");
+        setSystemVersion(diag.system?.version ?? null);
         if (s.connection_mode === "local") {
-          const diag = await invoke<HeaderDiagnosticState>("get_diagnostic_state");
           setLocalSid(diag.system?.sid ?? null);
         } else {
           setLocalSid(null);
@@ -120,6 +122,7 @@ export default function App() {
         localState={localState}
         controllerDisplay={controllerDisplay}
         controllerValid={controllerValid}
+        systemVersion={systemVersion}
       />
 
       <div className="app-shell">

@@ -99,6 +99,8 @@ interface CellularDiagnostic {
   at_apn?: string | null;
   recommended_action?: string | null;
   other_actions?: string[] | null;
+  full_block_run?: boolean;
+  modem_not_present?: boolean;
 }
 
 interface SatelliteDiagnostic {
@@ -155,6 +157,7 @@ interface EthernetDiagnostic {
   rx_dropped: number;
   check_result: string;
   flap_count: number;
+  full_block_run?: boolean;
 }
 
 interface SystemDiagnostic {
@@ -548,9 +551,9 @@ function DiagCard({
         </div>
       )}
 
-      {commandHint && onCopyCommand && (
+      {onCopyCommand && (
         <div className="diag-card-action-row">
-          <span>{commandHint}</span>
+          {commandHint && <span>{commandHint}</span>}
           <button className="diag-copy-link" onClick={onCopyCommand}>
             {copied ? "Copied" : "Copy command block"}
           </button>
@@ -672,9 +675,9 @@ export default function DiagnosticsTab() {
   }
 
   const wifiNeedsRefresh = !wifi || !wifi.ipv4_address || (!wifi.ssid && !wifi.access_point);
-  const cellularNeedsRefresh = !cellular || cellular.modem_present === false || !cellular.wwan_ipv4_address;
+  const cellularNeedsRefresh = !cellular || !cellular.full_block_run;
   const satelliteNeedsRefresh = !satellite || satellite.modem_present !== true;
-  const ethernetNeedsRefresh = !ethernet || ethernet.link_detected !== true || !ethernet.ip_address;
+  const ethernetNeedsRefresh = !ethernet || !ethernet.full_block_run;
   const fullDiagBlockId = satellite?.modem_present === true ? "full-diags" : "full-diags-no-sat";
 
   const systemIdentity = [
@@ -724,7 +727,7 @@ export default function DiagnosticsTab() {
           onToggle={() => setExpanded((p) => ({ ...p, wifi: !p.wifi }))}
           updatedAt={cardUpdatedAt.wifi}
           commandHint={wifiNeedsRefresh ? "Limited data available." : undefined}
-          onCopyCommand={wifiNeedsRefresh ? () => copyDiagnosticBlock("wifi") : undefined}
+          onCopyCommand={() => copyDiagnosticBlock("wifi")}
           copied={copiedCommandId === "wifi"}
           compact={wifiSummary.health === "neutral"}
         />
@@ -744,7 +747,7 @@ export default function DiagnosticsTab() {
           onToggle={() => setExpanded((p) => ({ ...p, cellular: !p.cellular }))}
           updatedAt={cardUpdatedAt.cellular}
           commandHint={cellularNeedsRefresh ? "Limited data available." : undefined}
-          onCopyCommand={cellularNeedsRefresh ? () => copyDiagnosticBlock("cellular") : undefined}
+          onCopyCommand={() => copyDiagnosticBlock("cellular")}
           copied={copiedCommandId === "cellular"}
           compact={cellularSummary.health === "neutral"}
         />
@@ -764,7 +767,7 @@ export default function DiagnosticsTab() {
           onToggle={() => setExpanded((p) => ({ ...p, satellite: !p.satellite }))}
           updatedAt={cardUpdatedAt.satellite}
           commandHint={satelliteNeedsRefresh ? "Limited data available." : undefined}
-          onCopyCommand={satelliteNeedsRefresh ? () => copyDiagnosticBlock("satellite") : undefined}
+          onCopyCommand={() => copyDiagnosticBlock("satellite")}
           copied={copiedCommandId === "satellite"}
           compact={satelliteSummary.health === "neutral"}
         />
@@ -784,7 +787,7 @@ export default function DiagnosticsTab() {
           onToggle={() => setExpanded((p) => ({ ...p, ethernet: !p.ethernet }))}
           updatedAt={cardUpdatedAt.ethernet}
           commandHint={ethernetNeedsRefresh ? "Limited data available." : undefined}
-          onCopyCommand={ethernetNeedsRefresh ? () => copyDiagnosticBlock("ethernet") : undefined}
+          onCopyCommand={() => copyDiagnosticBlock("ethernet")}
           copied={copiedCommandId === "ethernet"}
           compact={ethernetSummary.health === "neutral"}
         />
