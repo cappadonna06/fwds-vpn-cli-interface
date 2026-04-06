@@ -2,6 +2,7 @@ import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
   SessionReport,
+  ReportRecommendedAction,
   emptyReport,
 } from "../../types/report";
 import {
@@ -11,6 +12,123 @@ import {
   formatSlack,
   formatJira,
 } from "../../lib/generateReport";
+
+// ── Constants ─────────────────────────────────────────────────────────────────
+
+const IFACE_ICON: Record<string, string> = {
+  Ethernet: "🔌",
+  "Wi-Fi": "📶",
+  Cellular: "📡",
+  Satellite: "🛰️",
+};
+
+const STATUS_EMOJI: Record<string, string> = {
+  green: "🟢",
+  orange: "🟠",
+  red: "🔴",
+  unknown: "⚫",
+};
+
+// ── SlackPreview ──────────────────────────────────────────────────────────────
+
+function SlackPreview({ report }: { report: SessionReport }) {
+  const visibleActions = report.actions.filter(a => !a.dismissed && a.text.trim());
+  const visibleRecs = report.recommendedActions.filter(a => !a.dismissed);
+
+  const outcomeLabel =
+    report.outcome === "complete" ? "Complete"
+    : report.outcome === "escalated" ? "Escalated"
+    : "Follow-up needed";
+
+  return (
+    <div className="report-preview-body">
+      {/* Title */}
+      <div className="report-preview-section">
+        <div className="report-preview-heading">
+          Controller Session — {report.date}
+        </div>
+        <div className="report-preview-meta">
+          <strong>SID:</strong> {report.sid || "—"} &middot;{" "}
+          {report.version || "—"} &middot;{" "}
+          {report.ip || "—"}
+        </div>
+      </div>
+
+      {/* Actions */}
+      {visibleActions.length > 0 && (
+        <div className="report-preview-section">
+          <div className="report-preview-heading">Actions</div>
+          {visibleActions.map(a => (
+            <div key={a.id} className="report-preview-bullet">
+              <span className="report-preview-bullet-dot">•</span>
+              <span>{a.text}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Network */}
+      <div className="report-preview-section">
+        <div className="report-preview-heading">Network</div>
+        {report.networkRows.map(row => {
+          const note = report.networkNotes[row.interface];
+          return (
+            <div key={row.interface}>
+              <div className="report-preview-network-row">
+                <span>{STATUS_EMOJI[row.status] ?? "⚫"}</span>
+                <span>
+                  <strong>{IFACE_ICON[row.interface]} {row.interface}:</strong>{" "}
+                  {row.summary}
+                  {note ? <span className="report-preview-note-suffix"> — {note}</span> : null}
+                </span>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Recommended actions */}
+      {visibleRecs.length > 0 && (
+        <div className="report-preview-section">
+          <div className="report-preview-heading">Recommended Actions</div>
+          {visibleRecs.map(a => (
+            <div key={a.id}>
+              <div className="report-preview-rec-row">
+                <span>{a.checked ? "✓" : "☐"}</span>
+                <span>
+                  {!a.custom && (
+                    <span className="report-preview-rec-iface">
+                      {IFACE_ICON[a.interface] ?? ""} {a.interface} —{" "}
+                    </span>
+                  )}
+                  {a.text || <em>Untitled action</em>}
+                </span>
+              </div>
+              {a.detail && (
+                <div className="report-preview-rec-detail">{a.detail}</div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Notes */}
+      {report.notes.trim() && (
+        <div className="report-preview-section">
+          <div className="report-preview-heading">Notes</div>
+          <div className="report-preview-notes-text">{report.notes.trim()}</div>
+        </div>
+      )}
+
+      {/* Outcome */}
+      <div className="report-preview-outcome">
+        <strong>Outcome:</strong> {outcomeLabel}
+      </div>
+    </div>
+  );
+}
+
+// ── ReportTab ─────────────────────────────────────────────────────────────────
 
 export default function ReportTab() {
   const [report, setReport] = useState<SessionReport>(emptyReport());
@@ -47,6 +165,56 @@ export default function ReportTab() {
     }
   }
 
+  function addAction() {
+    setReport(r => ({
+      ...r,
+      actions: [...r.actions, { id: Date.now().toString(), text: "", dismissed: false }],
+    }));
+  }
+
+  function addRec() {
+    setReport(r => ({
+      ...r,
+      recommendedActions: [...r.recommendedActions, {
+        id: Date.now().toString(),
+        interface: "Custom" as const,
+        text: "",
+        detail: "",
+        dismissed: false,
+        checked: false,
+        custom: true,
+      }],
+    }));
+  }
+
+  function dismissAction(id: string) {
+    setReport(r => ({
+      ...r,
+      actions: r.actions.map(a => a.id === id ? { ...a, dismissed: true } : a),
+    }));
+  }
+
+  function dismissRec(id: string) {
+    setReport(r => ({
+      ...r,
+      recommendedActions: r.recommendedActions.map(a => a.id === id ? { ...a, dismissed: true } : a),
+    }));
+  }
+
+  function updateActionText(id: string, text: string) {
+    setReport(r => ({
+      ...r,
+      actions: r.actions.map(a => a.id === id ? { ...a, text } : a),
+    }));
+  }
+
+  function updateRec(id: string, patch: Partial<ReportRecommendedAction>) {
+    setReport(r => ({
+      ...r,
+      recommendedActions: r.recommendedActions.map(a => a.id === id ? { ...a, ...patch } : a),
+    }));
+  }
+
   return (
     <div className="report-page">
 
@@ -54,17 +222,18 @@ export default function ReportTab() {
       <div className="report-header">
         <div className="report-header-left">
           <span className="report-title">Session Report</span>
-          {report.generated && (
-            <span className="report-meta">
-              {[report.sid, report.version, report.ip, report.date]
-                .filter(Boolean).join(" · ")}
-            </span>
-          )}
+          <span className="report-header-sub">
+            {report.generated
+              ? [report.sid, report.version, report.ip, report.date].filter(Boolean).join(" · ")
+              : "Auto-generated from diagnostics · edit freely"}
+          </span>
         </div>
         <div className="report-header-actions">
-          <button className="btn btn-secondary" onClick={() => setReport(emptyReport())}>
-            Clear
-          </button>
+          {report.generated && (
+            <button className="btn btn-secondary" onClick={() => setReport(emptyReport())}>
+              Clear
+            </button>
+          )}
           <button className="btn btn-primary" onClick={handleGenerate}>
             {report.generated ? "Regenerate" : "Generate"}
           </button>
@@ -74,9 +243,10 @@ export default function ReportTab() {
       {/* ── Empty state ── */}
       {!report.generated && (
         <div className="report-empty">
-          <p>No report generated yet.</p>
+          <div className="report-empty-icon">📋</div>
+          <p className="report-empty-title">No report yet</p>
           <p className="report-empty-sub">
-            Run diagnostics, then press Generate to create a session report.
+            Run diagnostics first, then press Generate to build a session report.
           </p>
           <button className="btn btn-primary" onClick={handleGenerate}>
             Generate Report
@@ -84,35 +254,23 @@ export default function ReportTab() {
         </div>
       )}
 
-      {/* ── Report body ── */}
+      {/* ── Split body ── */}
       {report.generated && (
-        <div className="report-body">
+        <div className="report-split">
 
-          {/* ACTIONS */}
-          <div className="report-section">
-            <div className="report-section-header">
-              <span className="report-section-label">ACTIONS</span>
-              <button
-                className="btn-link"
-                onClick={() => setReport(r => ({
-                  ...r,
-                  actions: [...r.actions, {
-                    id: Date.now().toString(),
-                    text: "",
-                    dismissed: false,
-                  }],
-                }))}
-              >
-                + Add
-              </button>
-            </div>
+          {/* Left — editor */}
+          <div className="report-edit-pane">
 
-            {report.actions.filter(a => !a.dismissed).length === 0 && (
-              <div className="report-empty-section">No actions recorded. Add one above.</div>
-            )}
-
-            {report.actions.map(action => (
-              !action.dismissed && (
+            {/* ACTIONS */}
+            <div className="report-card">
+              <div className="report-section-header">
+                <span className="report-section-label">⚡ ACTIONS</span>
+                <button className="btn-link" onClick={addAction}>+ Add</button>
+              </div>
+              {report.actions.filter(a => !a.dismissed).length === 0 && (
+                <div className="report-empty-section">No actions recorded. Add one above.</div>
+              )}
+              {report.actions.map(action => !action.dismissed && (
                 <div key={action.id} className="report-action-row">
                   <span className="report-action-bullet">•</span>
                   <input
@@ -120,165 +278,127 @@ export default function ReportTab() {
                     type="text"
                     value={action.text}
                     placeholder="Describe action…"
+                    onChange={e => updateActionText(action.id, e.target.value)}
+                  />
+                  <button className="report-dismiss-btn" onClick={() => dismissAction(action.id)}>✕</button>
+                </div>
+              ))}
+            </div>
+
+            {/* NETWORK STATUS */}
+            <div className="report-card">
+              <div className="report-section-header">
+                <span className="report-section-label">🌐 NETWORK STATUS</span>
+              </div>
+              {report.networkRows.map(row => (
+                <div
+                  key={row.interface}
+                  className={`report-network-block report-network-block-${row.status}`}
+                >
+                  <div className="report-network-row">
+                    <div className={`report-status-dot report-status-dot-${row.status}`} />
+                    <span className="report-network-iface">
+                      {IFACE_ICON[row.interface]} {row.interface}
+                    </span>
+                    <span className="report-network-summary">{row.summary}</span>
+                  </div>
+                  <input
+                    className="report-network-note"
+                    type="text"
+                    value={report.networkNotes[row.interface] ?? ""}
+                    placeholder="Add note…"
                     onChange={e => setReport(r => ({
                       ...r,
-                      actions: r.actions.map(a =>
-                        a.id === action.id ? { ...a, text: e.target.value } : a
-                      ),
+                      networkNotes: { ...r.networkNotes, [row.interface]: e.target.value },
                     }))}
                   />
-                  <button
-                    className="report-dismiss-btn"
-                    onClick={() => setReport(r => ({
-                      ...r,
-                      actions: r.actions.map(a =>
-                        a.id === action.id ? { ...a, dismissed: true } : a
-                      ),
-                    }))}
-                  >✕</button>
                 </div>
-              )
-            ))}
-          </div>
-
-          {/* NETWORK STATUS */}
-          <div className="report-section">
-            <div className="report-section-header">
-              <span className="report-section-label">NETWORK STATUS</span>
+              ))}
             </div>
 
-            {report.networkRows.map(row => (
-              <div key={row.interface} className="report-network-block">
-                <div className="report-network-row">
-                  <div className={`report-status-dot report-status-dot-${row.status}`} />
-                  <span className="report-network-iface">{row.interface}</span>
-                  <span className="report-network-summary">{row.summary}</span>
+            {/* RECOMMENDED ACTIONS */}
+            <div className="report-card">
+              <div className="report-section-header">
+                <span className="report-section-label">🔧 RECOMMENDED ACTIONS</span>
+                <button className="btn-link" onClick={addRec}>+ Add</button>
+              </div>
+              {report.recommendedActions.filter(a => !a.dismissed).length === 0 && (
+                <div className="report-empty-section">
+                  No recommended actions. Add one or re-run diagnostics.
                 </div>
-                <input
-                  className="report-network-note"
-                  type="text"
-                  value={report.networkNotes[row.interface] ?? ""}
-                  placeholder="Add note…"
-                  onChange={e => setReport(r => ({
-                    ...r,
-                    networkNotes: { ...r.networkNotes, [row.interface]: e.target.value },
-                  }))}
-                />
-              </div>
-            ))}
-          </div>
-
-          {/* RECOMMENDED ACTIONS */}
-          <div className="report-section">
-            <div className="report-section-header">
-              <span className="report-section-label">RECOMMENDED ACTIONS</span>
-              <button
-                className="btn-link"
-                onClick={() => setReport(r => ({
-                  ...r,
-                  recommendedActions: [...r.recommendedActions, {
-                    id: Date.now().toString(),
-                    interface: "Custom" as const,
-                    text: "",
-                    detail: "",
-                    dismissed: false,
-                    checked: false,
-                    custom: true,
-                  }],
-                }))}
-              >
-                + Add
-              </button>
-            </div>
-
-            {report.recommendedActions.filter(a => !a.dismissed).length === 0 && (
-              <div className="report-empty-section">
-                No recommended actions. Add one or re-run diagnostics.
-              </div>
-            )}
-
-            {report.recommendedActions.map(action => (
-              !action.dismissed && (
+              )}
+              {report.recommendedActions.map(action => !action.dismissed && (
                 <div key={action.id} className="report-rec-row">
                   <input
                     type="checkbox"
                     className="report-rec-check"
                     checked={action.checked}
-                    onChange={e => setReport(r => ({
-                      ...r,
-                      recommendedActions: r.recommendedActions.map(a =>
-                        a.id === action.id ? { ...a, checked: e.target.checked } : a
-                      ),
-                    }))}
+                    onChange={e => updateRec(action.id, { checked: e.target.checked })}
                   />
                   <div className="report-rec-content">
                     {!action.custom && (
-                      <span className="report-rec-iface">{action.interface} —</span>
+                      <span className="report-rec-iface">
+                        {IFACE_ICON[action.interface] ?? ""} {action.interface} —
+                      </span>
                     )}
                     <input
                       className="report-rec-input"
                       type="text"
                       value={action.text}
                       placeholder="Action…"
-                      onChange={e => setReport(r => ({
-                        ...r,
-                        recommendedActions: r.recommendedActions.map(a =>
-                          a.id === action.id ? { ...a, text: e.target.value } : a
-                        ),
-                      }))}
+                      onChange={e => updateRec(action.id, { text: e.target.value })}
                     />
                     {action.detail && (
                       <div className="report-rec-detail">{action.detail}</div>
                     )}
                   </div>
-                  <button
-                    className="report-dismiss-btn"
-                    onClick={() => setReport(r => ({
-                      ...r,
-                      recommendedActions: r.recommendedActions.map(a =>
-                        a.id === action.id ? { ...a, dismissed: true } : a
-                      ),
-                    }))}
-                  >✕</button>
+                  <button className="report-dismiss-btn" onClick={() => dismissRec(action.id)}>✕</button>
                 </div>
-              )
-            ))}
-          </div>
-
-          {/* NOTES */}
-          <div className="report-section">
-            <div className="report-section-header">
-              <span className="report-section-label">NOTES</span>
-            </div>
-            <textarea
-              className="report-notes"
-              rows={3}
-              placeholder="Add session notes, observations, or context…"
-              value={report.notes}
-              onChange={e => setReport(r => ({ ...r, notes: e.target.value }))}
-            />
-          </div>
-
-          {/* OUTCOME */}
-          <div className="report-section">
-            <div className="report-section-header">
-              <span className="report-section-label">OUTCOME</span>
-            </div>
-            <div className="report-outcome-row">
-              {(["complete", "escalated", "followup"] as const).map(o => (
-                <label key={o} className="report-outcome-label">
-                  <input
-                    type="radio"
-                    name="outcome"
-                    checked={report.outcome === o}
-                    onChange={() => setReport(r => ({ ...r, outcome: o }))}
-                  />
-                  {o === "complete" ? "Complete"
-                    : o === "escalated" ? "Escalated"
-                    : "Follow-up needed"}
-                </label>
               ))}
             </div>
+
+            {/* NOTES */}
+            <div className="report-card">
+              <div className="report-section-header">
+                <span className="report-section-label">📝 NOTES</span>
+              </div>
+              <textarea
+                className="report-notes"
+                rows={3}
+                placeholder="Add session notes, observations, or context…"
+                value={report.notes}
+                onChange={e => setReport(r => ({ ...r, notes: e.target.value }))}
+              />
+            </div>
+
+            {/* OUTCOME */}
+            <div className="report-card">
+              <div className="report-section-header">
+                <span className="report-section-label">✅ OUTCOME</span>
+              </div>
+              <div className="report-outcome-pills">
+                {(["complete", "escalated", "followup"] as const).map(o => (
+                  <button
+                    key={o}
+                    className={`report-outcome-pill${report.outcome === o ? ` report-outcome-pill-${o} active` : ""}`}
+                    onClick={() => setReport(r => ({ ...r, outcome: o }))}
+                  >
+                    {o === "complete" ? "✓ Complete"
+                      : o === "escalated" ? "↑ Escalated"
+                      : "→ Follow-up"}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+          </div>
+
+          {/* Right — Slack preview */}
+          <div className="report-preview-pane">
+            <div className="report-preview-label">
+              <span>📨</span> Slack Preview
+            </div>
+            <SlackPreview report={report} />
           </div>
 
         </div>
@@ -295,7 +415,7 @@ export default function ReportTab() {
               setTimeout(() => setCopiedSlack(false), 1500);
             }}
           >
-            {copiedSlack ? "✓ Copied" : "Copy Slack"}
+            {copiedSlack ? "✓ Copied" : "📋 Copy Slack"}
           </button>
           <button
             className="btn btn-secondary"
@@ -305,7 +425,7 @@ export default function ReportTab() {
               setTimeout(() => setCopiedJira(false), 1500);
             }}
           >
-            {copiedJira ? "✓ Copied" : "Copy Jira"}
+            {copiedJira ? "✓ Copied" : "📋 Copy Jira"}
           </button>
         </div>
       )}
