@@ -37,39 +37,54 @@ pub fn parse_log_into_state(log: &str, state: &mut DiagnosticState) {
         ],
     );
     let full_eth_block_run = ethernet_block.is_some();
-    let ethernet = parse_ethernet(
-        find_latest(&latest, &["ethernet-check", "run ethernet diagnostics"]).or(ethernet_block),
-        find_latest(&latest, &["ethtool eth0", "run ethernet diagnostics"]).or(ethernet_block),
-        find_latest(
-            &latest,
-            &[
-                "ifconfig eth0",
-                "ip addr show eth0",
-                "run ethernet diagnostics",
-                "ethernet diags heavy",
-            ],
+    let ethernet_diag_attempted = full_eth_block_run
+        || find_latest(&latest, &["ethernet-check"]).is_some()
+        || find_latest(&latest, &["ethtool eth0"]).is_some()
+        || latest.values().any(|body| {
+            let lower = body.to_ascii_lowercase();
+            lower.contains("===== eth diagnostics start =====")
+                || lower.contains("ethtool eth0")
+                || lower.contains("ethernet-check")
+        });
+    let ethernet = if ethernet_diag_attempted {
+        parse_ethernet(
+            find_latest(&latest, &["ethernet-check", "run ethernet diagnostics"])
+                .or(ethernet_block),
+            find_latest(&latest, &["ethtool eth0", "run ethernet diagnostics"]).or(ethernet_block),
+            find_latest(
+                &latest,
+                &[
+                    "ifconfig eth0",
+                    "ip addr show eth0",
+                    "run ethernet diagnostics",
+                    "ethernet diags heavy",
+                ],
+            )
+            .or(ethernet_block),
+            find_latest(
+                &latest,
+                &[
+                    "cat /proc/net/dev",
+                    "run ethernet diagnostics",
+                    "ethernet diags heavy",
+                ],
+            )
+            .or(ethernet_block),
+            find_latest(
+                &latest,
+                &[
+                    "cat /sys/class/net/eth0/operstate",
+                    "run ethernet diagnostics",
+                    "ethernet diags heavy",
+                ],
+            )
+            .or(ethernet_block),
+            full_eth_block_run,
+            ethernet_diag_attempted,
         )
-        .or(ethernet_block),
-        find_latest(
-            &latest,
-            &[
-                "cat /proc/net/dev",
-                "run ethernet diagnostics",
-                "ethernet diags heavy",
-            ],
-        )
-        .or(ethernet_block),
-        find_latest(
-            &latest,
-            &[
-                "cat /sys/class/net/eth0/operstate",
-                "run ethernet diagnostics",
-                "ethernet diags heavy",
-            ],
-        )
-        .or(ethernet_block),
-        full_eth_block_run,
-    );
+    } else {
+        None
+    };
 
     let system = parse_system(
         latest.get("sid"),
@@ -1385,6 +1400,7 @@ fn parse_ethernet(
     proc_net_dev: Option<&String>,
     operstate: Option<&String>,
     full_block_run: bool,
+    ethernet_diag_attempted: bool,
 ) -> Option<EthernetDiagnostic> {
     if ethernet_check.is_none()
         && ethtool.is_none()
@@ -1477,6 +1493,7 @@ fn parse_ethernet(
         check_result,
         flap_count: 0,
         full_block_run,
+        ethernet_diag_attempted,
     })
 }
 

@@ -43,7 +43,11 @@ function statusTone(status: VpnStatus | ControllerStatus): "neutral" | "ok" | "w
   return "neutral";
 }
 
-export default function SessionTab() {
+interface SessionTabProps {
+  onControllerConnected?: () => void;
+}
+
+export default function SessionTab({ onControllerConnected }: SessionTabProps) {
   const [connectionMode, setConnectionMode] = useState<ConnectionMode>("vpn");
   const [bundlePath, setBundlePath] = useState("");
   const [validation, setValidation] = useState<Record<string, boolean> | null>(null);
@@ -236,6 +240,7 @@ export default function SessionTab() {
     try {
       await invoke("open_controller_terminal");
       await invoke("start_log_watcher").catch(() => {});
+      onControllerConnected?.();
     } catch (e) {
       setCtrlDetail(String(e));
     }
@@ -269,6 +274,7 @@ export default function SessionTab() {
       await invoke("open_local_serial_terminal", { device: serialDevice });
       await invoke("start_log_watcher").catch(() => {});
       setSerialDetail("Connected");
+      onControllerConnected?.();
     } catch (e) {
       setSerialDetail(String(e));
     }

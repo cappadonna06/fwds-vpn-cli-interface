@@ -158,6 +158,7 @@ interface EthernetDiagnostic {
   check_result: string;
   flap_count: number;
   full_block_run?: boolean;
+  ethernet_diag_attempted?: boolean;
 }
 
 interface SystemDiagnostic {
@@ -369,7 +370,7 @@ function buildSatelliteSections(sat?: SatelliteDiagnostic | null): DiagSection[]
 }
 
 function buildEthernetSections(ethernet?: EthernetDiagnostic | null): DiagSection[] {
-  if (!ethernet) return [{ title: "Status", rows: [{ label: "Status", value: "No diagnostics run" }, { label: "Last test", value: "—" }] }];
+  if (!ethernet) return [{ title: "Status", rows: [{ label: "Status", value: "Not diagnosed" }, { label: "Last test", value: "—" }] }];
 
   const connected = ethernet.internet_reachable || ethernet.link_detected === true;
   const actions: DiagRow[] = [];
@@ -457,9 +458,9 @@ function summarizeCellular(cell?: CellularDiagnostic | null): CardSummary {
 }
 
 function summarizeEthernet(ethernet?: EthernetDiagnostic | null): CardSummary {
-  if (!ethernet) return { health: "neutral", badgeLabel: "Inactive", primaryLine: "No diagnostics run" };
+  if (!ethernet) return { health: "neutral", badgeLabel: "Not diagnosed", primaryLine: "Not diagnosed" };
   if (ethernet.internet_reachable === true) return { health: "healthy", badgeLabel: "Healthy", primaryLine: "Connected", secondaryLine: "Internet reachable" };
-  if (ethernet.link_detected === false) return { health: "neutral", badgeLabel: "Inactive", primaryLine: "No link detected" };
+  if (ethernet.link_detected === false) return { health: "neutral", badgeLabel: "INACTIVE", primaryLine: "No link detected" };
   if (ethernet.flap_count > 0) return { health: "warning", badgeLabel: "Warning", primaryLine: "Connected", secondaryLine: "Unstable link" };
   if (!ethernet.ip_address) return { health: "error", badgeLabel: "Issue", primaryLine: "Connected", secondaryLine: "No IP assigned" };
   return { health: "warning", badgeLabel: "Warning", primaryLine: "Connected", secondaryLine: "Limited internet" };
@@ -657,7 +658,7 @@ export default function DiagnosticsTab() {
   const ethernetRole = resolveRole("ethernet", primaryNetwork, !!(ethernet?.link_detected || ethernet?.internet_reachable));
 
   async function clearCards() {
-    await invoke("clear_diagnostic_state").catch(() => {});
+    await invoke("stop_log_watcher").catch(() => {});
     postClearUntilRef.current = Date.now() + 3000;
     setDiag({
       wifi: null,
@@ -709,7 +710,7 @@ export default function DiagnosticsTab() {
 
         <div className="diag-header-right">
           <div className="diag-updated">Last updated {lastUpdated ?? "—"}</div>
-          <button className="btn btn-secondary" onClick={clearCards}>Clear Cards</button>
+          <button className="btn btn-secondary" onClick={clearCards}>Clear</button>
         </div>
       </div>
 
@@ -813,7 +814,7 @@ export default function DiagnosticsTab() {
           expanded={expanded.ethernet}
           onToggle={() => setExpanded((p) => ({ ...p, ethernet: !p.ethernet }))}
           updatedAt={cardUpdatedAt.ethernet}
-          commandHint={ethernetNeedsRefresh ? "Limited data available." : undefined}
+          commandHint={ethernet ? (ethernetNeedsRefresh ? "Limited data available." : undefined) : undefined}
           onCopyCommand={() => copyDiagnosticBlock("ethernet")}
           copied={copiedCommandId === "ethernet"}
           compact={ethernetSummary.health === "neutral"}

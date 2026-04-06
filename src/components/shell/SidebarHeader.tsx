@@ -7,6 +7,7 @@ interface SidebarHeaderProps {
   showLocal: boolean;
   controllerDisplay: string;
   controllerValid: boolean;
+  systemSid?: string | null;
   systemVersion?: string | null;
 }
 
@@ -17,6 +18,7 @@ export default function SidebarHeader({
   showLocal,
   controllerDisplay,
   controllerValid,
+  systemSid,
   systemVersion,
 }: SidebarHeaderProps) {
   return (
@@ -38,9 +40,8 @@ export default function SidebarHeader({
           <div className={`top-header-controller ${controllerValid ? "valid" : "invalid"}`}>
             {controllerDisplay}
           </div>
-          {systemVersion && (
-            <span className="badge-info">{systemVersion}</span>
-          )}
+          {systemSid && <span className="badge-info">SID {systemSid}</span>}
+          {systemVersion && <span className="badge-info">{systemVersion}</span>}
         </div>
       </div>
     </header>

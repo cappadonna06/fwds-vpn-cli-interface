@@ -57,6 +57,8 @@ struct AppState {
     inner: Arc<Mutex<InnerState>>,
     diagnostic_state: Arc<Mutex<DiagnosticState>>,
     log_watcher_kill: Arc<Mutex<Option<Arc<AtomicBool>>>>,
+    watcher_paused: Arc<AtomicBool>,
+    watcher_pause_offset: Arc<Mutex<u64>>,
     diagnostic_store: Arc<Mutex<DiagnosticStore>>,
     current_controller_key: Arc<Mutex<Option<String>>>,
 }
@@ -302,6 +304,7 @@ pub struct EthernetDiagnostic {
     pub check_result: String,
     pub flap_count: u32,
     pub full_block_run: bool,
+    pub ethernet_diag_attempted: bool,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
@@ -1093,9 +1096,13 @@ fn start_log_watcher_internal(state: &AppState, start_from_end: bool) -> Result<
             (format!("vpn:{ip}"), log_file_path(&ip))
         }
     };
+    state.watcher_paused.store(false, Ordering::SeqCst);
+
     let diag_arc = state.diagnostic_state.clone();
     let store_arc = state.diagnostic_store.clone();
     let key_arc = state.current_controller_key.clone();
+    let watcher_paused = state.watcher_paused.clone();
+    let watcher_pause_offset = state.watcher_pause_offset.clone();
 
     if let Ok(mut key) = state.current_controller_key.lock() {
         *key = Some(controller_key.clone());
@@ -1154,6 +1161,21 @@ fn start_log_watcher_internal(state: &AppState, start_from_end: bool) -> Result<
         loop {
             if kill_flag.load(Ordering::Relaxed) {
                 break;
+            }
+
+            if watcher_paused.load(Ordering::SeqCst) {
+                let current_size = log_path.metadata().map(|m| m.len()).unwrap_or(0);
+                let pause_offset = watcher_pause_offset.lock().map(|g| *g).unwrap_or(0);
+                if current_size <= pause_offset {
+                    thread::sleep(Duration::from_millis(500));
+                    continue;
+                }
+
+                watcher_paused.store(false, Ordering::SeqCst);
+                let _ = file.seek(SeekFrom::Start(pause_offset));
+                buffer.clear();
+                thread::sleep(Duration::from_millis(50));
+                continue;
             }
 
             let mut chunk = String::new();
@@ -1240,10 +1262,10 @@ fn clear_diagnostic_state(state: State<'_, AppState>) -> Result<(), String> {
 fn clear_diagnostic_interface(state: State<'_, AppState>, interface: String) -> Result<(), String> {
     let mut diag = state.diagnostic_state.lock().map_err(|_| "lock poisoned")?;
     match interface.as_str() {
-        "wifi"      => diag.wifi = None,
-        "cellular"  => diag.cellular = None,
+        "wifi" => diag.wifi = None,
+        "cellular" => diag.cellular = None,
         "satellite" => diag.satellite = None,
-        "ethernet"  => diag.ethernet = None,
+        "ethernet" => diag.ethernet = None,
         _ => {}
     }
     Ok(())
@@ -1251,7 +1273,34 @@ fn clear_diagnostic_interface(state: State<'_, AppState>, interface: String) -> 
 
 #[tauri::command]
 fn stop_log_watcher(state: State<'_, AppState>) -> Result<(), String> {
-    stop_log_watcher_internal(&state)
+    let log_path = {
+        let inner = state.inner.lock().map_err(|_| "lock poisoned")?;
+        if inner.connection_mode == "local" {
+            let device = inner
+                .local_serial_device
+                .clone()
+                .ok_or_else(|| "No local serial device selected".to_string())?;
+            local_serial_log_file(&device)
+        } else {
+            let ip = inner
+                .controller_ip
+                .clone()
+                .ok_or_else(|| "No controller IP — connect first".to_string())?;
+            log_file_path(&ip)
+        }
+    };
+
+    let pause_offset = log_path.metadata().map(|m| m.len()).unwrap_or(0);
+    if let Ok(mut offset) = state.watcher_pause_offset.lock() {
+        *offset = pause_offset;
+    }
+    state.watcher_paused.store(true, Ordering::SeqCst);
+
+    if let Ok(mut diag) = state.diagnostic_state.lock() {
+        *diag = DiagnosticState::default();
+    }
+
+    Ok(())
 }
 
 fn stop_log_watcher_internal(state: &AppState) -> Result<(), String> {
@@ -1260,6 +1309,7 @@ fn stop_log_watcher_internal(state: &AppState) -> Result<(), String> {
             existing.store(true, Ordering::Relaxed);
         }
     }
+    state.watcher_paused.store(false, Ordering::SeqCst);
 
     if let Ok(mut diag) = state.diagnostic_state.lock() {
         diag.session_has_data = false;
@@ -1782,6 +1832,8 @@ pub fn run() {
             inner: Arc::new(Mutex::new(InnerState::default())),
             diagnostic_state: Arc::new(Mutex::new(DiagnosticState::default())),
             log_watcher_kill: Arc::new(Mutex::new(None)),
+            watcher_paused: Arc::new(AtomicBool::new(false)),
+            watcher_pause_offset: Arc::new(Mutex::new(0)),
             diagnostic_store: Arc::new(Mutex::new(load_diagnostic_store())),
             current_controller_key: Arc::new(Mutex::new(None)),
         })
