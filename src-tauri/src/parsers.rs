@@ -2202,7 +2202,7 @@ fn determine_cellular_status(diag: &mut CellularDiagnostic) {
         .unwrap_or(false)
         && (diag.modem_present == Some(false) || !diag.wwan_exists)
     {
-        diag.status = DiagStatus::Unknown;
+        diag.status = DiagStatus::Red;
         diag.summary = "No modem detected".into();
         diag.modem_not_present = true;
         diag.recommended_action = Some("Check modem connection / seating".into());

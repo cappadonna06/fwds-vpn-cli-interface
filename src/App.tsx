@@ -32,6 +32,8 @@ interface AppStatus {
 }
 interface HeaderDiagnosticState {
   system?: { sid?: string | null; version?: string | null } | null;
+  cellular?: { controller_sid?: string | null } | null;
+  wifi?: { controller_sid?: string | null } | null;
 }
 
 function mapVpnState(vpnPhase: string): StatusPillState {
@@ -92,7 +94,11 @@ export default function App() {
         const diag = await invoke<HeaderDiagnosticState>("get_diagnostic_state");
         setSystemVersion(diag.system?.version ?? null);
         if (s.connection_mode === "local") {
-          setLocalSid(diag.system?.sid ?? null);
+          const sid = diag.system?.sid
+            ?? diag.cellular?.controller_sid
+            ?? diag.wifi?.controller_sid
+            ?? null;
+          setLocalSid(sid);
         } else {
           setLocalSid(null);
         }
@@ -111,7 +117,10 @@ export default function App() {
   const localState = mapLocalState(appStatus.connection_mode, appStatus.local_serial_device);
 
   const controllerDisplay = localSid ?? appStatus.controller_ip ?? appStatus.local_serial_device ?? "No controller";
-  const controllerValid = Boolean(localSid);
+  const controllerValid =
+    Boolean(localSid) ||
+    Boolean(appStatus.controller_ip) ||
+    Boolean(appStatus.local_serial_device);
 
   return (
     <div className="app">
