@@ -184,7 +184,7 @@ interface DiagCardProps {
   title: string;
   icon: string;
   health: HealthTone;
-  badgeLabel: string;
+  statusLabel: string;
   primaryLine: string;
   secondaryLine?: string | null;
   role?: string | null;
@@ -424,7 +424,7 @@ function resolveRole(network: "wifi" | "cellular" | "ethernet", primary: "wifi" 
 }
 
 function summarizeWifi(wifi?: WifiDiagnostic | null): CardSummary {
-  if (!wifi) return { health: "neutral", badgeLabel: "Inactive", primaryLine: "No diagnostics run" };
+  if (!wifi) return { health: "neutral", badgeLabel: "No data", primaryLine: "No data yet" };
   const connected = wifi.connected === true || wifi.connman_wifi_connected === true;
   const ssid = wifi.ssid || wifi.access_point || "Wi-Fi";
   if (!connected) return { health: "neutral", badgeLabel: "Inactive", primaryLine: "Not connected", secondaryLine: ssid };
@@ -439,7 +439,7 @@ function summarizeWifi(wifi?: WifiDiagnostic | null): CardSummary {
 }
 
 function summarizeCellular(cell?: CellularDiagnostic | null): CardSummary {
-  if (!cell) return { health: "neutral", badgeLabel: "Inactive", primaryLine: "No diagnostics run" };
+  if (!cell) return { health: "neutral", badgeLabel: "No data", primaryLine: "No data yet" };
   if (cell.modem_present === false) return { health: "error", badgeLabel: "Issue", primaryLine: "No modem detected" };
   if (cell.sim_inserted === false) return { health: "error", badgeLabel: "Issue", primaryLine: "No SIM detected" };
   if (cell.qcsq === "NOSERVICE") return { health: "error", badgeLabel: "Issue", primaryLine: "No service" };
@@ -460,14 +460,14 @@ function summarizeCellular(cell?: CellularDiagnostic | null): CardSummary {
 function summarizeEthernet(ethernet?: EthernetDiagnostic | null): CardSummary {
   if (!ethernet) return { health: "neutral", badgeLabel: "Not diagnosed", primaryLine: "Not diagnosed" };
   if (ethernet.internet_reachable === true) return { health: "healthy", badgeLabel: "Healthy", primaryLine: "Connected", secondaryLine: "Internet reachable" };
-  if (ethernet.link_detected === false) return { health: "neutral", badgeLabel: "INACTIVE", primaryLine: "No link detected" };
+  if (ethernet.link_detected === false) return { health: "neutral", badgeLabel: "Inactive", primaryLine: "No link detected" };
   if (ethernet.flap_count > 0) return { health: "warning", badgeLabel: "Warning", primaryLine: "Connected", secondaryLine: "Unstable link" };
   if (!ethernet.ip_address) return { health: "error", badgeLabel: "Issue", primaryLine: "Connected", secondaryLine: "No IP assigned" };
   return { health: "warning", badgeLabel: "Warning", primaryLine: "Connected", secondaryLine: "Limited internet" };
 }
 
 function summarizeSatellite(sat?: SatelliteDiagnostic | null): CardSummary {
-  if (!sat) return { health: "neutral", badgeLabel: "Not validated", primaryLine: "No diagnostics run" };
+  if (!sat) return { health: "neutral", badgeLabel: "No data", primaryLine: "No data yet" };
   if (sat.modem_present === false) return { health: "error", badgeLabel: "Issue", primaryLine: "No satellite modem detected" };
   if (sat.loopback_test_success === true) return { health: "healthy", badgeLabel: "Verified", primaryLine: "Link verified" };
   if (sat.loopback_test_blocked_in_use) return { health: "warning", badgeLabel: "Warning", primaryLine: "Test blocked" };
@@ -489,7 +489,7 @@ function DiagCard({
   title,
   icon,
   health,
-  badgeLabel,
+  statusLabel,
   primaryLine,
   secondaryLine,
   role,
@@ -505,28 +505,63 @@ function DiagCard({
   compact,
   onClear,
 }: DiagCardProps) {
+  const [menuOpen, setMenuOpen] = useState(false);
+
   return (
     <article className={`diag-card diag-card-${health} ${expanded ? "diag-card-open" : ""} ${compact ? "diag-card-compact" : ""}`}>
-      <button className="diag-card-head" onClick={onToggle}>
+      <div className="diag-card-head">
         <div className="diag-card-title-wrap">
           <span className="diag-card-icon" aria-hidden>{icon}</span>
           <span className="diag-card-title">{title}</span>
         </div>
         <div className="diag-card-head-right">
-          <span className={`diag-status-badge diag-status-badge-${health}`}>{badgeLabel}</span>
-          <span className={`diag-status-dot diag-status-${health}`} />
-          {onClear && (
-            <button
-              className="diag-card-clear-btn"
-              onClick={e => { e.stopPropagation(); onClear(); }}
-              title="Clear card data"
-            >×</button>
-          )}
-          <span className={`diag-expand-chip ${expanded ? "open" : ""}`}>
-            {expanded ? "Hide" : "Details"} <span className="diag-chevron" aria-hidden>▾</span>
+          <span className="diag-status-label">
+            <span className={`diag-status-dot diag-status-${health}`} />
+            <span>{statusLabel}</span>
           </span>
+          {(onCopyCommand || onClear) && (
+            <div className="diag-card-menu-wrap">
+              <button
+                type="button"
+                className="diag-card-menu-btn"
+                onClick={() => setMenuOpen((prev) => !prev)}
+                aria-label={`${title} actions`}
+              >
+                ⋯
+              </button>
+              {menuOpen && (
+                <div className="diag-card-menu">
+                  {onCopyCommand && (
+                    <button
+                      type="button"
+                      className="diag-card-menu-item"
+                      onClick={() => {
+                        onCopyCommand();
+                        setMenuOpen(false);
+                      }}
+                    >
+                      {copied ? "Copied" : "Copy diagnostics commands"}
+                    </button>
+                  )}
+                  {onCopyCommand && onClear && <div className="diag-card-menu-divider" />}
+                  {onClear && (
+                    <button
+                      type="button"
+                      className="diag-card-menu-item diag-card-menu-item-danger"
+                      onClick={() => {
+                        onClear();
+                        setMenuOpen(false);
+                      }}
+                    >
+                      Clear card
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
         </div>
-      </button>
+      </div>
 
       <div className="diag-card-status-line">{primaryLine}</div>
       {secondaryLine && <div className="diag-card-secondary-line">{secondaryLine}</div>}
@@ -561,16 +596,21 @@ function DiagCard({
         </div>
       )}
 
-      {onCopyCommand && (
+      {expanded && onCopyCommand && (
         <div className="diag-card-action-row">
           {commandHint && <span>{commandHint}</span>}
-          <button className="diag-copy-link" onClick={onCopyCommand}>
-            {copied ? "Copied" : "Copy command block"}
+          <button className="diag-card-copy-btn" onClick={onCopyCommand}>
+            {copied ? "Copied" : "Copy diagnostics commands"}
           </button>
         </div>
       )}
 
-      {updatedAt && <div className="diag-card-updated">Updated {updatedAt}</div>}
+      <div className="diag-card-footer">
+        <div className="diag-card-updated">{updatedAt ? `Updated ${updatedAt}` : "Updated —"}</div>
+        <button type="button" className="diag-card-toggle" onClick={onToggle}>
+          {expanded ? "Hide details ▴" : "Details ▾"}
+        </button>
+      </div>
     </article>
   );
 }
@@ -719,7 +759,7 @@ export default function DiagnosticsTab() {
           <div className="diag-empty-title">No data yet</div>
           <div>Waiting for diagnostics from this session.</div>
           <button className="diag-copy-link" onClick={() => copyDiagnosticBlock(fullDiagBlockId)}>
-            {copiedCommandId === fullDiagBlockId ? "Copied" : "Copy full diagnostics block"}
+            {copiedCommandId === fullDiagBlockId ? "Copied" : "Copy full diagnostics commands"}
           </button>
         </div>
       )}
@@ -729,7 +769,7 @@ export default function DiagnosticsTab() {
           title="Wi-Fi"
           icon="🛜"
           health={wifiSummary.health || toneFromStatus(wifi?.status)}
-          badgeLabel={wifiSummary.badgeLabel}
+          statusLabel={wifiSummary.badgeLabel}
           primaryLine={wifiSummary.primaryLine}
           secondaryLine={wifiSummary.secondaryLine}
           role={wifiRole}
@@ -754,7 +794,7 @@ export default function DiagnosticsTab() {
           title="Cellular"
           icon="📶"
           health={cellularSummary.health || toneFromStatus(cellular?.status)}
-          badgeLabel={cellularSummary.badgeLabel}
+          statusLabel={cellularSummary.badgeLabel}
           primaryLine={cellularSummary.primaryLine}
           secondaryLine={cellularSummary.secondaryLine}
           role={cellularRole}
@@ -779,7 +819,7 @@ export default function DiagnosticsTab() {
           title="Satellite"
           icon="🛰️"
           health={satelliteSummary.health || toneFromStatus(satellite?.status)}
-          badgeLabel={satelliteSummary.badgeLabel}
+          statusLabel={satelliteSummary.badgeLabel}
           primaryLine={satelliteSummary.primaryLine}
           secondaryLine={satelliteSummary.secondaryLine}
           role={satelliteSummary.health === "healthy" ? "Backup" : undefined}
@@ -804,7 +844,7 @@ export default function DiagnosticsTab() {
           title="Ethernet"
           icon="🌐"
           health={ethernetSummary.health || toneFromStatus(ethernet?.status)}
-          badgeLabel={ethernetSummary.badgeLabel}
+          statusLabel={ethernetSummary.badgeLabel}
           primaryLine={ethernetSummary.primaryLine}
           secondaryLine={ethernetSummary.secondaryLine}
           role={ethernetRole}
