@@ -2,8 +2,8 @@ use regex::Regex;
 use std::collections::HashMap;
 
 use crate::{
-    CellularDiagnostic, DiagStatus, DiagnosticState, EthernetDiagnostic, SatelliteDiagnostic,
-    SystemDiagnostic, WifiDiagnostic,
+    CellularDiagnostic, CopsNetwork, DiagStatus, DiagnosticState, EthernetDiagnostic,
+    SatelliteDiagnostic, SystemDiagnostic, WifiDiagnostic,
 };
 
 #[derive(Clone, Debug)]
@@ -1176,6 +1176,15 @@ fn default_cellular() -> CellularDiagnostic {
         cellular_disabled: false,
         no_service: false,
         sim_present: false,
+        detected_networks: vec![],
+        cops_scan_attempted: false,
+        cops_scan_completed: false,
+        cops_scan_failed: false,
+        cops_scan_empty: false,
+        best_network_code: None,
+        best_network_name: None,
+        nwscanmode: None,
+        sim_matches_detected: false,
     }
 }
 
@@ -2250,7 +2259,7 @@ fn parse_cell_support_at(text: &str, diag: &mut CellularDiagnostic) {
     }
     diag.attached = extract_regex(text, r"\+CGATT:\s*(\d)").map(|v| v == "1");
     diag.operator_name =
-        extract_regex(text, r#"\+COPS:.*?"([^"]+)""#).map(|v| v.trim().to_string());
+        extract_regex(text, r#"\+COPS:\s*\d+,\d+,"([^"]+)""#).map(|v| v.trim().to_string());
     if let Some(mode) = extract_regex(text, r#"\+QCSQ:\s*"([^"]+)""#) {
         diag.qcsq = Some(mode.clone());
         if mode != "NOSERVICE" {
@@ -2276,6 +2285,98 @@ fn parse_cell_support_at(text: &str, diag: &mut CellularDiagnostic) {
         extract_regex(text, r"\+CGPADDR:\s*1,(\d+\.\d+\.\d+\.\d+)").filter(|ip| ip != "0.0.0.0");
     diag.at_apn = extract_regex(text, r"\+CGCONTRDP:.*?,[^,]*,[^,]*,[^,]*,[^,]*,([^,\s]+)")
         .or_else(|| extract_regex(text, r#"\+CGCONTRDP:.*?(vzwinternet|super)"#));
+
+    // COPS network scan detection
+    diag.cops_scan_attempted = text.contains("Scanning...");
+
+    // Parse COPS scan result line (contains quoted tuples, not just "+COPS: 0")
+    for line in text.lines() {
+        if line.starts_with("+COPS:") && line.contains('"') && line.contains('(') {
+            diag.detected_networks = parse_cops_scan(line);
+        }
+    }
+
+    // Detect nwscanmode from +QCFG: "nwscanmode",N
+    diag.nwscanmode = Regex::new(r#"\+QCFG:\s*"nwscanmode",(\d+)"#)
+        .ok()
+        .and_then(|re| re.captures(text))
+        .and_then(|cap| cap[1].parse::<u8>().ok());
+
+    // Determine scan outcome flags
+    if text.contains("CME ERROR: operation not allowed")
+        || (diag.cops_scan_attempted && text.contains("\nFailed\n"))
+    {
+        diag.cops_scan_failed = true;
+        diag.cops_scan_completed = false;
+    } else if diag.cops_scan_attempted {
+        diag.cops_scan_completed = true;
+        diag.cops_scan_empty = diag.detected_networks.is_empty();
+    }
+
+    // Determine best network recommendation
+    determine_best_network(diag);
+}
+
+fn parse_cops_scan(line: &str) -> Vec<CopsNetwork> {
+    let mut networks = Vec::new();
+    let re = match Regex::new(r#"\((\d+),"([^"]*?)","([^"]*?)","(\d+)",(\d+)\)"#) {
+        Ok(r) => r,
+        Err(_) => return networks,
+    };
+    for cap in re.captures_iter(line) {
+        networks.push(CopsNetwork {
+            stat: cap[1].parse().unwrap_or(0),
+            long_name: cap[2].to_string(),
+            numeric: cap[4].to_string(),
+            act: cap[5].parse().unwrap_or(0),
+        });
+    }
+    networks
+}
+
+fn resolve_carrier(code: &str) -> String {
+    match code {
+        "311270" | "311271" | "311272" | "311273" | "311274" | "311275" |
+        "311276" | "311277" | "311278" | "311279" | "311280" | "311480" |
+        "311481" | "311482" | "311483" | "311484" | "311485" | "311486" |
+        "311487" | "311488" | "311489" => "Verizon".into(),
+        "310260" | "310026" | "310490" | "310660" | "312250" | "310230" |
+        "310240" | "310250" => "T-Mobile".into(),
+        "310410" | "310380" | "310980" | "311180" | "310030" | "310560" |
+        "310680" => "AT&T".into(),
+        "313100" => "FirstNet (AT&T)".into(),
+        "310000" => "Dish".into(),
+        _ => format!("Carrier ({})", code),
+    }
+}
+
+fn determine_best_network(diag: &mut CellularDiagnostic) {
+    if diag.detected_networks.is_empty() {
+        return;
+    }
+    // Priority: stat=1 (available) > stat=3 (forbidden/detected) > stat=0 (unknown)
+    let best = diag.detected_networks.iter().min_by_key(|n| match n.stat {
+        1 => 0,
+        3 => 1,
+        0 => 2,
+        _ => 3,
+    });
+    if let Some(network) = best {
+        diag.best_network_code = Some(network.numeric.clone());
+        diag.best_network_name = Some(resolve_carrier(&network.numeric));
+    }
+    // Check if installed SIM carrier appears in detected list.
+    // hni (Home Network Identity = MCC+MNC) is the most reliable field for the SIM's home carrier.
+    // Fall back to the first 6 chars of imsi.
+    let installed_code = diag.hni.clone().or_else(|| {
+        diag.imsi
+            .as_ref()
+            .map(|s| s[..s.len().min(6)].to_string())
+    });
+    diag.sim_matches_detected = match &installed_code {
+        Some(code) => diag.detected_networks.iter().any(|n| &n.numeric == code),
+        None => false,
+    };
 }
 
 /// Pre-compute boolean flag fields from raw parsed data.
@@ -2368,34 +2469,25 @@ fn determine_cellular_status(diag: &mut CellularDiagnostic) {
             return;
         }
 
-        let is_us_cell = diag
-            .provider_code
-            .as_deref()
-            .map(|c| c.starts_with("31127"))
-            .unwrap_or(false)
-            || diag
-                .imsi
-                .as_deref()
-                .map(|s| s.starts_with("311270"))
-                .unwrap_or(false);
-
-        if is_us_cell {
-            diag.summary = "No service — US Cellular SIM".into();
-            diag.recommended_action = Some("Consider Verizon SIM swap".into());
-            diag.other_actions = vec![
-                "US Cellular has limited rural coverage".into(),
-                "Check coverage area".into(),
-                "Reboot controller".into(),
-            ];
-        } else {
-            diag.summary = "No service — searching for network".into();
-            diag.recommended_action = Some("Check coverage area and antenna".into());
-            diag.other_actions = vec![
-                "Move to known good coverage area".into(),
-                "Reboot controller".into(),
-                "Try alternate SIM".into(),
-            ];
-        }
+        diag.summary = "No service — searching for network".into();
+        diag.recommended_action = Some(
+            if diag.best_network_name.is_some() && !diag.sim_matches_detected {
+                format!(
+                    "Install {} SIM",
+                    diag.best_network_name.as_deref().unwrap_or("alternate")
+                )
+            } else if diag.cops_scan_empty {
+                "No networks detected — check antenna".into()
+            } else if diag.cops_scan_failed {
+                "Network scan failed — reboot controller".into()
+            } else {
+                "Check coverage area and antenna".into()
+            },
+        );
+        diag.other_actions = vec![
+            "Reboot controller".into(),
+            "Check antenna placement".into(),
+        ];
         return;
     }
 

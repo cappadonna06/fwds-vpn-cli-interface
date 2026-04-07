@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { DIAGNOSTIC_BLOCKS, DiagnosticBlock } from "../../types/commands";
 
@@ -54,6 +54,13 @@ interface WifiDiagnostic {
   proc_tx_packets?: number | null;
 }
 
+interface CopsNetwork {
+  stat: number;
+  long_name: string;
+  numeric: string;
+  act: number;
+}
+
 interface CellularDiagnostic {
   status: DiagStatus;
   summary: string;
@@ -105,6 +112,18 @@ interface CellularDiagnostic {
   setup_attempted?: boolean;
   setup_timed_out?: boolean;
   cellular_disabled?: boolean;
+  no_service?: boolean;
+  sim_present?: boolean;
+  detected_networks?: CopsNetwork[];
+  cops_scan_attempted?: boolean;
+  cops_scan_completed?: boolean;
+  cops_scan_failed?: boolean;
+  cops_scan_empty?: boolean;
+  best_network_code?: string | null;
+  best_network_name?: string | null;
+  nwscanmode?: number | null;
+  sim_matches_detected?: boolean;
+  provider?: string | null;
 }
 
 interface SatelliteDiagnostic {
@@ -202,6 +221,7 @@ interface DiagCardProps {
   copied?: boolean;
   compact?: boolean;
   onClear?: () => void;
+  extraContent?: ReactNode;
 }
 
 function resolveBlockScript(block: DiagnosticBlock, tier: "light" | "heavy"): string {
@@ -224,6 +244,19 @@ function speedLabel(speed?: string | null): string {
   if (s.includes("1000")) return "Gigabit";
   if (s.includes("100")) return "Fast Ethernet";
   return speed;
+}
+
+function resolve_carrier_ts(code: string): string {
+  const verizon = ["311270","311271","311272","311273","311274","311275",
+    "311276","311277","311278","311279","311280","311480","311481","311482",
+    "311483","311484","311485","311486","311487","311488","311489"];
+  const tmobile = ["310260","310026","310490","310660","312250","310230","310240","310250"];
+  const att = ["310410","310380","310980","311180","310030","310560","310680"];
+  if (verizon.includes(code)) return "Verizon";
+  if (tmobile.includes(code)) return "T-Mobile";
+  if (att.includes(code)) return "AT&T";
+  if (code === "313100") return "FirstNet (AT&T)";
+  return `Carrier (${code})`;
 }
 
 function signalLabel(score?: number | null): string {
@@ -507,6 +540,7 @@ function DiagCard({
   copied,
   compact,
   onClear,
+  extraContent,
 }: DiagCardProps) {
   const [menuOpen, setMenuOpen] = useState(false);
 
@@ -598,6 +632,7 @@ function DiagCard({
               </div>
             </section>
           ))}
+          {extraContent}
         </div>
       )}
 
@@ -808,6 +843,95 @@ export default function DiagnosticsTab() {
             setDiag(prev => prev ? { ...prev, cellular: null } : prev);
             setCardUpdatedAt(prev => ({ ...prev, cellular: null }));
           }}
+          extraContent={cellular && (cellular.no_service || cellular.modem_unreachable) && cellular.cops_scan_attempted ? (
+            <div className="sim-picker">
+              <div className="diag-section-label">SIM PICKER</div>
+
+              {cellular.cops_scan_failed && (
+                <div className="sim-picker-state sim-picker-failed">
+                  <span className="sim-picker-icon">⚠</span>
+                  <div>
+                    <div className="sim-picker-headline">Network scan failed</div>
+                    <div className="sim-picker-detail">
+                      {cellular.nwscanmode === 1
+                        ? "Modem is in LTE-only mode — run setup-cellular to reset scan mode"
+                        : "Modem could not complete network scan — try rebooting controller"}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {cellular.cops_scan_completed && cellular.cops_scan_empty && (
+                <div className="sim-picker-state sim-picker-empty">
+                  <span className="sim-picker-icon">📡</span>
+                  <div>
+                    <div className="sim-picker-headline">No networks detected</div>
+                    <div className="sim-picker-detail">
+                      No cellular signal at this location. Check antenna placement
+                      and sky view. Try moving the antenna or a different location.
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {cellular.cops_scan_completed && !cellular.cops_scan_empty && (
+                <>
+                  <div className="sim-picker-networks">
+                    {(cellular.detected_networks ?? []).map((net, i) => (
+                      <div key={i} className={`sim-picker-network sim-picker-network-${
+                        net.stat === 1 ? "available"
+                        : net.stat === 2 ? "current"
+                        : net.stat === 3 ? "detected"
+                        : "unknown"
+                      }`}>
+                        <span className="sim-picker-net-stat">
+                          {net.stat === 1 ? "●" : net.stat === 2 ? "✓" : "○"}
+                        </span>
+                        <span className="sim-picker-net-name">
+                          {resolve_carrier_ts(net.numeric)}
+                        </span>
+                        <span className="sim-picker-net-code">{net.numeric}</span>
+                        <span className="sim-picker-net-label">
+                          {net.stat === 1 ? "Available"
+                          : net.stat === 2 ? "Connected"
+                          : net.stat === 3 ? "Detected"
+                          : "Unknown"}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+
+                  <div className="sim-picker-installed">
+                    Installed SIM: {cellular.operator_name ?? cellular.provider_code ?? "Verizon"} ·{" "}
+                    {cellular.sim_matches_detected
+                      ? "detected at this site"
+                      : "not detected at this site"}
+                  </div>
+
+                  {cellular.best_network_name && !cellular.sim_matches_detected && (
+                    <div className="sim-picker-recommendation">
+                      <span className="sim-picker-rec-label">RECOMMENDED SIM</span>
+                      <span className="sim-picker-rec-value">
+                        Install {cellular.best_network_name} SIM
+                      </span>
+                      <span className="sim-picker-rec-detail">
+                        {(cellular.detected_networks ?? []).find(n => n.stat === 1)
+                          ? `${cellular.best_network_name} signal available at this location`
+                          : `${cellular.best_network_name} detected — install SIM to confirm service`}
+                      </span>
+                    </div>
+                  )}
+
+                  {cellular.sim_matches_detected && (
+                    <div className="sim-picker-recommendation sim-picker-rec-mismatch">
+                      Installed SIM carrier is detectable but not attaching.
+                      Check APN configuration or try rebooting.
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          ) : undefined}
         />
 
         <DiagCard
