@@ -1069,7 +1069,7 @@ cell-support --no-ofono --at
     id: "sim-picker",
     label: "SIM Picker",
     icon: "📶",
-    description: "Carrier scan — which of AT&T, T-Mobile, Verizon is best at this location (~3 min)",
+    description: "Full cellular diagnostics + carrier scan. Populates both Cellular and SIM Picker cards (~3 min).",
     when_to_run: "When cellular has no service or weak signal and you want to know if a different carrier SIM would work better.",
     time_warning: "Carrier scan takes approximately 3 minutes.",
     light_command_ids: [],
@@ -1080,8 +1080,39 @@ date
 version
 sid
 
+echo ""
+echo "===== CELLULAR CONNECTIVITY TEST ====="
+cellular-check
+
+echo ""
+echo "===== BASIC CELL INFO ====="
+cell-imei
+cell-ccid
+cell-imsi
+cell-hni
+cell-provider
+cell-status
+cell-signal
+cell-apn
+
+echo ""
+echo "===== NETWORK TECHNOLOGY ====="
+connmanctl technologies
+connmanctl services
+connmanctl state
+
+echo ""
+echo "===== INTERFACE / ROUTING ====="
+ip link show wwan0
+ip addr show wwan0
+ip route
+cat /proc/net/dev
+
+echo ""
+echo "===== MODEM / RADIO DIAGNOSTICS ====="
 cell-support --no-ofono --at --scan
 
+echo ""
 echo "===== SIM PICKER END ====="
 )`,
   },

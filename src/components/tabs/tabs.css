@@ -2985,3 +2985,32 @@
   line-height: 1.6;
   padding: 4px 0;
 }
+
+/* SIM Picker bottom section */
+.diag-sim-picker-section {
+  margin-top: 24px;
+}
+
+.diag-section-divider {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.diag-section-divider::before,
+.diag-section-divider::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+
+.diag-section-divider-label {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+  white-space: nowrap;
+}

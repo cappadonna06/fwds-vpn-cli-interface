@@ -206,6 +206,7 @@ interface SimPickerDiagnostic {
   installed_carrier_detected: boolean;
   recommendation: SimPickerRecommendation;
   recommendation_detail: string;
+  qcsq_rsrp?: number | null;
   last_updated?: string | null;
 }
 
@@ -298,14 +299,8 @@ function simPickerHealth(sp?: SimPickerDiagnostic | null): HealthTone {
   return sp.installed_carrier_detected ? "warning" : "error";
 }
 
-function simPickerBadge(sp?: SimPickerDiagnostic | null): string {
-  if (!sp || !sp.scan_attempted) return "Not run";
-  if (sp.scan_failed) return "Scan failed";
-  if (sp.scan_empty) return "Dead zone";
-  const rec = sp.recommendation;
-  if (typeof rec === "object" && "SwapTo" in rec) return "Swap SIM";
-  if (rec === "KeepCurrent") return "Keep SIM";
-  return "Done";
+function simPickerBadge(_sp?: SimPickerDiagnostic | null): string {
+  return "";
 }
 
 function simPickerPrimary(sp?: SimPickerDiagnostic | null): string {
@@ -357,6 +352,12 @@ function buildSimPickerSections(sp?: SimPickerDiagnostic | null): DiagSection[] 
       : "Not seen";
     return { label: carrier.name, value: label };
   });
+
+  // Show FirstNet if detected, marked as restricted
+  const firstNet = sp.detected_networks.find(n => n.numeric === "313100");
+  if (firstNet) {
+    networkRows.push({ label: "FirstNet (AT&T)", value: "Detected — restricted" });
+  }
 
   const installedRows: DiagRow[] = [
     { label: "Installed SIM", value: sp.installed_carrier_name ?? sp.installed_carrier_code ?? "Unknown" },
@@ -961,27 +962,6 @@ export default function DiagnosticsTab() {
         />
 
         <DiagCard
-          title="SIM Picker"
-          icon="📶"
-          health={simPickerHealth(simPicker)}
-          statusLabel={simPickerBadge(simPicker)}
-          primaryLine={simPickerPrimary(simPicker)}
-          secondaryLine={simPickerSecondary(simPicker)}
-          sections={buildSimPickerSections(simPicker)}
-          expanded={expanded.sim_picker}
-          onToggle={() => setExpanded((p) => ({ ...p, sim_picker: !p.sim_picker }))}
-          updatedAt={cardUpdatedAt.sim_picker}
-          onCopyCommand={() => copyDiagnosticBlock("sim-picker")}
-          copied={copiedCommandId === "sim-picker"}
-          compact={!simPicker?.scan_attempted}
-          onClear={simPicker ? async () => {
-            await invoke("clear_diagnostic_interface", { interface: "sim_picker" }).catch(() => {});
-            setDiag(prev => prev ? { ...prev, sim_picker: null } : prev);
-            setCardUpdatedAt(prev => ({ ...prev, sim_picker: null }));
-          } : undefined}
-        />
-
-        <DiagCard
           title="Satellite"
           icon="🛰️"
           health={satelliteSummary.health || toneFromStatus(satellite?.status)}
@@ -1027,6 +1007,32 @@ export default function DiagnosticsTab() {
             setDiag(prev => prev ? { ...prev, ethernet: null } : prev);
             setCardUpdatedAt(prev => ({ ...prev, ethernet: null }));
           }}
+        />
+      </div>
+
+      <div className="diag-sim-picker-section">
+        <div className="diag-section-divider">
+          <span className="diag-section-divider-label">SIM Picker</span>
+        </div>
+        <DiagCard
+          title="SIM Picker"
+          icon="📶"
+          health={simPickerHealth(simPicker)}
+          statusLabel={simPickerBadge(simPicker)}
+          primaryLine={simPickerPrimary(simPicker)}
+          secondaryLine={simPickerSecondary(simPicker)}
+          sections={buildSimPickerSections(simPicker)}
+          expanded={expanded.sim_picker}
+          onToggle={() => setExpanded((p) => ({ ...p, sim_picker: !p.sim_picker }))}
+          updatedAt={cardUpdatedAt.sim_picker}
+          onCopyCommand={() => copyDiagnosticBlock("sim-picker")}
+          copied={copiedCommandId === "sim-picker"}
+          compact={!simPicker?.scan_attempted}
+          onClear={simPicker ? async () => {
+            await invoke("clear_diagnostic_interface", { interface: "sim_picker" }).catch(() => {});
+            setDiag(prev => prev ? { ...prev, sim_picker: null } : prev);
+            setCardUpdatedAt(prev => ({ ...prev, sim_picker: null }));
+          } : undefined}
         />
       </div>
     </section>

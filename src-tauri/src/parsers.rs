@@ -137,6 +137,23 @@ pub fn parse_log_into_state(log: &str, state: &mut DiagnosticState) {
     if let Some(block) = sim_picker_block {
         let sp = parse_sim_picker(block);
         if sp.scan_attempted || sp.full_block_run {
+            // When the unified SIM Picker block was run it contains all cellular commands too.
+            // Parse cellular from it so the Cellular card populates even if no separate
+            // cellular diag block exists in the log.
+            if sp.full_block_run {
+                let cell = parse_cellular(block);
+                state.cellular = Some(match state.cellular.take() {
+                    Some(prev) => {
+                        // Only replace if the block-parsed result has more data
+                        if cell.imei.is_some() || cell.internet_reachable {
+                            cell
+                        } else {
+                            prev
+                        }
+                    }
+                    None => cell,
+                });
+            }
             state.sim_picker = Some(sp);
         }
     }
@@ -2319,7 +2336,7 @@ fn resolve_carrier(code: &str) -> String {
         "310240" | "310250" => "T-Mobile".into(),
         "310410" | "310380" | "310980" | "311180" | "310030" | "310560" |
         "310680" => "AT&T".into(),
-        "313100" => "FirstNet (AT&T)".into(),
+        "313100" => "FirstNet (AT&T — restricted)".into(),
         "310000" => "Dish".into(),
         _ => format!("Carrier ({})", code),
     }
@@ -2335,6 +2352,11 @@ pub fn parse_sim_picker(block: &str) -> SimPickerDiagnostic {
         .ok()
         .and_then(|re| re.captures(block))
         .and_then(|cap| cap[1].parse::<u8>().ok());
+    // +QCSQ: "CAT-M1",-62,-91,107,-13  → cap[2] is RSRP
+    diag.qcsq_rsrp = Regex::new(r#"\+QCSQ:\s*"[^"]+",(-?\d+),(-?\d+)"#)
+        .ok()
+        .and_then(|re| re.captures(block))
+        .and_then(|cap| cap[2].parse::<i32>().ok());
     determine_recommendation(&mut diag);
     diag
 }
@@ -2407,65 +2429,94 @@ fn determine_recommendation(diag: &mut SimPickerDiagnostic) {
 
     let installed_code = diag.installed_carrier_code.clone().unwrap_or_default();
     let installed_name = resolve_carrier(&installed_code);
-    diag.installed_carrier_detected = diag
-        .detected_networks
-        .iter()
-        .any(|n| n.numeric == installed_code || n.resolved_name == installed_name);
 
-    // Best alternative: prefer stat=1 > stat=3, exclude installed carrier
-    let best_alt = diag
-        .detected_networks
-        .iter()
-        .filter(|n| n.resolved_name != installed_name)
-        .min_by_key(|n| match n.stat {
-            1 => 0,
-            3 => 1,
-            0 => 2,
-            _ => 3,
-        })
+    // Find the installed carrier's entry in scan results
+    let installed_network = diag.detected_networks.iter()
+        .find(|n| resolve_carrier(&n.numeric) == installed_name)
         .cloned();
 
-    if diag.installed_carrier_detected {
-        if let Some(ref alt) = best_alt {
-            if alt.stat == 1 {
-                diag.recommendation = SimPickerRecommendation::SwapTo(alt.resolved_name.clone());
-                diag.best_network_code = Some(alt.numeric.clone());
-                diag.best_network_name = Some(alt.resolved_name.clone());
-                diag.recommendation_detail = format!(
-                    "{} is available at this location and may provide better service.",
-                    alt.resolved_name
-                );
-                return;
-            }
+    let installed_stat = installed_network.as_ref().map(|n| n.stat);
+    diag.installed_carrier_detected = installed_stat.is_some();
+
+    // stat=2 means modem is actively connected to this network.
+    // Combined with good signal (RSRP > -100 dBm, or unknown), never recommend a swap.
+    if installed_stat == Some(2) {
+        let strong = diag.qcsq_rsrp.map(|r| r > -100).unwrap_or(true);
+        if strong {
+            diag.recommendation = SimPickerRecommendation::KeepCurrent;
+            diag.recommendation_detail = format!(
+                "{} is connected and has good signal at this location. No SIM change needed.",
+                diag.installed_carrier_name.as_deref().unwrap_or(&installed_name)
+            );
+            return;
         }
-        diag.recommendation = SimPickerRecommendation::KeepCurrent;
-        let only = best_alt.is_none();
-        diag.recommendation_detail = if only {
-            format!(
-                "{} is the only carrier detected at this location.",
-                diag.installed_carrier_name.as_deref().unwrap_or("Installed carrier")
-            )
-        } else {
-            format!(
-                "{} is detected at this location. No clearly better alternative found.",
-                diag.installed_carrier_name.as_deref().unwrap_or("Installed carrier")
-            )
-        };
-    } else if let Some(ref alt) = best_alt {
-        diag.recommendation = SimPickerRecommendation::SwapTo(alt.resolved_name.clone());
-        diag.best_network_code = Some(alt.numeric.clone());
-        diag.best_network_name = Some(alt.resolved_name.clone());
-        diag.recommendation_detail = format!(
-            "{} not detected. {} is available — install {} SIM.",
-            diag.installed_carrier_name.as_deref().unwrap_or("Installed carrier"),
-            alt.resolved_name,
-            alt.resolved_name,
-        );
-    } else {
-        diag.recommendation = SimPickerRecommendation::DeadZone;
-        diag.recommendation_detail =
-            "Installed carrier not detected and no alternatives found. Check antenna.".into();
+        // Connected but weak — fall through to check alternatives
     }
+
+    // Valid alternatives: exclude the installed carrier and restricted networks
+    let valid_alts: Vec<&CopsNetwork> = diag.detected_networks.iter()
+        .filter(|n| {
+            resolve_carrier(&n.numeric) != installed_name
+                && n.numeric != "313100" // FirstNet — restricted public safety network
+        })
+        .collect();
+
+    // Best alternative: prefer stat=1 (available) over stat=3 (detected/wrong SIM)
+    let best_alt = valid_alts.iter()
+        .min_by_key(|n| match n.stat { 1 => 0, 3 => 1, 0 => 2, _ => 3 })
+        .copied()
+        .cloned();
+
+    if !diag.installed_carrier_detected {
+        // Installed carrier not visible at all
+        if let Some(ref alt) = best_alt {
+            diag.recommendation = SimPickerRecommendation::SwapTo(alt.resolved_name.clone());
+            diag.best_network_code = Some(alt.numeric.clone());
+            diag.best_network_name = Some(alt.resolved_name.clone());
+            diag.recommendation_detail = format!(
+                "{} not detected. {} is {} at this location — install {} SIM.",
+                diag.installed_carrier_name.as_deref().unwrap_or("Installed carrier"),
+                alt.resolved_name,
+                if alt.stat == 1 { "available" } else { "detectable" },
+                alt.resolved_name,
+            );
+        } else {
+            diag.recommendation = SimPickerRecommendation::DeadZone;
+            diag.recommendation_detail = format!(
+                "{} not detected and no valid alternatives found. Check antenna.",
+                diag.installed_carrier_name.as_deref().unwrap_or("Installed carrier")
+            );
+        }
+        return;
+    }
+
+    // Installed carrier detected (stat=3 or stat=0) but not actively connected
+    if let Some(ref alt) = best_alt {
+        if alt.stat == 1 {
+            diag.recommendation = SimPickerRecommendation::SwapTo(alt.resolved_name.clone());
+            diag.best_network_code = Some(alt.numeric.clone());
+            diag.best_network_name = Some(alt.resolved_name.clone());
+            diag.recommendation_detail = format!(
+                "{} detected but not connected. {} is available — may provide better service.",
+                diag.installed_carrier_name.as_deref().unwrap_or("Installed carrier"),
+                alt.resolved_name,
+            );
+            return;
+        }
+    }
+
+    diag.recommendation = SimPickerRecommendation::KeepCurrent;
+    diag.recommendation_detail = if best_alt.is_none() {
+        format!(
+            "{} is the only carrier detected at this location.",
+            diag.installed_carrier_name.as_deref().unwrap_or("Installed carrier")
+        )
+    } else {
+        format!(
+            "{} is detected at this location. No clearly better alternative found.",
+            diag.installed_carrier_name.as_deref().unwrap_or("Installed carrier")
+        )
+    };
 }
 
 

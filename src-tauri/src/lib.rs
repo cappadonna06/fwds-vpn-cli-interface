@@ -112,6 +112,8 @@ pub struct SimPickerDiagnostic {
     pub recommendation: SimPickerRecommendation,
     pub recommendation_detail: String,
 
+    pub qcsq_rsrp: Option<i32>,
+
     pub last_updated: Option<String>,
 }
 
