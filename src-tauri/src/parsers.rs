@@ -25,7 +25,22 @@ pub fn parse_log_into_state(log: &str, state: &mut DiagnosticState) {
 
     let wifi = parse_wifi(&latest);
 
-    let cellular = parse_cellular_from_latest(&latest);
+    let mut cellular = parse_cellular_from_latest(&latest);
+
+    // Post-process: detect setup-cellular events from the full log (outside command blocks)
+    // then compute modem_unreachable and re-run status if needed.
+    if let Some(ref mut cell_diag) = cellular {
+        detect_setup_cellular_events(log, cell_diag);
+
+        cell_diag.modem_unreachable =
+            cell_diag.imei.is_some()
+            && (cell_diag.at_interface_failed == Some(true) || cell_diag.setup_timed_out)
+            && (cell_diag.cellular_disabled || cell_diag.setup_attempted);
+
+        if cell_diag.modem_unreachable {
+            determine_cellular_status(cell_diag);
+        }
+    }
 
     let satellite = build_satellite_parse_block(&latest).map(|block| parse_satellite(&block));
 
@@ -1069,6 +1084,7 @@ fn parse_cellular_from_latest(latest: &HashMap<String, String>) -> Option<Cellul
         return None;
     }
     diag.full_block_run = latest.contains_key("cell-support --no-ofono --at");
+    compute_cellular_flags(&mut diag);
     determine_cellular_status(&mut diag);
     Some(diag)
 }
@@ -1076,6 +1092,7 @@ fn parse_cellular_from_latest(latest: &HashMap<String, String>) -> Option<Cellul
 pub fn parse_cellular(block: &str) -> CellularDiagnostic {
     let mut diag = default_cellular();
     parse_cellular_block(block, &mut diag);
+    compute_cellular_flags(&mut diag);
     determine_cellular_status(&mut diag);
     diag
 }
@@ -1152,6 +1169,13 @@ fn default_cellular() -> CellularDiagnostic {
         other_actions: vec![],
         full_block_run: false,
         modem_not_present: false,
+        modem_unreachable: false,
+        setup_attempted: false,
+        setup_timed_out: false,
+        at_interface_failed: None,
+        cellular_disabled: false,
+        no_service: false,
+        sim_present: false,
     }
 }
 
@@ -2199,6 +2223,10 @@ fn parse_cell_support_at(text: &str, diag: &mut CellularDiagnostic) {
     {
         diag.modem_present = Some(false);
     }
+    // "Running AT commands... Failed" — AT interface is dead
+    if text.contains("Running AT commands") && text.contains("Failed") {
+        diag.at_interface_failed = Some(true);
+    }
     if text.contains("Quectel") || text.contains("BG96") {
         diag.modem_present = Some(true);
         diag.modem_model = extract_regex(text, r"(BG96)");
@@ -2250,123 +2278,166 @@ fn parse_cell_support_at(text: &str, diag: &mut CellularDiagnostic) {
         .or_else(|| extract_regex(text, r#"\+CGCONTRDP:.*?(vzwinternet|super)"#));
 }
 
-fn determine_cellular_status(diag: &mut CellularDiagnostic) {
-    let has_authoritative_check = diag.check_result != "Unknown" || diag.check_error.is_some();
-    if !has_authoritative_check {
-        diag.status = DiagStatus::Unknown;
-        diag.summary = "Partial data".into();
-        return;
-    }
+/// Pre-compute boolean flag fields from raw parsed data.
+/// Must be called before determine_cellular_status.
+fn compute_cellular_flags(diag: &mut CellularDiagnostic) {
+    diag.modem_not_present =
+        diag.check_error.as_deref().map(|e| e.contains("-65552")).unwrap_or(false)
+        && (diag.modem_present == Some(false) || !diag.wwan_exists);
 
-    if diag
-        .check_error
-        .as_deref()
-        .map(|e| e.contains("-65553"))
-        .unwrap_or(false)
-        || diag.connman_cell_powered == Some(false)
+    diag.cellular_disabled =
+        diag.connman_cell_powered == Some(false)
+        || diag.check_error.as_deref().map(|e| e.contains("-65553")).unwrap_or(false)
         || (diag.cfun == Some(0)
             && diag.sim_inserted == Some(true)
             && diag.modem_present == Some(true)
-            && diag.check_error.is_some())
+            && diag.check_error.is_some());
+
+    diag.no_service =
+        diag.modem_present == Some(true)
+        && (diag.registered == Some(false)
+            || diag.qcsq.as_deref() == Some("NOSERVICE"));
+
+    diag.sim_present = diag.sim_inserted == Some(true);
+}
+
+/// Scan the full log (not just the cellular block) for setup-cellular events,
+/// which are emitted outside standard command blocks as interactive output.
+fn detect_setup_cellular_events(log: &str, diag: &mut CellularDiagnostic) {
+    if log.contains("setup-cellular") {
+        diag.setup_attempted = true;
+    }
+    if log.contains("Failed to connect to Cellular network")
+        && log.contains("connection timed out")
     {
-        diag.status = DiagStatus::Grey;
-        diag.summary = "Cellular disabled".into();
+        diag.setup_timed_out = true;
+    }
+}
+
+fn determine_cellular_status(diag: &mut CellularDiagnostic) {
+    // 1. Hardware not present at all
+    if diag.modem_not_present {
+        diag.status = DiagStatus::Unknown;
+        diag.summary = "No modem detected".into();
+        diag.recommended_action = Some("Check modem connection and seating".into());
+        diag.other_actions = vec![
+            "Reboot controller".into(),
+            "Check modem hardware".into(),
+        ];
+        return;
+    }
+
+    // 2. Hardware visible but AT interface dead / setup timed out
+    //    This is RED — setup was attempted and failed
+    if diag.modem_unreachable {
+        diag.status = DiagStatus::Red;
+        diag.summary = "Cellular hardware not responding".into();
+        diag.recommended_action = Some(
+            "Reboot controller — modem AT interface not responding".into(),
+        );
+        diag.other_actions = vec![
+            "Reboot usually resolves without physical intervention".into(),
+            "Reseat modem if reboot does not resolve".into(),
+            "Check firmware version after reboot".into(),
+        ];
+        return;
+    }
+
+    // 3. Cellular intentionally disabled (never tried to enable)
+    if diag.cellular_disabled {
+        diag.status = DiagStatus::Unknown;
+        let imei_note = if diag.imei.is_some() { " (modem detected)" } else { "" };
+        diag.summary = format!("Cellular disabled{}", imei_note);
         diag.recommended_action = Some("Enable via setup-cellular".into());
         diag.other_actions = vec![];
         return;
     }
-    if diag
-        .check_error
-        .as_deref()
-        .map(|e| e.contains("-65552"))
-        .unwrap_or(false)
-        && (diag.modem_present == Some(false) || !diag.wwan_exists)
-    {
+
+    // 4. No service — modem powered, searching
+    if diag.no_service {
         diag.status = DiagStatus::Red;
-        diag.summary = "No modem detected".into();
-        diag.modem_not_present = true;
-        diag.recommended_action = Some("Check modem connection / seating".into());
-        diag.other_actions = vec!["Reboot controller".into()];
+
+        if !diag.sim_present {
+            diag.status = DiagStatus::Unknown;
+            diag.summary = "No SIM detected".into();
+            diag.recommended_action = Some("Check SIM card is seated correctly".into());
+            diag.other_actions = vec![
+                "Reseat SIM".into(),
+                "Try a known-good SIM".into(),
+            ];
+            return;
+        }
+
+        let is_us_cell = diag
+            .provider_code
+            .as_deref()
+            .map(|c| c.starts_with("31127"))
+            .unwrap_or(false)
+            || diag
+                .imsi
+                .as_deref()
+                .map(|s| s.starts_with("311270"))
+                .unwrap_or(false);
+
+        if is_us_cell {
+            diag.summary = "No service — US Cellular SIM".into();
+            diag.recommended_action = Some("Consider Verizon SIM swap".into());
+            diag.other_actions = vec![
+                "US Cellular has limited rural coverage".into(),
+                "Check coverage area".into(),
+                "Reboot controller".into(),
+            ];
+        } else {
+            diag.summary = "No service — searching for network".into();
+            diag.recommended_action = Some("Check coverage area and antenna".into());
+            diag.other_actions = vec![
+                "Move to known good coverage area".into(),
+                "Reboot controller".into(),
+                "Try alternate SIM".into(),
+            ];
+        }
         return;
     }
-    if diag.sim_inserted == Some(false)
-        || (diag.sim_ready == Some(false)
-            && diag.modem_present == Some(true)
-            && diag.iccid.is_none())
-    {
+
+    // 5. Check explicitly failed — unknown reason
+    if diag.check_result == "Failure" {
         diag.status = DiagStatus::Red;
-        diag.summary = "No SIM detected".into();
-        diag.recommended_action = Some("Insert SIM card".into());
-        diag.other_actions = vec![];
+        diag.summary = format!(
+            "Failed — {}",
+            diag.check_error.as_deref().unwrap_or("unknown error")
+        );
+        diag.recommended_action = Some("Run setup-cellular to reconfigure".into());
         return;
     }
-    if diag.modem_present == Some(true)
-        && diag.sim_inserted == Some(true)
-        && diag.registered == Some(false)
-        && diag.qcsq.as_deref() == Some("NOSERVICE")
-    {
-        diag.status = DiagStatus::Red;
-        diag.summary = "No signal — not registered".into();
-        diag.recommended_action = Some("Check coverage or antenna".into());
-        diag.other_actions = vec![
-            "Move to known good coverage area".into(),
-            "Reboot controller".into(),
-            "Try alternate SIM".into(),
-        ];
-        return;
-    }
-    if diag.modem_present == Some(true)
-        && diag.sim_inserted == Some(true)
-        && diag.registered == Some(true)
-        && diag.attached == Some(true)
-        && diag.connman_cell_connected == Some(false)
-    {
-        diag.status = DiagStatus::Orange;
-        diag.summary = "Registered · APN/profile mismatch".into();
-        diag.recommended_action = Some("Check APN / firmware cellular profile".into());
-        diag.other_actions = vec![
-            "Try supported SIM".into(),
-            "Verify APN database entry".into(),
-        ];
-        return;
-    }
-    if diag.connman_cell_connected == Some(true)
-        && diag.wwan_ipv4_address.is_some()
-        && diag.check_result == "Failure"
-    {
-        diag.status = DiagStatus::Orange;
-        diag.summary = "Connected · no internet".into();
-        diag.recommended_action = Some("Check carrier data service / DNS".into());
-        diag.other_actions = vec![];
-        return;
-    }
-    if diag.check_result == "Success"
-        && diag.internet_reachable
-        && diag.connman_cell_connected == Some(true)
-        && diag.wwan_ipv4_address.is_some()
-    {
+
+    // 6. Connected — determine signal quality
+    if diag.check_result == "Success" && diag.internet_reachable {
         let provider = diag
             .operator_name
-            .clone()
-            .or(diag.basic_provider.clone())
-            .or(diag.provider_code.clone())
-            .unwrap_or_else(|| "Cellular".into());
-        let signal = diag
-            .strength_label
-            .clone()
-            .or(diag.strength_score.map(|v| format!("{}/100", v)))
-            .unwrap_or_else(|| "connected".into());
-        let role = match diag.role.as_deref() {
-            Some("active") => "active",
-            Some("backup") => "backup",
-            _ => "connected",
-        };
-        diag.status = DiagStatus::Green;
-        diag.summary = format!("{} · {} · {}", provider.trim(), signal, role);
-        diag.recommended_action = None;
-        diag.other_actions = vec![];
+            .as_deref()
+            .or(diag.basic_provider.as_deref())
+            .or(diag.provider_code.as_deref())
+            .unwrap_or("Unknown");
+        let strength = diag.strength_score.unwrap_or(0);
+        let label = diag.strength_label.as_deref().unwrap_or("");
+
+        if strength >= 60 {
+            diag.status = DiagStatus::Green;
+            diag.summary = format!("{} · {}/100 · {}", provider, strength, label);
+        } else if strength >= 40 {
+            diag.status = DiagStatus::Orange;
+            diag.summary = format!("{} · {}/100 · weak signal", provider, strength);
+            diag.recommended_action =
+                Some("Check antenna connection and placement".into());
+        } else {
+            diag.status = DiagStatus::Red;
+            diag.summary = format!("{} · {}/100 · signal too weak", provider, strength);
+            diag.recommended_action =
+                Some("Check antenna — signal critically low".into());
+        }
         return;
     }
+
     diag.status = DiagStatus::Unknown;
-    diag.summary = "Incomplete data".into();
+    diag.summary = "No data".into();
 }

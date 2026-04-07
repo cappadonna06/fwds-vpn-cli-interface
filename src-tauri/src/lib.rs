@@ -227,6 +227,15 @@ pub struct CellularDiagnostic {
     pub other_actions: Vec<String>,
     pub full_block_run: bool,
     pub modem_not_present: bool,
+
+    // modem_unreachable state: hardware visible but AT interface dead / setup timed out
+    pub modem_unreachable: bool,
+    pub setup_attempted: bool,
+    pub setup_timed_out: bool,
+    pub at_interface_failed: Option<bool>,
+    pub cellular_disabled: bool,
+    pub no_service: bool,
+    pub sim_present: bool,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone)]

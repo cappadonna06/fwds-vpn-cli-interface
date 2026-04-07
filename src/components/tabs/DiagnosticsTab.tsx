@@ -101,6 +101,10 @@ interface CellularDiagnostic {
   other_actions?: string[] | null;
   full_block_run?: boolean;
   modem_not_present?: boolean;
+  modem_unreachable?: boolean;
+  setup_attempted?: boolean;
+  setup_timed_out?: boolean;
+  cellular_disabled?: boolean;
 }
 
 interface SatelliteDiagnostic {
@@ -305,7 +309,7 @@ function buildCellularSections(cell?: CellularDiagnostic | null): DiagSection[] 
         { label: "Connection", value: cell.connman_cell_connected === true ? "Connected" : "Not connected" },
         { label: "Role", value: roleLabel(cell.role) || "Inactive" },
         { label: "SIM", value: cell.sim_inserted === false ? "Missing" : cell.sim_ready === true ? "Ready" : "Unknown" },
-        { label: "Modem", value: cell.modem_present === true ? "Detected" : "Not detected" },
+        { label: "Modem", value: cell.modem_not_present ? "Not detected" : cell.modem_unreachable ? "Detected — not responding" : cell.cellular_disabled && cell.imei ? "Powered off (detected)" : cell.cellular_disabled ? "Powered off" : cell.modem_present === true ? cell.modem_model ?? "Detected" : "Unknown" },
         { label: "Network", value: [cell.rat, cell.band].filter(Boolean).join(" / ") || "—" },
         { label: "APN", value: cleanCellValue(cell.at_apn) || cleanCellValue(cell.basic_apn) || "—" },
       ],
@@ -439,6 +443,7 @@ function summarizeWifi(wifi?: WifiDiagnostic | null): CardSummary {
 
 function summarizeCellular(cell?: CellularDiagnostic | null): CardSummary {
   if (!cell) return { health: "neutral", badgeLabel: "No data", primaryLine: "No data yet" };
+  if (cell.modem_unreachable) return { health: "error", badgeLabel: "Issue", primaryLine: "Cellular hardware not responding", secondaryLine: "Reboot controller" };
   if (cell.modem_present === false) return { health: "error", badgeLabel: "Issue", primaryLine: "No modem detected" };
   if (cell.sim_inserted === false) return { health: "error", badgeLabel: "Issue", primaryLine: "No SIM detected" };
   if (cell.qcsq === "NOSERVICE") return { health: "error", badgeLabel: "Issue", primaryLine: "No service" };
