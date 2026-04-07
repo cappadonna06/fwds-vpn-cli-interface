@@ -37,45 +37,63 @@ pub fn parse_log_into_state(log: &str, state: &mut DiagnosticState) {
         ],
     );
     let full_eth_block_run = ethernet_block.is_some();
-    let ethernet = parse_ethernet(
-        find_latest(&latest, &["ethernet-check", "run ethernet diagnostics"]).or(ethernet_block),
-        find_latest(&latest, &["ethtool eth0", "run ethernet diagnostics"]).or(ethernet_block),
-        find_latest(
-            &latest,
-            &[
-                "ifconfig eth0",
-                "ip addr show eth0",
-                "run ethernet diagnostics",
-                "ethernet diags heavy",
-            ],
+    let ethernet_diag_attempted = full_eth_block_run
+        || find_latest(&latest, &["ethernet-check"]).is_some()
+        || find_latest(&latest, &["ethtool eth0"]).is_some()
+        || latest.values().any(|body| {
+            let lower = body.to_ascii_lowercase();
+            lower.contains("===== eth diagnostics start =====")
+                || lower.contains("ethtool eth0")
+                || lower.contains("ethernet-check")
+        });
+    let ethernet = if ethernet_diag_attempted {
+        parse_ethernet(
+            find_latest(&latest, &["ethernet-check", "run ethernet diagnostics"])
+                .or(ethernet_block),
+            find_latest(&latest, &["ethtool eth0", "run ethernet diagnostics"]).or(ethernet_block),
+            find_latest(
+                &latest,
+                &[
+                    "ifconfig eth0",
+                    "ip addr show eth0",
+                    "run ethernet diagnostics",
+                    "ethernet diags heavy",
+                ],
+            )
+            .or(ethernet_block),
+            find_latest(
+                &latest,
+                &[
+                    "cat /proc/net/dev",
+                    "run ethernet diagnostics",
+                    "ethernet diags heavy",
+                ],
+            )
+            .or(ethernet_block),
+            find_latest(
+                &latest,
+                &[
+                    "cat /sys/class/net/eth0/operstate",
+                    "run ethernet diagnostics",
+                    "ethernet diags heavy",
+                ],
+            )
+            .or(ethernet_block),
+            full_eth_block_run,
+            ethernet_diag_attempted,
         )
-        .or(ethernet_block),
-        find_latest(
-            &latest,
-            &[
-                "cat /proc/net/dev",
-                "run ethernet diagnostics",
-                "ethernet diags heavy",
-            ],
-        )
-        .or(ethernet_block),
-        find_latest(
-            &latest,
-            &[
-                "cat /sys/class/net/eth0/operstate",
-                "run ethernet diagnostics",
-                "ethernet diags heavy",
-            ],
-        )
-        .or(ethernet_block),
-        full_eth_block_run,
-    );
+    } else {
+        None
+    };
 
-    let system = parse_system(
-        latest.get("sid"),
-        latest.get("version"),
-        latest.get("release"),
+    let mut system = parse_system(
+        find_latest(&latest, &["sid"]),
+        find_latest(&latest, &["version"]),
+        find_latest(&latest, &["release"]),
     );
+    if system.sid.is_none() {
+        system.sid = parse_sid_from_prompt(log);
+    }
 
     if wifi.is_some() {
         if let Some(next) = wifi {
@@ -228,6 +246,26 @@ fn find_latest_body_contains<'a>(
             .iter()
             .all(|m| lower.contains(&m.to_ascii_lowercase()))
     })
+}
+
+fn find_latest_body_contains_any<'a>(
+    latest: &'a HashMap<String, String>,
+    markers: &[&str],
+) -> Option<&'a String> {
+    latest.values().find(|body| {
+        let lower = body.to_ascii_lowercase();
+        markers
+            .iter()
+            .any(|m| lower.contains(&m.to_ascii_lowercase()))
+    })
+}
+
+fn parse_sid_from_prompt(log: &str) -> Option<String> {
+    let sid_re = Regex::new(r"\[(\d{6,10})\]#").ok()?;
+    sid_re
+        .captures_iter(log)
+        .filter_map(|caps| caps.get(1).map(|m| m.as_str().to_string()))
+        .last()
 }
 
 fn build_satellite_parse_block(latest: &HashMap<String, String>) -> Option<String> {
@@ -408,6 +446,16 @@ mod tests {
             .map(|w| w.summary.clone())
             .unwrap_or_default();
         assert_eq!(first_summary, second_summary);
+    }
+
+    #[test]
+    fn parse_log_extracts_system_sid_from_prompt_when_sid_command_missing() {
+        let mut state = DiagnosticState::default();
+        let log =
+            "2026-04-01T10:33:10-0600 [22611067]# wifi-check\nTesting Wi-Fi...\nDone: Success\n";
+        parse_log_into_state(log, &mut state);
+        let sid = state.system.as_ref().and_then(|s| s.sid.as_deref());
+        assert_eq!(sid, Some("22611067"));
     }
 
     #[test]
@@ -683,7 +731,18 @@ fn parse_wifi(latest: &HashMap<String, String>) -> Option<WifiDiagnostic> {
             "===== wifi diagnostics start =====",
             "===== wifi diagnostics end =====",
         ],
-    );
+    )
+    .or_else(|| {
+        find_latest_body_contains_any(
+            latest,
+            &[
+                "===== wifi diagnostics start =====",
+                "wifi-check",
+                "wifi-signal",
+                "iw dev wlan0",
+            ],
+        )
+    });
     let wifi_check = find_latest(latest, &["wifi-check", "wifi diagnostics"]).or(wifi_block);
     let wifi_signal = find_latest(latest, &["wifi-signal", "wifi diagnostics"]).or(wifi_block);
     let iw_dev = find_latest(latest, &["iw dev", "wifi diagnostics"]).or(wifi_block);
@@ -1385,6 +1444,7 @@ fn parse_ethernet(
     proc_net_dev: Option<&String>,
     operstate: Option<&String>,
     full_block_run: bool,
+    ethernet_diag_attempted: bool,
 ) -> Option<EthernetDiagnostic> {
     if ethernet_check.is_none()
         && ethtool.is_none()
@@ -1477,6 +1537,7 @@ fn parse_ethernet(
         check_result,
         flap_count: 0,
         full_block_run,
+        ethernet_diag_attempted,
     })
 }
 
@@ -1485,14 +1546,33 @@ fn parse_system(
     version_block: Option<&String>,
     release_block: Option<&String>,
 ) -> SystemDiagnostic {
-    let sid = parse_single_value(sid_block);
-    let version = parse_single_value(version_block);
+    let sid = parse_single_value(sid_block).and_then(|v| sanitize_sid(&v));
+    let version = parse_single_value(version_block).and_then(|v| sanitize_version(&v));
     let release_date = release_block.and_then(|b| capture_after(b, "Date:"));
 
     SystemDiagnostic {
         sid,
         version,
         release_date,
+    }
+}
+
+fn sanitize_sid(input: &str) -> Option<String> {
+    let clean = input.trim();
+    if clean.len() == 8 && clean.chars().all(|c| c.is_ascii_digit()) {
+        Some(clean.to_string())
+    } else {
+        None
+    }
+}
+
+fn sanitize_version(input: &str) -> Option<String> {
+    let clean = input.trim();
+    let re = Regex::new(r"^r\d+\.\d+(?:\.\d+)?(?:[-+][A-Za-z0-9._-]+)?$").ok()?;
+    if re.is_match(clean) {
+        Some(clean.to_string())
+    } else {
+        None
     }
 }
 

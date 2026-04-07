@@ -726,6 +726,134 @@ export interface DiagnosticBlock {
 
 export const DIAGNOSTIC_BLOCKS: DiagnosticBlock[] = [
   {
+    id: "quick-diags",
+    label: "Quick Diags",
+    icon: "⚡",
+    description: "All subsystems, no satellite loopback — runs in ~2 minutes",
+    light_command_ids: [],
+    heavy_command_ids: [
+      "ethernet-check",
+      "ethtool-eth0",
+      "cat-eth0-carrier",
+      "cat-eth0-operstate",
+      "ip-link-eth0",
+      "ip-addr-eth0",
+      "ip-route",
+      "connmanctl-technologies",
+      "connmanctl-services",
+      "connmanctl-state",
+      "ethtool-stats-eth0",
+      "proc-net-dev",
+      "wifi-check",
+      "wifi-signal",
+      "iw-dev-link",
+      "iw-dev-station",
+      "ip-link-wlan0",
+      "ip-addr-wlan0",
+      "cellular-check",
+      "cell-imei",
+      "cell-ccid",
+      "cell-imsi",
+      "cell-hni",
+      "cell-provider",
+      "cell-status",
+      "cell-signal",
+      "cell-apn",
+      "cell-support-at",
+      "version",
+      "sid",
+      "release",
+    ],
+    heavy_script: `(
+echo "===== CONTROLLER INFO ====="
+date
+version
+sid
+
+echo ""
+echo "===== ETH DIAGNOSTICS START ====="
+
+echo ""
+echo "--- FRONTLINE ---"
+ethernet-check
+
+echo ""
+echo "--- LINK / PHY ---"
+ethtool eth0
+cat /sys/class/net/eth0/carrier
+cat /sys/class/net/eth0/operstate
+
+echo ""
+echo "--- INTERFACE ---"
+ip link show eth0
+ip addr show eth0
+
+echo ""
+echo "--- ROUTING / DNS ---"
+ip route
+
+echo ""
+echo "--- CONNMAN ---"
+connmanctl technologies
+connmanctl services
+connmanctl state
+
+echo ""
+echo "--- DRIVER / STATS ---"
+ethtool -S eth0
+cat /proc/net/dev
+
+echo ""
+echo "===== ETH DIAGNOSTICS END ====="
+
+echo ""
+echo "===== WIFI DIAGNOSTICS START ====="
+
+echo ""
+echo "--- FRONTLINE ---"
+wifi-check
+wifi-signal
+
+echo ""
+echo "--- IW ---"
+iw dev wlan0 link
+iw dev wlan0 station dump
+
+echo ""
+echo "--- INTERFACE ---"
+ip link show wlan0
+ip addr show wlan0
+
+echo ""
+echo "===== WIFI DIAGNOSTICS END ====="
+
+echo ""
+echo "===== CELLULAR CONNECTIVITY TEST ====="
+cellular-check
+
+echo ""
+echo "===== BASIC CELL INFO ====="
+cell-imei
+cell-ccid
+cell-imsi
+cell-hni
+cell-provider
+cell-status
+cell-signal
+cell-apn
+
+echo ""
+echo "===== MODEM / RADIO DIAGNOSTICS ====="
+cell-support --no-ofono --at
+
+echo ""
+echo "===== SYSTEM ====="
+version
+sid
+release
+)`,
+  },
+  {
     id: "ethernet",
     label: "Ethernet",
     icon: "🌐",
@@ -1002,9 +1130,9 @@ satellite-check -t
   },
   {
     id: "full-diags",
-    label: "Full Diagnostics",
+    label: "Full Diags + Satellite",
     icon: "🔬",
-    description: "Complete diagnostic suite across all interfaces using the heavy tier. Covers Ethernet link and IP details, Wi-Fi signal and scan, full cellular modem info, satellite visibility, and system identity. Produces a comprehensive baseline suitable for post-install sign-off or hard-to-diagnose issues.",
+    description: "Complete suite including satellite loopback (~12 min total)",
     when_to_run: "New install sign-off, post-repair baseline, or when a site has intermittent issues and you need a full picture.",
     light_command_ids: [],
     heavy_command_ids: [
@@ -1014,6 +1142,99 @@ satellite-check -t
       "satellite-check-loopback-full", "sat-imei",
       "version", "sid", "release",
     ],
+    heavy_script: `(
+echo "===== CONTROLLER INFO ====="
+date
+version
+sid
+
+echo ""
+echo "===== ETH DIAGNOSTICS START ====="
+
+echo ""
+echo "--- FRONTLINE ---"
+ethernet-check
+
+echo ""
+echo "--- LINK / PHY ---"
+ethtool eth0
+cat /sys/class/net/eth0/carrier
+cat /sys/class/net/eth0/operstate
+
+echo ""
+echo "--- INTERFACE ---"
+ip link show eth0
+ip addr show eth0
+
+echo ""
+echo "--- ROUTING / DNS ---"
+ip route
+
+echo ""
+echo "--- CONNMAN ---"
+connmanctl technologies
+connmanctl services
+connmanctl state
+
+echo ""
+echo "--- DRIVER / STATS ---"
+ethtool -S eth0
+cat /proc/net/dev
+
+echo ""
+echo "===== ETH DIAGNOSTICS END ====="
+
+echo ""
+echo "===== WIFI DIAGNOSTICS START ====="
+
+echo ""
+echo "--- FRONTLINE ---"
+wifi-check
+wifi-signal
+
+echo ""
+echo "--- IW ---"
+iw dev wlan0 link
+iw dev wlan0 station dump
+
+echo ""
+echo "--- INTERFACE ---"
+ip link show wlan0
+ip addr show wlan0
+
+echo ""
+echo "===== WIFI DIAGNOSTICS END ====="
+
+echo ""
+echo "===== CELLULAR CONNECTIVITY TEST ====="
+cellular-check
+
+echo ""
+echo "===== BASIC CELL INFO ====="
+cell-imei
+cell-ccid
+cell-imsi
+cell-hni
+cell-provider
+cell-status
+cell-signal
+cell-apn
+
+echo ""
+echo "===== MODEM / RADIO DIAGNOSTICS ====="
+cell-support --no-ofono --at
+
+echo ""
+echo "===== SATELLITE ====="
+satellite-check -t
+sat-imei
+
+echo ""
+echo "===== SYSTEM ====="
+version
+sid
+release
+)`,
     time_warning: "Includes satellite loopback diagnostics. Use 'Full Diags (no satellite)' to skip.",
   },
   {

@@ -1945,12 +1945,10 @@
 }
 
 .diag-card-head {
-  all: unset;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  cursor: pointer;
 }
 
 .diag-card-title-wrap {
@@ -1969,68 +1967,30 @@
   font-weight: 620;
 }
 
-.diag-status-badge {
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  border-radius: 999px;
-  padding: 2px 8px;
+.diag-role-pill-inline {
+  display: inline-flex;
+  align-items: center;
   border: 1px solid var(--border);
   background: var(--bg-2);
-}
-
-.diag-status-badge-healthy {
-  color: var(--success);
-  border-color: color-mix(in srgb, var(--success) 32%, var(--border));
-}
-
-.diag-status-badge-warning {
-  color: var(--warning);
-  border-color: color-mix(in srgb, var(--warning) 35%, var(--border));
-}
-
-.diag-status-badge-error {
-  color: var(--danger);
-  border-color: color-mix(in srgb, var(--danger) 35%, var(--border));
-}
-
-.diag-status-badge-neutral {
-  color: var(--text-secondary);
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 11px;
+  color: var(--text-muted);
 }
 
 .diag-card-head-right {
   display: inline-flex;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
 }
 
-.diag-expand-chip {
+.diag-status-label {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  font-size: 11px;
+  gap: 6px;
   color: var(--text-secondary);
-  border: 1px solid var(--border);
-  background: var(--bg-2);
-  border-radius: 999px;
-  padding: 2px 8px;
-  line-height: 1.2;
-}
-
-.diag-expand-chip.open {
-  color: var(--text-primary);
-  border-color: color-mix(in srgb, var(--accent) 30%, var(--border));
-}
-
-.diag-chevron {
-  color: inherit;
-  font-size: 13px;
-  transition: transform 150ms ease;
-}
-
-.diag-expand-chip.open .diag-chevron {
-  transform: rotate(180deg);
+  font-size: 12px;
+  font-weight: 560;
 }
 
 .diag-card-status-line {
@@ -2077,17 +2037,6 @@
 
 .diag-card-compact .diag-card-subline:empty {
   display: none;
-}
-
-.diag-role-pill {
-  display: inline-flex;
-  align-items: center;
-  border: 1px solid var(--border);
-  background: var(--bg-2);
-  border-radius: 999px;
-  padding: 2px 8px;
-  font-size: 11px;
-  color: var(--text-secondary);
 }
 
 .diag-metric-row {
@@ -2137,22 +2086,8 @@
 .diag-signal-bars.tone-bad i.on { background: var(--danger); }
 
 .diag-card-updated {
-  margin-top: auto;
-  padding-top: 10px;
   color: var(--text-muted);
   font-size: 11px;
-}
-
-.diag-card-action-row {
-  margin-top: 10px;
-  padding-top: 8px;
-  border-top: 1px dashed var(--border);
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  font-size: 11px;
-  color: var(--text-muted);
 }
 
 .diag-details-wrap {
@@ -2207,21 +2142,109 @@
 .diag-card-warning { border-color: color-mix(in srgb, var(--warning) 30%, var(--border)); }
 .diag-card-error { border-color: color-mix(in srgb, var(--danger) 28%, var(--border)); }
 
+.diag-card-footer {
+  margin-top: auto;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-soft);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.diag-card-toggle {
+  border: none;
+  background: none;
+  color: var(--text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 0;
+}
+
+.diag-card-toggle:hover {
+  color: var(--text-primary);
+}
+
+.diag-card-menu-wrap {
+  position: relative;
+}
+
+.diag-card-menu-btn {
+  border: 1px solid var(--border);
+  background: var(--bg-2);
+  color: var(--text-secondary);
+  border-radius: 8px;
+  width: 26px;
+  height: 24px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.diag-card-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  min-width: 210px;
+  z-index: 20;
+  box-shadow: 0 10px 20px color-mix(in srgb, var(--text-primary) 10%, transparent);
+  padding: 6px;
+}
+
+.diag-card-menu-item {
+  width: 100%;
+  border: none;
+  background: transparent;
+  text-align: left;
+  padding: 7px 8px;
+  border-radius: 6px;
+  font-size: 12px;
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+.diag-card-menu-item:hover {
+  background: var(--bg-2);
+}
+
+.diag-card-menu-divider {
+  height: 1px;
+  background: var(--border-soft);
+  margin: 6px 2px;
+}
+
+.diag-card-menu-item-danger {
+  color: var(--danger);
+}
+
 .diag-empty {
   background: var(--bg-1);
   border: 1px solid var(--border);
   border-radius: 12px;
-  padding: 12px 14px;
+  padding: 14px;
   color: var(--text-secondary);
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 8px;
 }
 
 .diag-empty-title {
-  font-size: 13px;
-  font-weight: 600;
+  font-size: 14px;
+  font-weight: 620;
   color: var(--text-primary);
+}
+
+.diag-empty-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.diag-empty-sub {
+  font-size: 12px;
+  color: var(--text-muted);
 }
 
 .diag-copy-link {
@@ -2855,28 +2878,4 @@
 .report-quick-action-pill:hover {
   border-color: var(--accent);
   color: var(--accent);
-}
-
-/* ── Per-card clear button ─────────────────────────────────────────────────── */
-
-.diag-card-clear-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 18px;
-  height: 18px;
-  border-radius: 4px;
-  border: 1px solid var(--border);
-  background: transparent;
-  color: var(--text-muted);
-  font-size: 12px;
-  line-height: 1;
-  cursor: pointer;
-  transition: border-color 100ms, color 100ms, background 100ms;
-}
-
-.diag-card-clear-btn:hover {
-  border-color: var(--danger-border);
-  color: var(--danger-ink);
-  background: var(--danger-bg);
 }

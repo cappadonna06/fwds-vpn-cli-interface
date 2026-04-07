@@ -13,11 +13,11 @@ import { StatusPillState } from "./components/shell/StatusPill";
 import "./App.css";
 import "./components/tabs/tabs.css";
 
-type Tab = "session" | "console" | "wizard" | "report" | "diagnostics";
+type Tab = "session" | "commands" | "wizard" | "report" | "diagnostics";
 
 const TABS: { id: Tab; label: string }[] = [
   { id: "session", label: "Connect" },
-  { id: "console", label: "Commands" },
+  { id: "commands", label: "Commands" },
   { id: "wizard", label: "Setup Wizard" },
   { id: "diagnostics", label: "Diagnostics" },
   { id: "report", label: "Report" },
@@ -30,10 +30,15 @@ interface AppStatus {
   connection_mode?: string;
   local_serial_device?: string | null;
 }
-interface HeaderDiagnosticState {
-  system?: { sid?: string | null; version?: string | null } | null;
-  cellular?: { controller_sid?: string | null } | null;
-  wifi?: { controller_sid?: string | null } | null;
+
+interface SystemInfo {
+  sid: string | null;
+  version: string | null;
+  release_date: string | null;
+}
+
+interface DiagnosticStateSnapshot {
+  system: SystemInfo | null;
 }
 
 function mapVpnState(vpnPhase: string): StatusPillState {
@@ -63,8 +68,10 @@ export default function App() {
     shell_phase: "disconnected",
     controller_ip: null,
   });
-  const [localSid, setLocalSid] = useState<string | null>(null);
-  const [systemVersion, setSystemVersion] = useState<string | null>(null);
+  const [systemInfo, setSystemInfo] = useState<{ sid: string | null; version: string | null }>({
+    sid: null,
+    version: null,
+  });
 
   useEffect(() => {
     const appWindow = getCurrentWindow();
@@ -91,17 +98,15 @@ export default function App() {
       try {
         const s = await invoke<AppStatus>("get_app_state");
         setAppStatus(s);
-        const diag = await invoke<HeaderDiagnosticState>("get_diagnostic_state");
-        setSystemVersion(diag.system?.version ?? null);
-        if (s.connection_mode === "local") {
-          const sid = diag.system?.sid
-            ?? diag.cellular?.controller_sid
-            ?? diag.wifi?.controller_sid
-            ?? null;
-          setLocalSid(sid);
-        } else {
-          setLocalSid(null);
-        }
+
+        const diagData = await invoke<DiagnosticStateSnapshot>("get_diagnostic_state");
+        const rawSid = diagData.system?.sid ?? "";
+        const rawVersion = diagData.system?.version ?? "";
+
+        const sid = /^\d{8}$/.test(rawSid) ? rawSid : null;
+        const version = /^r\d+\.\d+/.test(rawVersion) ? rawVersion : null;
+
+        setSystemInfo({ sid, version });
       } catch {
         /* ignore */
       }
@@ -116,11 +121,8 @@ export default function App() {
   const vpnState = mapVpnState(appStatus.vpn_phase);
   const localState = mapLocalState(appStatus.connection_mode, appStatus.local_serial_device);
 
-  const controllerDisplay = localSid ?? appStatus.controller_ip ?? appStatus.local_serial_device ?? "No controller";
-  const controllerValid =
-    Boolean(localSid) ||
-    Boolean(appStatus.controller_ip) ||
-    Boolean(appStatus.local_serial_device);
+  const controllerDisplay = appStatus.controller_ip ?? appStatus.local_serial_device ?? "No controller";
+  const controllerValid = Boolean(appStatus.controller_ip) || Boolean(appStatus.local_serial_device);
 
   return (
     <div className="app">
@@ -131,7 +133,8 @@ export default function App() {
         localState={localState}
         controllerDisplay={controllerDisplay}
         controllerValid={controllerValid}
-        systemVersion={systemVersion}
+        systemSid={systemInfo.sid}
+        systemVersion={systemInfo.version}
       />
 
       <div className="app-shell">
@@ -152,9 +155,9 @@ export default function App() {
 
         <main className="app-body">
           <div style={{ display: activeTab === "session" ? "contents" : "none" }}>
-            <SessionTab />
+            <SessionTab onControllerConnected={() => setActiveTab("commands")} />
           </div>
-          <div style={{ display: activeTab === "console" ? "contents" : "none" }}>
+          <div style={{ display: activeTab === "commands" ? "contents" : "none" }}>
             <CommandsTab />
           </div>
           <div style={{ display: activeTab === "wizard" ? "contents" : "none" }}>
