@@ -510,7 +510,10 @@ function DiagCard({
       <div className="diag-card-head">
         <div className="diag-card-title-wrap">
           <span className="diag-card-icon" aria-hidden>{icon}</span>
-          <span className="diag-card-title">{title}</span>
+          <span className="diag-card-title">
+            {title}
+            {role ? <span className="diag-card-role-inline"> ({role})</span> : null}
+          </span>
         </div>
         <div className="diag-card-head-right">
           <span className="diag-status-label">
@@ -573,7 +576,6 @@ function DiagCard({
           </span>
         )}
         {cardSignalLabel && <span>{cardSignalLabel}</span>}
-        {role && <span className="diag-role-pill">{role}</span>}
       </div>
 
       {expanded && (
