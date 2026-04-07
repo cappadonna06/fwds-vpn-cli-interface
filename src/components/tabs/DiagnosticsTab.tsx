@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { DIAGNOSTIC_BLOCKS, DiagnosticBlock } from "../../types/commands";
 
@@ -59,6 +59,7 @@ interface CopsNetwork {
   long_name: string;
   numeric: string;
   act: number;
+  resolved_name: string;
 }
 
 interface CellularDiagnostic {
@@ -114,16 +115,6 @@ interface CellularDiagnostic {
   cellular_disabled?: boolean;
   no_service?: boolean;
   sim_present?: boolean;
-  detected_networks?: CopsNetwork[];
-  cops_scan_attempted?: boolean;
-  cops_scan_completed?: boolean;
-  cops_scan_failed?: boolean;
-  cops_scan_empty?: boolean;
-  best_network_code?: string | null;
-  best_network_name?: string | null;
-  nwscanmode?: number | null;
-  sim_matches_detected?: boolean;
-  provider?: string | null;
 }
 
 interface SatelliteDiagnostic {
@@ -190,12 +181,41 @@ interface SystemDiagnostic {
   release_date?: string | null;
 }
 
+type SimPickerRecommendation =
+  | "NotRun"
+  | "ScanFailed"
+  | "DeadZone"
+  | "KeepCurrent"
+  | "WeakButBest"
+  | { SwapTo: string };
+
+interface SimPickerDiagnostic {
+  scan_attempted: boolean;
+  scan_completed: boolean;
+  scan_failed: boolean;
+  scan_empty: boolean;
+  full_block_run: boolean;
+  installed_iccid?: string | null;
+  installed_imsi?: string | null;
+  installed_carrier_code?: string | null;
+  installed_carrier_name?: string | null;
+  detected_networks: CopsNetwork[];
+  nwscanmode?: number | null;
+  best_network_code?: string | null;
+  best_network_name?: string | null;
+  installed_carrier_detected: boolean;
+  recommendation: SimPickerRecommendation;
+  recommendation_detail: string;
+  last_updated?: string | null;
+}
+
 interface DiagnosticState {
   wifi?: WifiDiagnostic | null;
   cellular?: CellularDiagnostic | null;
   satellite?: SatelliteDiagnostic | null;
   ethernet?: EthernetDiagnostic | null;
   system?: SystemDiagnostic | null;
+  sim_picker?: SimPickerDiagnostic | null;
   last_updated?: string | null;
   session_has_data?: boolean;
 }
@@ -221,7 +241,6 @@ interface DiagCardProps {
   copied?: boolean;
   compact?: boolean;
   onClear?: () => void;
-  extraContent?: ReactNode;
 }
 
 function resolveBlockScript(block: DiagnosticBlock, tier: "light" | "heavy"): string {
@@ -257,6 +276,100 @@ function resolve_carrier_ts(code: string): string {
   if (att.includes(code)) return "AT&T";
   if (code === "313100") return "FirstNet (AT&T)";
   return `Carrier (${code})`;
+}
+
+const ALL_CARRIERS = [
+  { name: "AT&T",     codes: ["310410","310380","310980","311180","313100","310030","310560","310680"] },
+  { name: "T-Mobile", codes: ["310260","310026","310490","310660","312250","310230","310240","310250"] },
+  { name: "Verizon",  codes: ["311270","311271","311272","311273","311274","311275","311276","311277",
+                               "311278","311279","311280","311480","311481","311482","311483","311484",
+                               "311485","311486","311487","311488","311489"] },
+];
+
+function simPickerHealth(sp?: SimPickerDiagnostic | null): HealthTone {
+  if (!sp) return "neutral";
+  const rec = sp.recommendation;
+  if (typeof rec === "string") {
+    if (rec === "NotRun" || rec === "DeadZone") return "neutral";
+    if (rec === "ScanFailed" || rec === "WeakButBest") return "warning";
+    if (rec === "KeepCurrent") return "healthy";
+  }
+  // SwapTo
+  return sp.installed_carrier_detected ? "warning" : "error";
+}
+
+function simPickerBadge(sp?: SimPickerDiagnostic | null): string {
+  if (!sp || !sp.scan_attempted) return "Not run";
+  if (sp.scan_failed) return "Scan failed";
+  if (sp.scan_empty) return "Dead zone";
+  const rec = sp.recommendation;
+  if (typeof rec === "object" && "SwapTo" in rec) return "Swap SIM";
+  if (rec === "KeepCurrent") return "Keep SIM";
+  return "Done";
+}
+
+function simPickerPrimary(sp?: SimPickerDiagnostic | null): string {
+  if (!sp || !sp.scan_attempted) return "Check which carrier has coverage here";
+  if (sp.scan_failed) return "Network scan failed";
+  if (sp.scan_empty) return "No carriers detected";
+  const rec = sp.recommendation;
+  if (typeof rec === "object" && "SwapTo" in rec) {
+    return sp.installed_carrier_detected
+      ? `${sp.installed_carrier_name ?? "Installed"} weak · Install ${rec.SwapTo} SIM`
+      : `${sp.installed_carrier_name ?? "Installed"} not detected · Install ${rec.SwapTo} SIM`;
+  }
+  if (rec === "KeepCurrent") {
+    return `${sp.installed_carrier_name ?? "Installed"} · Keep current SIM`;
+  }
+  return sp.recommendation_detail || "Scan complete";
+}
+
+function simPickerSecondary(sp?: SimPickerDiagnostic | null): string | null {
+  if (!sp || !sp.scan_attempted) return "Copy the command block, run in terminal, then return here.";
+  if (!sp.recommendation_detail) return null;
+  return sp.recommendation_detail;
+}
+
+function buildSimPickerSections(sp?: SimPickerDiagnostic | null): DiagSection[] {
+  if (!sp || !sp.scan_attempted) {
+    return [{ title: "Status", rows: [{ label: "Scan", value: "Not run" }] }];
+  }
+
+  const rows: DiagRow[] = [];
+
+  if (sp.scan_failed) {
+    rows.push({ label: "Scan", value: "Failed" });
+    if (sp.nwscanmode === 1) rows.push({ label: "Note", value: "Modem in LTE-only mode — run setup-cellular to reset" });
+    return [{ title: "Scan", rows }];
+  }
+
+  if (sp.scan_empty) {
+    rows.push({ label: "Result", value: "No carriers detected" });
+    rows.push({ label: "Next step", value: "Check antenna placement and sky view" });
+    return [{ title: "Scan", rows }];
+  }
+
+  // Carrier list: show all three major carriers
+  const networkRows: DiagRow[] = ALL_CARRIERS.map(carrier => {
+    const detected = sp.detected_networks.find(n => carrier.codes.includes(n.numeric));
+    const label = detected
+      ? (detected.stat === 1 ? "Available" : detected.stat === 2 ? "Connected" : "Detected")
+      : "Not seen";
+    return { label: carrier.name, value: label };
+  });
+
+  const installedRows: DiagRow[] = [
+    { label: "Installed SIM", value: sp.installed_carrier_name ?? sp.installed_carrier_code ?? "Unknown" },
+    { label: "Installed detected", value: sp.installed_carrier_detected ? "Yes" : "No" },
+  ];
+  if (sp.best_network_name) {
+    installedRows.push({ label: "Recommended", value: `Install ${sp.best_network_name} SIM` });
+  }
+
+  return [
+    { title: "Carriers scanned", rows: networkRows },
+    { title: "Recommendation", rows: installedRows },
+  ];
 }
 
 function signalLabel(score?: number | null): string {
@@ -540,7 +653,6 @@ function DiagCard({
   copied,
   compact,
   onClear,
-  extraContent,
 }: DiagCardProps) {
   const [menuOpen, setMenuOpen] = useState(false);
 
@@ -632,7 +744,6 @@ function DiagCard({
               </div>
             </section>
           ))}
-          {extraContent}
         </div>
       )}
 
@@ -654,12 +765,14 @@ export default function DiagnosticsTab() {
     cellular: false,
     satellite: false,
     ethernet: false,
+    sim_picker: false,
   });
   const [cardUpdatedAt, setCardUpdatedAt] = useState<Record<string, string | null>>({
     wifi: null,
     cellular: null,
     satellite: null,
     ethernet: null,
+    sim_picker: null,
   });
   const prevCardsRef = useRef<Record<string, string>>({
     wifi: "",
@@ -685,6 +798,7 @@ export default function DiagnosticsTab() {
           cellular: JSON.stringify(state.cellular ?? null),
           satellite: JSON.stringify(state.satellite ?? null),
           ethernet: JSON.stringify(state.ethernet ?? null),
+          sim_picker: JSON.stringify(state.sim_picker ?? null),
         };
         const nextSystem = JSON.stringify(state.system ?? null);
 
@@ -719,6 +833,7 @@ export default function DiagnosticsTab() {
   const satellite = diag?.satellite;
   const ethernet = diag?.ethernet;
   const system = diag?.system;
+  const simPicker = diag?.sim_picker;
   const wifiSummary = summarizeWifi(wifi);
   const cellularSummary = summarizeCellular(cellular);
   const satelliteSummary = summarizeSatellite(satellite);
@@ -742,8 +857,8 @@ export default function DiagnosticsTab() {
     });
     setLastUpdated(null);
     setSystemUpdatedAt(null);
-    setCardUpdatedAt({ wifi: null, cellular: null, satellite: null, ethernet: null });
-    prevCardsRef.current = { wifi: "", cellular: "", satellite: "", ethernet: "" };
+    setCardUpdatedAt({ wifi: null, cellular: null, satellite: null, ethernet: null, sim_picker: null });
+    prevCardsRef.current = { wifi: "", cellular: "", satellite: "", ethernet: "", sim_picker: "" };
     prevSystemRef.current = "";
     setCopiedCommandId(null);
   }
@@ -843,95 +958,27 @@ export default function DiagnosticsTab() {
             setDiag(prev => prev ? { ...prev, cellular: null } : prev);
             setCardUpdatedAt(prev => ({ ...prev, cellular: null }));
           }}
-          extraContent={cellular && (cellular.no_service || cellular.modem_unreachable) && cellular.cops_scan_attempted ? (
-            <div className="sim-picker">
-              <div className="diag-section-label">SIM PICKER</div>
+        />
 
-              {cellular.cops_scan_failed && (
-                <div className="sim-picker-state sim-picker-failed">
-                  <span className="sim-picker-icon">⚠</span>
-                  <div>
-                    <div className="sim-picker-headline">Network scan failed</div>
-                    <div className="sim-picker-detail">
-                      {cellular.nwscanmode === 1
-                        ? "Modem is in LTE-only mode — run setup-cellular to reset scan mode"
-                        : "Modem could not complete network scan — try rebooting controller"}
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {cellular.cops_scan_completed && cellular.cops_scan_empty && (
-                <div className="sim-picker-state sim-picker-empty">
-                  <span className="sim-picker-icon">📡</span>
-                  <div>
-                    <div className="sim-picker-headline">No networks detected</div>
-                    <div className="sim-picker-detail">
-                      No cellular signal at this location. Check antenna placement
-                      and sky view. Try moving the antenna or a different location.
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {cellular.cops_scan_completed && !cellular.cops_scan_empty && (
-                <>
-                  <div className="sim-picker-networks">
-                    {(cellular.detected_networks ?? []).map((net, i) => (
-                      <div key={i} className={`sim-picker-network sim-picker-network-${
-                        net.stat === 1 ? "available"
-                        : net.stat === 2 ? "current"
-                        : net.stat === 3 ? "detected"
-                        : "unknown"
-                      }`}>
-                        <span className="sim-picker-net-stat">
-                          {net.stat === 1 ? "●" : net.stat === 2 ? "✓" : "○"}
-                        </span>
-                        <span className="sim-picker-net-name">
-                          {resolve_carrier_ts(net.numeric)}
-                        </span>
-                        <span className="sim-picker-net-code">{net.numeric}</span>
-                        <span className="sim-picker-net-label">
-                          {net.stat === 1 ? "Available"
-                          : net.stat === 2 ? "Connected"
-                          : net.stat === 3 ? "Detected"
-                          : "Unknown"}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-
-                  <div className="sim-picker-installed">
-                    Installed SIM: {cellular.operator_name ?? cellular.provider_code ?? "Verizon"} ·{" "}
-                    {cellular.sim_matches_detected
-                      ? "detected at this site"
-                      : "not detected at this site"}
-                  </div>
-
-                  {cellular.best_network_name && !cellular.sim_matches_detected && (
-                    <div className="sim-picker-recommendation">
-                      <span className="sim-picker-rec-label">RECOMMENDED SIM</span>
-                      <span className="sim-picker-rec-value">
-                        Install {cellular.best_network_name} SIM
-                      </span>
-                      <span className="sim-picker-rec-detail">
-                        {(cellular.detected_networks ?? []).find(n => n.stat === 1)
-                          ? `${cellular.best_network_name} signal available at this location`
-                          : `${cellular.best_network_name} detected — install SIM to confirm service`}
-                      </span>
-                    </div>
-                  )}
-
-                  {cellular.sim_matches_detected && (
-                    <div className="sim-picker-recommendation sim-picker-rec-mismatch">
-                      Installed SIM carrier is detectable but not attaching.
-                      Check APN configuration or try rebooting.
-                    </div>
-                  )}
-                </>
-              )}
-            </div>
-          ) : undefined}
+        <DiagCard
+          title="SIM Picker"
+          icon="📶"
+          health={simPickerHealth(simPicker)}
+          statusLabel={simPickerBadge(simPicker)}
+          primaryLine={simPickerPrimary(simPicker)}
+          secondaryLine={simPickerSecondary(simPicker)}
+          sections={buildSimPickerSections(simPicker)}
+          expanded={expanded.sim_picker}
+          onToggle={() => setExpanded((p) => ({ ...p, sim_picker: !p.sim_picker }))}
+          updatedAt={cardUpdatedAt.sim_picker}
+          onCopyCommand={() => copyDiagnosticBlock("sim-picker")}
+          copied={copiedCommandId === "sim-picker"}
+          compact={!simPicker?.scan_attempted}
+          onClear={simPicker ? async () => {
+            await invoke("clear_diagnostic_interface", { interface: "sim_picker" }).catch(() => {});
+            setDiag(prev => prev ? { ...prev, sim_picker: null } : prev);
+            setCardUpdatedAt(prev => ({ ...prev, sim_picker: null }));
+          } : undefined}
         />
 
         <DiagCard

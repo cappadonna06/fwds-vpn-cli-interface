@@ -777,7 +777,6 @@ export const DIAGNOSTIC_BLOCKS: DiagnosticBlock[] = [
       "cell-signal",
       "cell-apn",
       "cell-support-at",
-      "cell-support-scan",
       "version",
       "sid",
       "release",
@@ -863,10 +862,6 @@ cell-apn
 echo ""
 echo "===== MODEM / RADIO DIAGNOSTICS ====="
 cell-support --no-ofono --at
-
-echo ""
-echo "===== CARRIER SCAN ====="
-cell-support --no-ofono --at --scan
 
 echo ""
 echo "===== SYSTEM ====="
@@ -1030,7 +1025,6 @@ echo "===== WIFI DIAGNOSTICS END ====="
       "ip-route",
       "proc-net-dev",
       "cell-support-at",
-      "cell-support-scan",
     ],
     heavy_script: `(
 echo "===== CONTROLLER INFO ====="
@@ -1069,10 +1063,26 @@ cat /proc/net/dev
 echo ""
 echo "===== MODEM / RADIO DIAGNOSTICS ====="
 cell-support --no-ofono --at
+)`,
+  },
+  {
+    id: "sim-picker",
+    label: "SIM Picker",
+    icon: "📶",
+    description: "Carrier scan — which of AT&T, T-Mobile, Verizon is best at this location (~3 min)",
+    when_to_run: "When cellular has no service or weak signal and you want to know if a different carrier SIM would work better.",
+    time_warning: "Carrier scan takes approximately 3 minutes.",
+    light_command_ids: [],
+    heavy_command_ids: ["cell-support-scan"],
+    heavy_script: `(
+echo "===== SIM PICKER START ====="
+date
+version
+sid
 
-echo ""
-echo "===== CARRIER SCAN ====="
 cell-support --no-ofono --at --scan
+
+echo "===== SIM PICKER END ====="
 )`,
   },
   {

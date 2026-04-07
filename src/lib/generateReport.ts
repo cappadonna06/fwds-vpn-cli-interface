@@ -42,13 +42,22 @@ interface CellularDiag {
   modem_not_present?: boolean;
   modem_unreachable?: boolean;
   no_service?: boolean;
-  cops_scan_attempted?: boolean;
-  cops_scan_completed?: boolean;
-  cops_scan_failed?: boolean;
-  cops_scan_empty?: boolean;
+}
+
+type SimPickerRec =
+  | "NotRun" | "ScanFailed" | "DeadZone" | "KeepCurrent" | "WeakButBest"
+  | { SwapTo: string };
+
+interface SimPickerDiag {
+  scan_attempted: boolean;
+  scan_completed: boolean;
+  scan_failed: boolean;
+  scan_empty: boolean;
+  installed_carrier_name?: string | null;
+  installed_carrier_detected: boolean;
   best_network_name?: string | null;
-  sim_matches_detected?: boolean;
-  detected_networks?: Array<{ stat: number; numeric: string }>;
+  recommendation: SimPickerRec;
+  recommendation_detail: string;
   nwscanmode?: number | null;
 }
 
@@ -70,6 +79,7 @@ interface DiagnosticState {
   cellular?: CellularDiag | null;
   satellite?: SatelliteDiag | null;
   system?: SystemDiag | null;
+  sim_picker?: SimPickerDiag | null;
 }
 
 interface AppState {
@@ -287,38 +297,31 @@ export function generateRecommendedActions(
           dismissed: false, checked: false, custom: false,
         });
       } else if (noService && cell.sim_inserted) {
-        if (cell.cops_scan_failed) {
-          const scanModeNote = cell.nwscanmode === 1
-            ? " Modem locked to LTE-only — run setup-cellular to reset."
-            : "";
+        // If SIM Picker has already run and recommends a swap, surface that
+        const sp = diag.sim_picker;
+        if (sp?.scan_completed && !sp.scan_empty) {
+          const rec = sp.recommendation;
+          if (typeof rec === "object" && "SwapTo" in rec) {
+            actions.push({
+              id: mkId(), interface: "Cellular",
+              text: `Install ${rec.SwapTo} SIM`,
+              detail: sp.recommendation_detail,
+              dismissed: false, checked: false, custom: false,
+            });
+          } else if (sp.scan_empty) {
+            actions.push({
+              id: mkId(), interface: "Cellular",
+              text: "No carrier coverage at this location",
+              detail: "SIM Picker found no detectable carriers. Check antenna and sky view.",
+              dismissed: false, checked: false, custom: false,
+            });
+          }
+        } else if (!sp?.scan_attempted) {
+          // Suggest running SIM Picker
           actions.push({
             id: mkId(), interface: "Cellular",
-            text: "Reboot controller — network scan failed",
-            detail: `Modem could not scan for networks.${scanModeNote}`,
-            dismissed: false, checked: false, custom: false,
-          });
-        } else if (cell.cops_scan_completed && cell.cops_scan_empty) {
-          actions.push({
-            id: mkId(), interface: "Cellular",
-            text: "No cellular signal at this location",
-            detail: "No networks detected after full scan. Check antenna placement and sky view.",
-            dismissed: false, checked: false, custom: false,
-          });
-        } else if (cell.best_network_name && !cell.sim_matches_detected) {
-          const hasStrong = cell.detected_networks?.some(n => n.stat === 1) ?? false;
-          actions.push({
-            id: mkId(), interface: "Cellular",
-            text: `Install ${cell.best_network_name} SIM`,
-            detail: hasStrong
-              ? `${cell.best_network_name} signal available at this location. Verizon not detected.`
-              : `${cell.best_network_name} detected at this location. Verizon not detected.`,
-            dismissed: false, checked: false, custom: false,
-          });
-        } else if (!cell.cops_scan_attempted) {
-          actions.push({
-            id: mkId(), interface: "Cellular",
-            text: "Run network scan to identify available carriers",
-            detail: "Run cell-support --no-ofono --at --scan to check which carriers are visible.",
+            text: "Run SIM Picker to check carrier coverage",
+            detail: "No service detected. Copy the SIM Picker command block to find out which carrier has coverage at this location.",
             dismissed: false, checked: false, custom: false,
           });
         } else {

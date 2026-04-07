@@ -3,7 +3,8 @@ use std::collections::HashMap;
 
 use crate::{
     CellularDiagnostic, CopsNetwork, DiagStatus, DiagnosticState, EthernetDiagnostic,
-    SatelliteDiagnostic, SystemDiagnostic, WifiDiagnostic,
+    SatelliteDiagnostic, SimPickerDiagnostic, SimPickerRecommendation, SystemDiagnostic,
+    WifiDiagnostic,
 };
 
 #[derive(Clone, Debug)]
@@ -128,6 +129,16 @@ pub fn parse_log_into_state(log: &str, state: &mut DiagnosticState) {
     }
     if let Some(next) = satellite {
         state.satellite = Some(next);
+    }
+
+    // SIM Picker: look for the block sentinel or any cell-support --scan output
+    let sim_picker_block = find_latest_body_contains(&latest, &["===== sim picker start ====="])
+        .or_else(|| find_latest(&latest, &["cell-support --no-ofono --at --scan"]));
+    if let Some(block) = sim_picker_block {
+        let sp = parse_sim_picker(block);
+        if sp.scan_attempted || sp.full_block_run {
+            state.sim_picker = Some(sp);
+        }
     }
     if ethernet.is_some() {
         if let Some(next) = ethernet {
@@ -1176,15 +1187,6 @@ fn default_cellular() -> CellularDiagnostic {
         cellular_disabled: false,
         no_service: false,
         sim_present: false,
-        detected_networks: vec![],
-        cops_scan_attempted: false,
-        cops_scan_completed: false,
-        cops_scan_failed: false,
-        cops_scan_empty: false,
-        best_network_code: None,
-        best_network_name: None,
-        nwscanmode: None,
-        sim_matches_detected: false,
     }
 }
 
@@ -2259,7 +2261,7 @@ fn parse_cell_support_at(text: &str, diag: &mut CellularDiagnostic) {
     }
     diag.attached = extract_regex(text, r"\+CGATT:\s*(\d)").map(|v| v == "1");
     diag.operator_name =
-        extract_regex(text, r#"\+COPS:\s*\d+,\d+,"([^"]+)""#).map(|v| v.trim().to_string());
+        extract_regex(text, r#"\+COPS:.*?"([^"]+)""#).map(|v| v.trim().to_string());
     if let Some(mode) = extract_regex(text, r#"\+QCSQ:\s*"([^"]+)""#) {
         diag.qcsq = Some(mode.clone());
         if mode != "NOSERVICE" {
@@ -2285,36 +2287,6 @@ fn parse_cell_support_at(text: &str, diag: &mut CellularDiagnostic) {
         extract_regex(text, r"\+CGPADDR:\s*1,(\d+\.\d+\.\d+\.\d+)").filter(|ip| ip != "0.0.0.0");
     diag.at_apn = extract_regex(text, r"\+CGCONTRDP:.*?,[^,]*,[^,]*,[^,]*,[^,]*,([^,\s]+)")
         .or_else(|| extract_regex(text, r#"\+CGCONTRDP:.*?(vzwinternet|super)"#));
-
-    // COPS network scan detection
-    diag.cops_scan_attempted = text.contains("Scanning...");
-
-    // Parse COPS scan result line (contains quoted tuples, not just "+COPS: 0")
-    for line in text.lines() {
-        if line.starts_with("+COPS:") && line.contains('"') && line.contains('(') {
-            diag.detected_networks = parse_cops_scan(line);
-        }
-    }
-
-    // Detect nwscanmode from +QCFG: "nwscanmode",N
-    diag.nwscanmode = Regex::new(r#"\+QCFG:\s*"nwscanmode",(\d+)"#)
-        .ok()
-        .and_then(|re| re.captures(text))
-        .and_then(|cap| cap[1].parse::<u8>().ok());
-
-    // Determine scan outcome flags
-    if text.contains("CME ERROR: operation not allowed")
-        || (diag.cops_scan_attempted && text.contains("\nFailed\n"))
-    {
-        diag.cops_scan_failed = true;
-        diag.cops_scan_completed = false;
-    } else if diag.cops_scan_attempted {
-        diag.cops_scan_completed = true;
-        diag.cops_scan_empty = diag.detected_networks.is_empty();
-    }
-
-    // Determine best network recommendation
-    determine_best_network(diag);
 }
 
 fn parse_cops_scan(line: &str) -> Vec<CopsNetwork> {
@@ -2324,11 +2296,14 @@ fn parse_cops_scan(line: &str) -> Vec<CopsNetwork> {
         Err(_) => return networks,
     };
     for cap in re.captures_iter(line) {
+        let numeric = cap[4].to_string();
+        let resolved_name = resolve_carrier(&numeric);
         networks.push(CopsNetwork {
             stat: cap[1].parse().unwrap_or(0),
             long_name: cap[2].to_string(),
-            numeric: cap[4].to_string(),
+            numeric,
             act: cap[5].parse().unwrap_or(0),
+            resolved_name,
         });
     }
     networks
@@ -2350,34 +2325,149 @@ fn resolve_carrier(code: &str) -> String {
     }
 }
 
-fn determine_best_network(diag: &mut CellularDiagnostic) {
-    if diag.detected_networks.is_empty() {
+pub fn parse_sim_picker(block: &str) -> SimPickerDiagnostic {
+    let mut diag = SimPickerDiagnostic::default();
+    diag.full_block_run = block.to_ascii_lowercase().contains("sim picker start");
+    parse_installed_sim(block, &mut diag);
+    determine_scan_outcome(block, &mut diag);
+    // nwscanmode: +QCFG: "nwscanmode",N
+    diag.nwscanmode = Regex::new(r#"\+QCFG:\s*"nwscanmode",(\d+)"#)
+        .ok()
+        .and_then(|re| re.captures(block))
+        .and_then(|cap| cap[1].parse::<u8>().ok());
+    determine_recommendation(&mut diag);
+    diag
+}
+
+fn parse_installed_sim(at_block: &str, diag: &mut SimPickerDiagnostic) {
+    // ICCID from +QCCID: 89148000008235254186
+    if let Some(iccid) = extract_regex(at_block, r"\+QCCID:\s*(\d{15,20})") {
+        diag.installed_iccid = Some(iccid);
+    }
+    // IMSI — 15-digit number starting with 3, appears alone on a line
+    if let Some(imsi) = extract_regex(at_block, r"(?m)^(3\d{14})$") {
+        let carrier_code = imsi[..imsi.len().min(6)].to_string();
+        let carrier_name = resolve_carrier(&carrier_code);
+        diag.installed_imsi = Some(imsi);
+        diag.installed_carrier_code = Some(carrier_code);
+        diag.installed_carrier_name = Some(carrier_name);
+    }
+}
+
+fn determine_scan_outcome(at_block: &str, diag: &mut SimPickerDiagnostic) {
+    diag.scan_attempted = at_block.contains("Scanning...");
+
+    if at_block.contains("CME ERROR: operation not allowed") {
+        diag.scan_failed = true;
+        diag.scan_completed = false;
         return;
     }
-    // Priority: stat=1 (available) > stat=3 (forbidden/detected) > stat=0 (unknown)
-    let best = diag.detected_networks.iter().min_by_key(|n| match n.stat {
-        1 => 0,
-        3 => 1,
-        0 => 2,
-        _ => 3,
-    });
-    if let Some(network) = best {
-        diag.best_network_code = Some(network.numeric.clone());
-        diag.best_network_name = Some(resolve_carrier(&network.numeric));
+
+    for line in at_block.lines() {
+        if line.starts_with("+COPS:") && line.contains('"') {
+            let networks = parse_cops_scan(line);
+            if !networks.is_empty() {
+                diag.detected_networks = networks;
+                diag.scan_completed = true;
+                diag.scan_empty = false;
+                return;
+            }
+        }
     }
-    // Check if installed SIM carrier appears in detected list.
-    // hni (Home Network Identity = MCC+MNC) is the most reliable field for the SIM's home carrier.
-    // Fall back to the first 6 chars of imsi.
-    let installed_code = diag.hni.clone().or_else(|| {
-        diag.imsi
-            .as_ref()
-            .map(|s| s[..s.len().min(6)].to_string())
-    });
-    diag.sim_matches_detected = match &installed_code {
-        Some(code) => diag.detected_networks.iter().any(|n| &n.numeric == code),
-        None => false,
-    };
+
+    if diag.scan_attempted {
+        diag.scan_completed = true;
+        diag.scan_empty = true;
+    }
 }
+
+fn determine_recommendation(diag: &mut SimPickerDiagnostic) {
+    if !diag.scan_attempted {
+        diag.recommendation = SimPickerRecommendation::NotRun;
+        diag.recommendation_detail = "Run the SIM Picker scan to check available carriers.".into();
+        return;
+    }
+
+    if diag.scan_failed {
+        diag.recommendation = SimPickerRecommendation::ScanFailed;
+        diag.recommendation_detail = if diag.nwscanmode == Some(1) {
+            "Modem locked to LTE-only mode. Run setup-cellular to reset scan mode, then retry.".into()
+        } else {
+            "Network scan failed. Reboot controller and try again.".into()
+        };
+        return;
+    }
+
+    if diag.scan_empty {
+        diag.recommendation = SimPickerRecommendation::DeadZone;
+        diag.recommendation_detail =
+            "No carriers detected at this location. No SIM will provide service here. Check antenna placement and sky view.".into();
+        return;
+    }
+
+    let installed_code = diag.installed_carrier_code.clone().unwrap_or_default();
+    let installed_name = resolve_carrier(&installed_code);
+    diag.installed_carrier_detected = diag
+        .detected_networks
+        .iter()
+        .any(|n| n.numeric == installed_code || n.resolved_name == installed_name);
+
+    // Best alternative: prefer stat=1 > stat=3, exclude installed carrier
+    let best_alt = diag
+        .detected_networks
+        .iter()
+        .filter(|n| n.resolved_name != installed_name)
+        .min_by_key(|n| match n.stat {
+            1 => 0,
+            3 => 1,
+            0 => 2,
+            _ => 3,
+        })
+        .cloned();
+
+    if diag.installed_carrier_detected {
+        if let Some(ref alt) = best_alt {
+            if alt.stat == 1 {
+                diag.recommendation = SimPickerRecommendation::SwapTo(alt.resolved_name.clone());
+                diag.best_network_code = Some(alt.numeric.clone());
+                diag.best_network_name = Some(alt.resolved_name.clone());
+                diag.recommendation_detail = format!(
+                    "{} is available at this location and may provide better service.",
+                    alt.resolved_name
+                );
+                return;
+            }
+        }
+        diag.recommendation = SimPickerRecommendation::KeepCurrent;
+        let only = best_alt.is_none();
+        diag.recommendation_detail = if only {
+            format!(
+                "{} is the only carrier detected at this location.",
+                diag.installed_carrier_name.as_deref().unwrap_or("Installed carrier")
+            )
+        } else {
+            format!(
+                "{} is detected at this location. No clearly better alternative found.",
+                diag.installed_carrier_name.as_deref().unwrap_or("Installed carrier")
+            )
+        };
+    } else if let Some(ref alt) = best_alt {
+        diag.recommendation = SimPickerRecommendation::SwapTo(alt.resolved_name.clone());
+        diag.best_network_code = Some(alt.numeric.clone());
+        diag.best_network_name = Some(alt.resolved_name.clone());
+        diag.recommendation_detail = format!(
+            "{} not detected. {} is available — install {} SIM.",
+            diag.installed_carrier_name.as_deref().unwrap_or("Installed carrier"),
+            alt.resolved_name,
+            alt.resolved_name,
+        );
+    } else {
+        diag.recommendation = SimPickerRecommendation::DeadZone;
+        diag.recommendation_detail =
+            "Installed carrier not detected and no alternatives found. Check antenna.".into();
+    }
+}
+
 
 /// Pre-compute boolean flag fields from raw parsed data.
 /// Must be called before determine_cellular_status.
@@ -2470,20 +2560,7 @@ fn determine_cellular_status(diag: &mut CellularDiagnostic) {
         }
 
         diag.summary = "No service — searching for network".into();
-        diag.recommended_action = Some(
-            if diag.best_network_name.is_some() && !diag.sim_matches_detected {
-                format!(
-                    "Install {} SIM",
-                    diag.best_network_name.as_deref().unwrap_or("alternate")
-                )
-            } else if diag.cops_scan_empty {
-                "No networks detected — check antenna".into()
-            } else if diag.cops_scan_failed {
-                "Network scan failed — reboot controller".into()
-            } else {
-                "Check coverage area and antenna".into()
-            },
-        );
+        diag.recommended_action = Some("Check coverage area and antenna".into());
         diag.other_actions = vec![
             "Reboot controller".into(),
             "Check antenna placement".into(),

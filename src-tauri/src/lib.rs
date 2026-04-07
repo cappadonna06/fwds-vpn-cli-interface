@@ -70,8 +70,49 @@ pub struct DiagnosticState {
     pub satellite: Option<SatelliteDiagnostic>,
     pub ethernet: Option<EthernetDiagnostic>,
     pub system: Option<SystemDiagnostic>,
+    pub sim_picker: Option<SimPickerDiagnostic>,
     pub last_updated: Option<String>,
     pub session_has_data: bool,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone, Default)]
+pub enum SimPickerRecommendation {
+    #[default]
+    NotRun,
+    ScanFailed,
+    DeadZone,
+    KeepCurrent,
+    WeakButBest,
+    SwapTo(String),
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone, Default)]
+pub struct SimPickerDiagnostic {
+    // Run metadata
+    pub scan_attempted: bool,
+    pub scan_completed: bool,
+    pub scan_failed: bool,
+    pub scan_empty: bool,
+    pub full_block_run: bool,
+
+    // Installed SIM
+    pub installed_iccid: Option<String>,
+    pub installed_imsi: Option<String>,
+    pub installed_carrier_code: Option<String>,
+    pub installed_carrier_name: Option<String>,
+
+    // Scan results
+    pub detected_networks: Vec<CopsNetwork>,
+    pub nwscanmode: Option<u8>,
+
+    // Derived recommendation
+    pub best_network_code: Option<String>,
+    pub best_network_name: Option<String>,
+    pub installed_carrier_detected: bool,
+    pub recommendation: SimPickerRecommendation,
+    pub recommendation_detail: String,
+
+    pub last_updated: Option<String>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
@@ -153,6 +194,7 @@ pub struct CopsNetwork {
     pub long_name: String,
     pub numeric: String,
     pub act: u8,
+    pub resolved_name: String,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
@@ -244,17 +286,6 @@ pub struct CellularDiagnostic {
     pub cellular_disabled: bool,
     pub no_service: bool,
     pub sim_present: bool,
-
-    // SIM picker fields
-    pub detected_networks: Vec<CopsNetwork>,
-    pub cops_scan_attempted: bool,
-    pub cops_scan_completed: bool,
-    pub cops_scan_failed: bool,
-    pub cops_scan_empty: bool,
-    pub best_network_code: Option<String>,
-    pub best_network_name: Option<String>,
-    pub nwscanmode: Option<u8>,
-    pub sim_matches_detected: bool,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
@@ -1294,6 +1325,7 @@ fn clear_diagnostic_interface(state: State<'_, AppState>, interface: String) -> 
         "cellular" => diag.cellular = None,
         "satellite" => diag.satellite = None,
         "ethernet" => diag.ethernet = None,
+        "sim_picker" => diag.sim_picker = None,
         _ => {}
     }
     Ok(())

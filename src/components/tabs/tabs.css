@@ -2880,119 +2880,90 @@
   color: var(--accent);
 }
 
-/* SIM Picker */
-.diag-section-label {
-  margin: 0 0 6px;
-  color: var(--text-muted);
-  font-size: 10px;
-  font-weight: 650;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-}
-
-.sim-picker {
-  margin-top: 4px;
-  padding-top: 8px;
-}
-
-.sim-picker-state {
-  display: flex;
-  align-items: flex-start;
-  gap: 10px;
-  padding: 10px 0;
-  font-size: 12.5px;
-}
-
-.sim-picker-icon {
-  font-size: 16px;
-  flex-shrink: 0;
-}
-
-.sim-picker-headline {
-  font-weight: 500;
-  color: var(--text-primary);
-  margin-bottom: 2px;
-}
-
-.sim-picker-detail {
-  font-size: 12px;
-  color: var(--text-muted);
-  line-height: 1.5;
-}
-
-.sim-picker-networks {
+/* SIM Picker card */
+.sim-picker-carrier-list {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  margin-bottom: 10px;
+  margin: 8px 0;
 }
 
-.sim-picker-network {
+.sim-picker-carrier-row {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   font-size: 12.5px;
   padding: 4px 0;
+  border-bottom: 1px solid var(--border);
 }
 
-.sim-picker-net-stat {
-  font-size: 10px;
-  width: 14px;
-  text-align: center;
+.sim-picker-carrier-row:last-child {
+  border-bottom: none;
+}
+
+.sim-picker-carrier-stat {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
   flex-shrink: 0;
 }
 
-.sim-picker-network-available .sim-picker-net-stat { color: var(--success); }
-.sim-picker-network-detected .sim-picker-net-stat  { color: var(--text-muted); }
-.sim-picker-network-current .sim-picker-net-stat   { color: var(--accent); }
+.sim-picker-carrier-stat-available { background: var(--success); }
+.sim-picker-carrier-stat-detected  { background: var(--text-muted); }
+.sim-picker-carrier-stat-connected { background: var(--accent); }
+.sim-picker-carrier-stat-notseen   { background: transparent; border: 1px solid var(--border); }
 
-.sim-picker-net-name {
+.sim-picker-carrier-name {
   font-weight: 500;
   color: var(--text-primary);
-  min-width: 80px;
+  min-width: 70px;
 }
 
-.sim-picker-net-code {
+.sim-picker-carrier-available .sim-picker-carrier-name {
+  color: var(--success);
+}
+
+.sim-picker-carrier-code {
   font-family: var(--mono);
   font-size: 11px;
   color: var(--text-muted);
   min-width: 50px;
 }
 
-.sim-picker-net-label {
+.sim-picker-carrier-label {
   font-size: 11px;
   color: var(--text-muted);
+  flex: 1;
 }
 
-.sim-picker-network-available .sim-picker-net-label {
+.sim-picker-carrier-available .sim-picker-carrier-label {
   color: var(--success);
-  font-weight: 500;
 }
 
-.sim-picker-installed {
+.sim-picker-installed-row {
   font-size: 11.5px;
   color: var(--text-muted);
-  margin-bottom: 8px;
   padding: 6px 0;
   border-top: 1px solid var(--border);
+  margin-top: 4px;
 }
 
-.sim-picker-recommendation {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
+.sim-picker-rec-box {
+  margin-top: 8px;
   padding: 10px 12px;
   background: color-mix(in srgb, var(--accent) 8%, transparent);
   border: 1px solid color-mix(in srgb, var(--accent) 25%, transparent);
   border-radius: 6px;
-  margin-top: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
 }
 
 .sim-picker-rec-label {
   font-size: 10px;
   font-weight: 700;
-  letter-spacing: 0.06em;
   text-transform: uppercase;
+  letter-spacing: 0.06em;
   color: var(--accent);
 }
 
@@ -3005,26 +2976,12 @@
 .sim-picker-rec-detail {
   font-size: 11.5px;
   color: var(--text-muted);
+  line-height: 1.5;
 }
 
-.sim-picker-rec-mismatch {
-  background: color-mix(in srgb, var(--warning) 8%, transparent);
-  border-color: color-mix(in srgb, var(--warning) 25%, transparent);
-  font-size: 12px;
-  color: var(--text-secondary);
-}
-
-.sim-picker-prompt {
-  font-size: 12px;
+.sim-picker-not-run {
+  font-size: 12.5px;
   color: var(--text-muted);
-  font-style: italic;
-}
-
-.sim-picker-prompt code {
-  font-family: var(--mono);
-  font-size: 11px;
-  background: var(--bg-2);
-  padding: 1px 5px;
-  border-radius: 3px;
-  font-style: normal;
+  line-height: 1.6;
+  padding: 4px 0;
 }
