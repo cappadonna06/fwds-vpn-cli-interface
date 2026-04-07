@@ -2672,6 +2672,40 @@ fn determine_cellular_status(diag: &mut CellularDiagnostic) {
         return;
     }
 
+    // 7. Fallback: connman confirms connected even though check wasn't run explicitly.
+    //    This happens when cellular data is parsed from the SIM Picker block — connman
+    //    state reflects the live connection but cellular-check ran inside the subshell
+    //    and its output may not match the section-based parsing expectations.
+    if diag.connman_cell_connected == Some(true) {
+        let provider = diag
+            .operator_name
+            .as_deref()
+            .or(diag.basic_provider.as_deref())
+            .or(diag.provider_code.as_deref())
+            .unwrap_or("Unknown");
+        let strength = diag.strength_score.unwrap_or(0);
+        let label = diag.strength_label.as_deref().unwrap_or("");
+        if strength >= 60 {
+            diag.status = DiagStatus::Green;
+            diag.summary = format!("{} · {}/100 · {}", provider, strength, label);
+        } else if strength >= 40 {
+            diag.status = DiagStatus::Orange;
+            diag.summary = format!("{} · {}/100 · weak signal", provider, strength);
+            diag.recommended_action =
+                Some("Check antenna connection and placement".into());
+        } else if strength > 0 {
+            diag.status = DiagStatus::Red;
+            diag.summary = format!("{} · {}/100 · signal too weak", provider, strength);
+            diag.recommended_action =
+                Some("Check antenna — signal critically low".into());
+        } else {
+            // Connected but no signal score (e.g., only connman output, no AT data yet)
+            diag.status = DiagStatus::Green;
+            diag.summary = format!("{} · connected", provider);
+        }
+        return;
+    }
+
     diag.status = DiagStatus::Unknown;
     diag.summary = "No data".into();
 }
