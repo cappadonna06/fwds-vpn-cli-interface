@@ -2,7 +2,7 @@ use regex::Regex;
 use std::collections::HashMap;
 
 use crate::{
-    CellularDiagnostic, DiagStatus, DiagnosticState, EthernetDiagnostic, SatelliteDiagnostic,
+    CellularDiagnostic, CopsNetwork, DiagStatus, DiagnosticState, EthernetDiagnostic, SatelliteDiagnostic,
     SystemDiagnostic, WifiDiagnostic,
 };
 
@@ -207,6 +207,17 @@ fn merge_cellular_diag(
         if next.other_actions.is_empty() {
             next.other_actions = prev.other_actions;
         }
+        if next.detected_networks.is_empty() {
+            next.detected_networks = prev.detected_networks;
+        }
+        next.cops_scan_attempted = next.cops_scan_attempted || prev.cops_scan_attempted;
+        next.cops_scan_completed = next.cops_scan_completed || prev.cops_scan_completed;
+        next.cops_scan_failed = next.cops_scan_failed || prev.cops_scan_failed;
+        next.cops_scan_empty = next.cops_scan_empty || prev.cops_scan_empty;
+        next.best_network_code = next.best_network_code.or(prev.best_network_code);
+        next.best_network_name = next.best_network_name.or(prev.best_network_name);
+        next.nwscanmode = next.nwscanmode.or(prev.nwscanmode);
+        next.sim_matches_detected = next.sim_matches_detected || prev.sim_matches_detected;
     }
     next
 }
@@ -1075,7 +1086,10 @@ fn parse_cellular_from_latest(latest: &HashMap<String, String>) -> Option<Cellul
         parse_proc_net_dev(text, &mut diag);
         has_any = true;
     }
-    if let Some(text) = find_latest(latest, &["cell-support --no-ofono --at"]) {
+    if let Some(text) = find_latest(
+        latest,
+        &["cell-support --no-ofono --at --scan", "cell-support --no-ofono --at"],
+    ) {
         parse_cell_support_at(text, &mut diag);
         has_any = true;
     }
@@ -1083,7 +1097,8 @@ fn parse_cellular_from_latest(latest: &HashMap<String, String>) -> Option<Cellul
     if !has_any {
         return None;
     }
-    diag.full_block_run = latest.contains_key("cell-support --no-ofono --at");
+    diag.full_block_run = latest.contains_key("cell-support --no-ofono --at")
+        || latest.contains_key("cell-support --no-ofono --at --scan");
     compute_cellular_flags(&mut diag);
     determine_cellular_status(&mut diag);
     Some(diag)
@@ -1176,6 +1191,15 @@ fn default_cellular() -> CellularDiagnostic {
         cellular_disabled: false,
         no_service: false,
         sim_present: false,
+        detected_networks: vec![],
+        cops_scan_attempted: false,
+        cops_scan_completed: false,
+        cops_scan_failed: false,
+        cops_scan_empty: false,
+        best_network_code: None,
+        best_network_name: None,
+        nwscanmode: None,
+        sim_matches_detected: false,
     }
 }
 
@@ -2249,8 +2273,33 @@ fn parse_cell_support_at(text: &str, diag: &mut CellularDiagnostic) {
         diag.registered = Some(v == "1" || v == "5");
     }
     diag.attached = extract_regex(text, r"\+CGATT:\s*(\d)").map(|v| v == "1");
-    diag.operator_name =
-        extract_regex(text, r#"\+COPS:.*?"([^"]+)""#).map(|v| v.trim().to_string());
+    if let Ok(operator_re) = Regex::new(r#"\+COPS:\s*\d,\d,"([^"]+)""#) {
+        diag.operator_name = operator_re
+            .captures(text)
+            .and_then(|cap| cap.get(1))
+            .map(|m| m.as_str().trim().to_string());
+    }
+    diag.cops_scan_attempted = text.contains("Scanning...");
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("+COPS:") && trimmed.contains('"') && trimmed.contains("),(") {
+            diag.detected_networks = parse_cops_scan(trimmed);
+        }
+    }
+    determine_best_network(diag);
+    diag.nwscanmode = extract_regex(text, r#"\+QCFG:\s*"nwscanmode",(\d+)"#)
+        .and_then(|v| v.parse::<u8>().ok());
+    if text.contains("CME ERROR: operation not allowed")
+        || (text.contains("\nFailed\n") && diag.cops_scan_attempted)
+    {
+        diag.cops_scan_failed = true;
+        diag.cops_scan_completed = false;
+        diag.cops_scan_empty = false;
+    } else if diag.cops_scan_attempted {
+        diag.cops_scan_completed = true;
+        diag.cops_scan_empty = diag.detected_networks.is_empty();
+        diag.cops_scan_failed = false;
+    }
     if let Some(mode) = extract_regex(text, r#"\+QCSQ:\s*"([^"]+)""#) {
         diag.qcsq = Some(mode.clone());
         if mode != "NOSERVICE" {
@@ -2276,6 +2325,62 @@ fn parse_cell_support_at(text: &str, diag: &mut CellularDiagnostic) {
         extract_regex(text, r"\+CGPADDR:\s*1,(\d+\.\d+\.\d+\.\d+)").filter(|ip| ip != "0.0.0.0");
     diag.at_apn = extract_regex(text, r"\+CGCONTRDP:.*?,[^,]*,[^,]*,[^,]*,[^,]*,([^,\s]+)")
         .or_else(|| extract_regex(text, r#"\+CGCONTRDP:.*?(vzwinternet|super)"#));
+}
+
+fn parse_cops_scan(line: &str) -> Vec<CopsNetwork> {
+    let mut networks = Vec::new();
+    let re = Regex::new(r#"\((\d+),"([^"]*?)","([^"]*?)","(\d+)",(\d+)\)"#).ok();
+    if let Some(re) = re {
+        for cap in re.captures_iter(line) {
+            let stat: u8 = cap[1].parse().unwrap_or(0);
+            let long_name = cap[2].to_string();
+            let numeric = cap[4].to_string();
+            let act: u8 = cap[5].parse().unwrap_or(0);
+            networks.push(CopsNetwork {
+                stat,
+                long_name,
+                numeric,
+                act,
+            });
+        }
+    }
+    networks
+}
+
+fn resolve_carrier(code: &str) -> String {
+    match code {
+        "311270" | "311271" | "311272" | "311273" | "311274" | "311275" | "311276"
+        | "311277" | "311278" | "311279" | "311280" | "311480" | "311481" | "311482"
+        | "311483" | "311484" | "311485" | "311486" | "311487" | "311488" | "311489" => {
+            "Verizon".into()
+        }
+        "310260" | "310026" | "310490" | "310660" | "312250" | "310230" | "310240"
+        | "310250" => "T-Mobile".into(),
+        "310410" | "310380" | "310980" | "311180" | "310030" | "310560" | "310680" => {
+            "AT&T".into()
+        }
+        "313100" => "FirstNet (AT&T)".into(),
+        "310000" => "Dish".into(),
+        _ => format!("Carrier ({code})"),
+    }
+}
+
+fn determine_best_network(diag: &mut CellularDiagnostic) {
+    if diag.detected_networks.is_empty() {
+        return;
+    }
+    let best = diag.detected_networks.iter().min_by_key(|n| match n.stat {
+        1 => 0,
+        3 => 1,
+        0 => 2,
+        _ => 3,
+    });
+    if let Some(network) = best {
+        diag.best_network_code = Some(network.numeric.clone());
+        diag.best_network_name = Some(resolve_carrier(&network.numeric));
+    }
+    let installed = diag.provider_code.as_deref().unwrap_or_default();
+    diag.sim_matches_detected = diag.detected_networks.iter().any(|n| n.numeric == installed);
 }
 
 /// Pre-compute boolean flag fields from raw parsed data.
@@ -2368,34 +2473,13 @@ fn determine_cellular_status(diag: &mut CellularDiagnostic) {
             return;
         }
 
-        let is_us_cell = diag
-            .provider_code
-            .as_deref()
-            .map(|c| c.starts_with("31127"))
-            .unwrap_or(false)
-            || diag
-                .imsi
-                .as_deref()
-                .map(|s| s.starts_with("311270"))
-                .unwrap_or(false);
-
-        if is_us_cell {
-            diag.summary = "No service — US Cellular SIM".into();
-            diag.recommended_action = Some("Consider Verizon SIM swap".into());
-            diag.other_actions = vec![
-                "US Cellular has limited rural coverage".into(),
-                "Check coverage area".into(),
-                "Reboot controller".into(),
-            ];
-        } else {
-            diag.summary = "No service — searching for network".into();
-            diag.recommended_action = Some("Check coverage area and antenna".into());
-            diag.other_actions = vec![
-                "Move to known good coverage area".into(),
-                "Reboot controller".into(),
-                "Try alternate SIM".into(),
-            ];
-        }
+        diag.summary = "No service — searching for network".into();
+        diag.recommended_action = Some("Run network scan to identify available carriers".into());
+        diag.other_actions = vec![
+            "Run cell-support --no-ofono --at --scan".into(),
+            "Check coverage area and antenna".into(),
+            "Reboot controller".into(),
+        ];
         return;
     }
 

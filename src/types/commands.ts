@@ -650,6 +650,23 @@ export const COMMANDS: ControllerCommand[] = [
     est_seconds: 8,
   },
   {
+    id: "cell-support-scan",
+    label: "cell-support --no-ofono --at --scan",
+    command: "cell-support --no-ofono --at --scan",
+    category: "diagnostic",
+    description: "Full modem AT diagnostics including network carrier scan (~3 min). Shows which carriers are visible at this location.",
+    reboot_required: false,
+    guard: "none",
+    est_seconds: 180,
+    tags: ["cellular", "sim", "carrier", "scan", "at", "cops"],
+    when_to_run: "When cellular has no service and you need to know which carrier SIM to install.",
+    what_to_look_for: [
+      "+COPS: list shows detectable carriers — stat=1 means can attach, stat=3 means detected but wrong SIM",
+      "+QCSQ: NOSERVICE with empty COPS = dead zone, no SIM will help",
+      "+CME ERROR: operation not allowed = modem stuck, reboot first",
+    ],
+  },
+  {
     id: "sat-imei",
     label: "sat-imei",
     command: "sat-imei",
@@ -760,6 +777,7 @@ export const DIAGNOSTIC_BLOCKS: DiagnosticBlock[] = [
       "cell-signal",
       "cell-apn",
       "cell-support-at",
+      "cell-support-scan",
       "version",
       "sid",
       "release",
@@ -845,6 +863,9 @@ cell-apn
 echo ""
 echo "===== MODEM / RADIO DIAGNOSTICS ====="
 cell-support --no-ofono --at
+echo ""
+echo "===== CARRIER SCAN ====="
+cell-support --no-ofono --at --scan
 
 echo ""
 echo "===== SYSTEM ====="
@@ -1008,6 +1029,7 @@ echo "===== WIFI DIAGNOSTICS END ====="
       "ip-route",
       "proc-net-dev",
       "cell-support-at",
+      "cell-support-scan",
     ],
     heavy_script: `(
 echo "===== CONTROLLER INFO ====="
@@ -1046,6 +1068,9 @@ cat /proc/net/dev
 echo ""
 echo "===== MODEM / RADIO DIAGNOSTICS ====="
 cell-support --no-ofono --at
+echo ""
+echo "===== CARRIER SCAN ====="
+cell-support --no-ofono --at --scan
 )`,
   },
   {
@@ -1223,6 +1248,9 @@ cell-apn
 echo ""
 echo "===== MODEM / RADIO DIAGNOSTICS ====="
 cell-support --no-ofono --at
+echo ""
+echo "===== CARRIER SCAN ====="
+cell-support --no-ofono --at --scan
 
 echo ""
 echo "===== SATELLITE ====="

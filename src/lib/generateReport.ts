@@ -41,6 +41,16 @@ interface CellularDiag {
   strength_label?: string | null;
   modem_not_present?: boolean;
   modem_unreachable?: boolean;
+  no_service?: boolean;
+  sim_present?: boolean;
+  cops_scan_attempted?: boolean;
+  cops_scan_completed?: boolean;
+  cops_scan_failed?: boolean;
+  cops_scan_empty?: boolean;
+  best_network_name?: string | null;
+  nwscanmode?: number | null;
+  sim_matches_detected?: boolean;
+  detected_networks?: Array<{ stat: number }>;
 }
 
 interface SatelliteDiag {
@@ -268,36 +278,56 @@ export function generateRecommendedActions(
         });
       }
 
-      const noService = !cell.connman_cell_connected && !cell.pdp_active;
+      const noService = cell.no_service ?? (!cell.connman_cell_connected && !cell.pdp_active);
+      const simPresent = cell.sim_present ?? !!cell.sim_inserted;
 
-      if (noService && !cell.sim_inserted) {
+      if (noService && !simPresent) {
         actions.push({
           id: mkId(), interface: "Cellular",
           text: "Check SIM card is seated correctly",
           detail: "Modem detected but SIM not found. Reseat SIM or try a known-good SIM.",
           dismissed: false, checked: false, custom: false,
         });
-      } else if (noService && cell.sim_inserted) {
-        const isUSCell =
-          cell.provider_code?.startsWith("31127") ||
-          cell.imsi?.startsWith("311270") ||
-          cell.operator_name === "US Cellular";
-
-        if (isUSCell) {
+      } else if (noService && simPresent) {
+        if (cell.cops_scan_failed) {
           actions.push({
             id: mkId(), interface: "Cellular",
-            text: "Consider Verizon SIM swap",
-            detail: "US Cellular SIM detected — limited rural coverage. Verizon SIM may resolve no-service.",
+            text: "Reboot controller — network scan failed",
+            detail: `Modem could not scan for networks.${cell.nwscanmode === 1 ? " Modem locked to LTE-only — run setup-cellular to reset." : ""}`,
+            dismissed: false, checked: false, custom: false,
+          });
+        } else if (cell.cops_scan_completed && cell.cops_scan_empty) {
+          actions.push({
+            id: mkId(), interface: "Cellular",
+            text: "No cellular signal at this location",
+            detail: "No networks detected after full scan. Check antenna placement and sky view.",
+            dismissed: false, checked: false, custom: false,
+          });
+        } else if (cell.best_network_name && !cell.sim_matches_detected) {
+          const hasStrong = !!cell.detected_networks?.some((n) => n.stat === 1);
+          actions.push({
+            id: mkId(), interface: "Cellular",
+            text: `Install ${cell.best_network_name} SIM`,
+            detail: hasStrong
+              ? `${cell.best_network_name} signal available at this location. Verizon not detected.`
+              : `${cell.best_network_name} detected at this location. Verizon not detected.`,
+            dismissed: false, checked: false, custom: false,
+          });
+        } else if (!cell.cops_scan_attempted) {
+          actions.push({
+            id: mkId(), interface: "Cellular",
+            text: "Run network scan to identify available carriers",
+            detail: "Run cell-support --no-ofono --at --scan to check which carriers are visible.",
+            dismissed: false, checked: false, custom: false,
+          });
+        } else {
+          actions.push({
+            id: mkId(), interface: "Cellular",
+            text: "Check coverage area and antenna",
+            detail: "SIM detected but no network service. Verify antenna connection and site coverage.",
             dismissed: false, checked: false, custom: false,
           });
         }
-
-        actions.push({
-          id: mkId(), interface: "Cellular",
-          text: "Check coverage area and antenna",
-          detail: "SIM detected but no network service. Verify antenna connection and site coverage.",
-          dismissed: false, checked: false, custom: false,
-        });
       } else if (cell.status === "orange" && (cell.strength_score ?? 100) < 50) {
         actions.push({
           id: mkId(), interface: "Cellular",

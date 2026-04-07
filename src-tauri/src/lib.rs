@@ -236,6 +236,25 @@ pub struct CellularDiagnostic {
     pub cellular_disabled: bool,
     pub no_service: bool,
     pub sim_present: bool,
+
+    // SIM picker fields
+    pub detected_networks: Vec<CopsNetwork>,
+    pub cops_scan_attempted: bool,
+    pub cops_scan_completed: bool,
+    pub cops_scan_failed: bool,
+    pub cops_scan_empty: bool,
+    pub best_network_code: Option<String>,
+    pub best_network_name: Option<String>,
+    pub nwscanmode: Option<u8>,
+    pub sim_matches_detected: bool,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
+pub struct CopsNetwork {
+    pub stat: u8,
+    pub long_name: String,
+    pub numeric: String,
+    pub act: u8,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
