@@ -194,7 +194,6 @@ interface DiagCardProps {
   updatedAt?: string | null;
   expanded: boolean;
   onToggle: () => void;
-  commandHint?: string;
   onCopyCommand?: () => void;
   copied?: boolean;
   compact?: boolean;
@@ -499,7 +498,6 @@ function DiagCard({
   updatedAt,
   expanded,
   onToggle,
-  commandHint,
   onCopyCommand,
   copied,
   compact,
@@ -593,15 +591,6 @@ function DiagCard({
               </div>
             </section>
           ))}
-        </div>
-      )}
-
-      {expanded && onCopyCommand && (
-        <div className="diag-card-action-row">
-          {commandHint && <span>{commandHint}</span>}
-          <button className="diag-card-copy-btn" onClick={onCopyCommand}>
-            {copied ? "Copied" : "Copy diagnostics commands"}
-          </button>
         </div>
       )}
 
@@ -727,15 +716,11 @@ export default function DiagnosticsTab() {
     setTimeout(() => setCopiedCommandId((prev) => (prev === blockId ? null : prev)), 1400);
   }
 
-  const wifiNeedsRefresh = !wifi || !wifi.ipv4_address || (!wifi.ssid && !wifi.access_point);
-  const cellularNeedsRefresh = !cellular || !cellular.full_block_run;
-  const satelliteNeedsRefresh = !satellite || satellite.modem_present !== true;
-  const ethernetNeedsRefresh = !ethernet || !ethernet.full_block_run;
-  const fullDiagBlockId = satellite?.modem_present === true ? "full-diags" : "full-diags-no-sat";
-
+  const safeSid = system?.sid && /^\d{8}$/.test(system.sid) ? system.sid : null;
+  const safeVersion = system?.version && /^r\d+\.\d+/.test(system.version) ? system.version : null;
   const systemIdentity = [
-    system?.sid ? `SID ${system.sid}` : null,
-    system?.version ? `v${system.version}` : null,
+    safeSid ? `SID ${safeSid}` : null,
+    safeVersion ? `v${safeVersion}` : null,
     system?.release_date ? system.release_date : null,
   ].filter(Boolean).join(" · ");
 
@@ -744,8 +729,8 @@ export default function DiagnosticsTab() {
       <div className="diag-header">
         <div className="diag-header-left">
           <h2>System Diagnostics</h2>
-          <div className="diag-system-line">{systemIdentity || "No system identity data yet"}</div>
-          <div className="diag-system-line">System updated {systemUpdatedAt ?? "—"}</div>
+          {systemIdentity && <div className="diag-system-line">{systemIdentity}</div>}
+          {systemUpdatedAt && <div className="diag-system-line">System updated {systemUpdatedAt}</div>}
         </div>
 
         <div className="diag-header-right">
@@ -756,11 +741,16 @@ export default function DiagnosticsTab() {
 
       {showNoSessionBanner && (
         <div className="diag-empty">
-          <div className="diag-empty-title">No data yet</div>
-          <div>Waiting for diagnostics from this session.</div>
-          <button className="diag-copy-link" onClick={() => copyDiagnosticBlock(fullDiagBlockId)}>
-            {copiedCommandId === fullDiagBlockId ? "Copied" : "Copy full diagnostics commands"}
-          </button>
+          <div className="diag-empty-title">Run diagnostics</div>
+          <div className="diag-empty-actions">
+            <button className="btn btn-secondary" onClick={() => copyDiagnosticBlock("full-diags")}>
+              {copiedCommandId === "full-diags" ? "Copied" : "Copy full diagnostics commands"}
+            </button>
+            <button className="btn btn-secondary" onClick={() => copyDiagnosticBlock("full-diags-no-sat")}>
+              {copiedCommandId === "full-diags-no-sat" ? "Copied" : "Copy diagnostics (no satellite)"}
+            </button>
+          </div>
+          <div className="diag-empty-sub">Use these commands in the terminal to populate system status.</div>
         </div>
       )}
 
@@ -779,7 +769,6 @@ export default function DiagnosticsTab() {
           expanded={expanded.wifi}
           onToggle={() => setExpanded((p) => ({ ...p, wifi: !p.wifi }))}
           updatedAt={cardUpdatedAt.wifi}
-          commandHint={wifiNeedsRefresh ? "Limited data available." : undefined}
           onCopyCommand={() => copyDiagnosticBlock("wifi")}
           copied={copiedCommandId === "wifi"}
           compact={wifiSummary.health === "neutral"}
@@ -804,7 +793,6 @@ export default function DiagnosticsTab() {
           expanded={expanded.cellular}
           onToggle={() => setExpanded((p) => ({ ...p, cellular: !p.cellular }))}
           updatedAt={cardUpdatedAt.cellular}
-          commandHint={cellularNeedsRefresh ? "Limited data available." : undefined}
           onCopyCommand={() => copyDiagnosticBlock("cellular")}
           copied={copiedCommandId === "cellular"}
           compact={cellularSummary.health === "neutral"}
@@ -829,7 +817,6 @@ export default function DiagnosticsTab() {
           expanded={expanded.satellite}
           onToggle={() => setExpanded((p) => ({ ...p, satellite: !p.satellite }))}
           updatedAt={cardUpdatedAt.satellite}
-          commandHint={satelliteNeedsRefresh ? "Limited data available." : undefined}
           onCopyCommand={() => copyDiagnosticBlock("satellite")}
           copied={copiedCommandId === "satellite"}
           compact={satelliteSummary.health === "neutral"}
@@ -854,7 +841,6 @@ export default function DiagnosticsTab() {
           expanded={expanded.ethernet}
           onToggle={() => setExpanded((p) => ({ ...p, ethernet: !p.ethernet }))}
           updatedAt={cardUpdatedAt.ethernet}
-          commandHint={ethernet ? (ethernetNeedsRefresh ? "Limited data available." : undefined) : undefined}
           onCopyCommand={() => copyDiagnosticBlock("ethernet")}
           copied={copiedCommandId === "ethernet"}
           compact={ethernetSummary.health === "neutral"}

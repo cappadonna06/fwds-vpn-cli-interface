@@ -1546,14 +1546,33 @@ fn parse_system(
     version_block: Option<&String>,
     release_block: Option<&String>,
 ) -> SystemDiagnostic {
-    let sid = parse_single_value(sid_block);
-    let version = parse_single_value(version_block);
+    let sid = parse_single_value(sid_block).and_then(|v| sanitize_sid(&v));
+    let version = parse_single_value(version_block).and_then(|v| sanitize_version(&v));
     let release_date = release_block.and_then(|b| capture_after(b, "Date:"));
 
     SystemDiagnostic {
         sid,
         version,
         release_date,
+    }
+}
+
+fn sanitize_sid(input: &str) -> Option<String> {
+    let clean = input.trim();
+    if clean.len() == 8 && clean.chars().all(|c| c.is_ascii_digit()) {
+        Some(clean.to_string())
+    } else {
+        None
+    }
+}
+
+fn sanitize_version(input: &str) -> Option<String> {
+    let clean = input.trim();
+    let re = Regex::new(r"^r\d+\.\d+(?:\.\d+)?(?:[-+][A-Za-z0-9._-]+)?$").ok()?;
+    if re.is_match(clean) {
+        Some(clean.to_string())
+    } else {
+        None
     }
 }
 

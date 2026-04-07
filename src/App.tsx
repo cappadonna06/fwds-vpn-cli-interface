@@ -103,7 +103,7 @@ export default function App() {
         const rawSid = diagData.system?.sid ?? "";
         const rawVersion = diagData.system?.version ?? "";
 
-        const sid = /^\d{6,10}$/.test(rawSid) ? rawSid : null;
+        const sid = /^\d{8}$/.test(rawSid) ? rawSid : null;
         const version = /^r\d+\.\d+/.test(rawVersion) ? rawVersion : null;
 
         setSystemInfo({ sid, version });
