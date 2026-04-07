@@ -1019,6 +1019,11 @@ fn parse_wifi(latest: &HashMap<String, String>) -> Option<WifiDiagnostic> {
 fn parse_cellular_from_latest(latest: &HashMap<String, String>) -> Option<CellularDiagnostic> {
     let mut diag = default_cellular();
     let mut has_any = false;
+    // Only set true for commands that are exclusively part of cellular diagnostic scripts.
+    // Commands shared with WiFi (connmanctl, ip route, proc/net/dev, date/version/sid) must NOT
+    // set this flag — the WiFi subshell creates a single block whose key contains those command
+    // strings as substrings, causing find_latest() to return the WiFi block body.
+    let mut has_cellular_specific = false;
 
     if let Some(block) = find_latest_body_contains(
         latest,
@@ -1030,13 +1035,16 @@ fn parse_cellular_from_latest(latest: &HashMap<String, String>) -> Option<Cellul
     ) {
         parse_cellular_block(block, &mut diag);
         has_any = true;
+        has_cellular_specific = true;
     }
 
     if let Some(block) = find_latest(latest, &["run cellular diagnostics"]) {
         parse_cellular_block(block, &mut diag);
         has_any = true;
+        has_cellular_specific = true;
     }
 
+    // date/version/sid appear in many diagnostic runs — NOT cellular-specific
     if let Some(text) = find_latest(latest, &["date"]) {
         diag.controller_date = parse_single_value(Some(text)).or(diag.controller_date);
         has_any = has_any || !text.trim().is_empty();
@@ -1052,6 +1060,7 @@ fn parse_cellular_from_latest(latest: &HashMap<String, String>) -> Option<Cellul
     if let Some(text) = find_latest(latest, &["cellular-check"]) {
         parse_cellular_check_text(text, &mut diag);
         has_any = true;
+        has_cellular_specific = true;
     }
     let basic_cmds = [
         "cell-imei",
@@ -1067,6 +1076,7 @@ fn parse_cellular_from_latest(latest: &HashMap<String, String>) -> Option<Cellul
     for cmd in basic_cmds {
         if let Some(text) = find_latest(latest, &[cmd]) {
             has_any = true;
+            has_cellular_specific = true;
             if let Some(v) = parse_single_value(Some(text)) {
                 basic_lines.push(v);
             }
@@ -1075,6 +1085,7 @@ fn parse_cellular_from_latest(latest: &HashMap<String, String>) -> Option<Cellul
     if !basic_lines.is_empty() {
         parse_basic_cell_info(&basic_lines.join("\n"), &mut diag);
     }
+    // connmanctl commands appear in the WiFi subshell key as substrings — NOT cellular-specific
     if let Some(text) = find_latest(latest, &["connmanctl technologies"]) {
         parse_connman_cellular(text, &mut diag);
         has_any = true;
@@ -1087,6 +1098,7 @@ fn parse_cellular_from_latest(latest: &HashMap<String, String>) -> Option<Cellul
         parse_connman_cellular(text, &mut diag);
         has_any = true;
     }
+    // ip/wwan/proc commands also appear in WiFi subshell — NOT cellular-specific
     if let Some(text) = find_latest(latest, &["ip link show wwan0"]) {
         parse_wwan_interface(text, &mut diag);
         has_any = true;
@@ -1106,9 +1118,13 @@ fn parse_cellular_from_latest(latest: &HashMap<String, String>) -> Option<Cellul
     if let Some(text) = find_latest(latest, &["cell-support --no-ofono --at"]) {
         parse_cell_support_at(text, &mut diag);
         has_any = true;
+        has_cellular_specific = true;
     }
 
-    if !has_any {
+    // Only return a cellular struct when at least one cellular-specific command ran.
+    // Returning None here prevents a WiFi-only run from populating the cellular card
+    // with connman/routing data found as key substrings of the WiFi subshell block.
+    if !has_cellular_specific {
         return None;
     }
     diag.full_block_run = latest.contains_key("cell-support --no-ofono --at");
@@ -2676,7 +2692,12 @@ fn determine_cellular_status(diag: &mut CellularDiagnostic) {
     //    This happens when cellular data is parsed from the SIM Picker block — connman
     //    state reflects the live connection but cellular-check ran inside the subshell
     //    and its output may not match the section-based parsing expectations.
-    if diag.connman_cell_connected == Some(true) {
+    //    Guard: only apply when genuine cellular data exists (full AT block ran OR
+    //    cellular-check produced a result). Without this guard, incidentally parsed
+    //    connman data from a WiFi-only run could trigger a false Green status.
+    if diag.connman_cell_connected == Some(true)
+        && (diag.full_block_run || diag.check_result != "Unknown")
+    {
         let provider = diag
             .operator_name
             .as_deref()

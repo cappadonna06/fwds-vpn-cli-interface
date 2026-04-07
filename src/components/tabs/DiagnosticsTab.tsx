@@ -595,6 +595,9 @@ function summarizeCellular(cell?: CellularDiagnostic | null): CardSummary {
   if (cell.modem_present === false) return { health: "error", badgeLabel: "Issue", primaryLine: "No modem detected" };
   if (cell.sim_inserted === false) return { health: "error", badgeLabel: "Issue", primaryLine: "No SIM detected" };
   if (cell.qcsq === "NOSERVICE") return { health: "error", badgeLabel: "Issue", primaryLine: "No service" };
+  if (cell.check_result === "Unknown") {
+    return { health: "neutral", badgeLabel: "No data", primaryLine: "No data", secondaryLine: "Run cellular diagnostics to populate" };
+  }
   const carrier = cell.operator_name || cell.basic_provider || cell.provider_code || "Cellular";
   const connected = cell.connman_cell_connected === true;
   const sig = signalLabel(cell.strength_score);
@@ -610,7 +613,7 @@ function summarizeCellular(cell?: CellularDiagnostic | null): CardSummary {
 }
 
 function summarizeEthernet(ethernet?: EthernetDiagnostic | null): CardSummary {
-  if (!ethernet) return { health: "neutral", badgeLabel: "Not diagnosed", primaryLine: "Not diagnosed" };
+  if (!ethernet) return { health: "neutral", badgeLabel: "No data", primaryLine: "No data yet" };
   if (ethernet.internet_reachable === true) return { health: "healthy", badgeLabel: "Healthy", primaryLine: "Connected", secondaryLine: "Internet reachable" };
   if (ethernet.link_detected === false) return { health: "neutral", badgeLabel: "Inactive", primaryLine: "No link detected" };
   if (ethernet.flap_count > 0) return { health: "warning", badgeLabel: "Warning", primaryLine: "Connected", secondaryLine: "Unstable link" };
