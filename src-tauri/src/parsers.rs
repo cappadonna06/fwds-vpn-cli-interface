@@ -2357,6 +2357,11 @@ pub fn parse_sim_picker(block: &str) -> SimPickerDiagnostic {
         .ok()
         .and_then(|re| re.captures(block))
         .and_then(|cap| cap[2].parse::<i32>().ok());
+    // +QNWINFO: "CAT-M1","311480","LTE BAND 13",5230 → cap[1] is registered MCC-MNC
+    diag.current_registered_code = Regex::new(r#"\+QNWINFO:\s*"[^"]+","(\d{5,6})""#)
+        .ok()
+        .and_then(|re| re.captures(block))
+        .map(|cap| cap[1].to_string());
     determine_recommendation(&mut diag);
     diag
 }
@@ -2436,11 +2441,20 @@ fn determine_recommendation(diag: &mut SimPickerDiagnostic) {
         .cloned();
 
     let installed_stat = installed_network.as_ref().map(|n| n.stat);
-    diag.installed_carrier_detected = installed_stat.is_some();
 
-    // stat=2 means modem is actively connected to this network.
+    // +QNWINFO gives the currently registered MCC-MNC, which is authoritative even when
+    // the carrier doesn't appear in +COPS=? scan results (e.g., truncated output or
+    // scan while already locked to a network). If it resolves to the installed carrier,
+    // treat as if stat=2 (currently connected).
+    let currently_on_installed = diag.current_registered_code.as_deref()
+        .map(|code| resolve_carrier(code) == installed_name)
+        .unwrap_or(false);
+
+    diag.installed_carrier_detected = installed_stat.is_some() || currently_on_installed;
+
+    // stat=2 means actively connected; currently_on_installed is equivalent evidence.
     // Combined with good signal (RSRP > -100 dBm, or unknown), never recommend a swap.
-    if installed_stat == Some(2) {
+    if installed_stat == Some(2) || currently_on_installed {
         let strong = diag.qcsq_rsrp.map(|r| r > -100).unwrap_or(true);
         if strong {
             diag.recommendation = SimPickerRecommendation::KeepCurrent;

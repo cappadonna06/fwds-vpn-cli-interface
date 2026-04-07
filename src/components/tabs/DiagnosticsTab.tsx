@@ -204,6 +204,7 @@ interface SimPickerDiagnostic {
   best_network_code?: string | null;
   best_network_name?: string | null;
   installed_carrier_detected: boolean;
+  current_registered_code?: string | null;
   recommendation: SimPickerRecommendation;
   recommendation_detail: string;
   qcsq_rsrp?: number | null;
@@ -280,7 +281,7 @@ function resolve_carrier_ts(code: string): string {
 }
 
 const ALL_CARRIERS = [
-  { name: "AT&T",     codes: ["310410","310380","310980","311180","313100","310030","310560","310680"] },
+  { name: "AT&T",     codes: ["310410","310380","310980","311180","310030","310560","310680"] },
   { name: "T-Mobile", codes: ["310260","310026","310490","310660","312250","310230","310240","310250"] },
   { name: "Verizon",  codes: ["311270","311271","311272","311273","311274","311275","311276","311277",
                                "311278","311279","311280","311480","311481","311482","311483","311484",

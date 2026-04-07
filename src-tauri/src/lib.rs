@@ -109,6 +109,7 @@ pub struct SimPickerDiagnostic {
     pub best_network_code: Option<String>,
     pub best_network_name: Option<String>,
     pub installed_carrier_detected: bool,
+    pub current_registered_code: Option<String>,  // from +QNWINFO — MCC-MNC modem is on
     pub recommendation: SimPickerRecommendation,
     pub recommendation_detail: String,
 
