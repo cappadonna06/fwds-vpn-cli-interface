@@ -40,6 +40,7 @@ interface CellularDiag {
   strength_score?: number | null;
   strength_label?: string | null;
   modem_not_present?: boolean;
+  modem_unreachable?: boolean;
 }
 
 interface SatelliteDiag {
@@ -249,52 +250,62 @@ export function generateRecommendedActions(
   if (diag.cellular) {
     const cell = diag.cellular;
 
-    if (cell.modem_not_present) {
+    if (cell.modem_unreachable) {
       actions.push({
         id: mkId(), interface: "Cellular",
-        text: "Check modem connection / seating",
-        detail: "No modem detected. Verify modem board is seated, then reboot controller.",
+        text: "Reboot controller — modem not responding",
+        detail: "Hardware detected but AT interface failed. Reboot resolves this in most cases. If issue persists after reboot, reseat the modem.",
         dismissed: false, checked: false, custom: false,
       });
-    }
-
-    const noService = !cell.connman_cell_connected && !cell.pdp_active;
-
-    if (noService && !cell.sim_inserted) {
-      actions.push({
-        id: mkId(), interface: "Cellular",
-        text: "Check SIM card is seated correctly",
-        detail: "Modem detected but SIM not found. Reseat SIM or try a known-good SIM.",
-        dismissed: false, checked: false, custom: false,
-      });
-    } else if (noService && cell.sim_inserted) {
-      const isUSCell =
-        cell.provider_code?.startsWith("31127") ||
-        cell.imsi?.startsWith("311270") ||
-        cell.operator_name === "US Cellular";
-
-      if (isUSCell) {
+      // modem_unreachable takes precedence — skip other cellular actions
+    } else {
+      if (cell.modem_not_present) {
         actions.push({
           id: mkId(), interface: "Cellular",
-          text: "Consider Verizon SIM swap",
-          detail: "US Cellular SIM detected — limited rural coverage. Verizon SIM may resolve no-service.",
+          text: "Check modem connection / seating",
+          detail: "No modem detected. Verify modem board is seated, then reboot controller.",
           dismissed: false, checked: false, custom: false,
         });
       }
 
-      actions.push({
-        id: mkId(), interface: "Cellular",
-        text: "Check coverage area and antenna",
-        detail: "SIM detected but no network service. Verify antenna connection and site coverage.",
-        dismissed: false, checked: false, custom: false,
-      });
-    } else if (cell.status === "orange" && (cell.strength_score ?? 100) < 50) {
-      actions.push({
-        id: mkId(), interface: "Cellular",
-        text: "Check antenna connection and placement",
-        detail: `Signal ${cell.strength_score}/100. Verify antenna is hand-tight and not obstructed.`,
-        dismissed: false, checked: false, custom: false,
-      });
+      const noService = !cell.connman_cell_connected && !cell.pdp_active;
+
+      if (noService && !cell.sim_inserted) {
+        actions.push({
+          id: mkId(), interface: "Cellular",
+          text: "Check SIM card is seated correctly",
+          detail: "Modem detected but SIM not found. Reseat SIM or try a known-good SIM.",
+          dismissed: false, checked: false, custom: false,
+        });
+      } else if (noService && cell.sim_inserted) {
+        const isUSCell =
+          cell.provider_code?.startsWith("31127") ||
+          cell.imsi?.startsWith("311270") ||
+          cell.operator_name === "US Cellular";
+
+        if (isUSCell) {
+          actions.push({
+            id: mkId(), interface: "Cellular",
+            text: "Consider Verizon SIM swap",
+            detail: "US Cellular SIM detected — limited rural coverage. Verizon SIM may resolve no-service.",
+            dismissed: false, checked: false, custom: false,
+          });
+        }
+
+        actions.push({
+          id: mkId(), interface: "Cellular",
+          text: "Check coverage area and antenna",
+          detail: "SIM detected but no network service. Verify antenna connection and site coverage.",
+          dismissed: false, checked: false, custom: false,
+        });
+      } else if (cell.status === "orange" && (cell.strength_score ?? 100) < 50) {
+        actions.push({
+          id: mkId(), interface: "Cellular",
+          text: "Check antenna connection and placement",
+          detail: `Signal ${cell.strength_score}/100. Verify antenna is hand-tight and not obstructed.`,
+          dismissed: false, checked: false, custom: false,
+        });
+      }
     }
   }
 
