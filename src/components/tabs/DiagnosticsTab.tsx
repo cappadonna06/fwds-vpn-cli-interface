@@ -595,9 +595,6 @@ function summarizeCellular(cell?: CellularDiagnostic | null): CardSummary {
   if (cell.modem_present === false) return { health: "error", badgeLabel: "Issue", primaryLine: "No modem detected" };
   if (cell.sim_inserted === false) return { health: "error", badgeLabel: "Issue", primaryLine: "No SIM detected" };
   if (cell.qcsq === "NOSERVICE") return { health: "error", badgeLabel: "Issue", primaryLine: "No service" };
-  if (cell.check_result === "Unknown") {
-    return { health: "neutral", badgeLabel: "No data", primaryLine: "No data", secondaryLine: "Run cellular diagnostics to populate" };
-  }
   const carrier = cell.operator_name || cell.basic_provider || cell.provider_code || "Cellular";
   const connected = cell.connman_cell_connected === true;
   const sig = signalLabel(cell.strength_score);
