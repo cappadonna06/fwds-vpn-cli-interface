@@ -727,7 +727,7 @@ export default function DiagnosticsTab() {
       <div className="diag-grid">
         <DiagCard
           title="Wi-Fi"
-          icon="🌐"
+          icon="🛜"
           health={wifiSummary.health || toneFromStatus(wifi?.status)}
           badgeLabel={wifiSummary.badgeLabel}
           primaryLine={wifiSummary.primaryLine}
@@ -802,7 +802,7 @@ export default function DiagnosticsTab() {
 
         <DiagCard
           title="Ethernet"
-          icon="🔌"
+          icon="🌐"
           health={ethernetSummary.health || toneFromStatus(ethernet?.status)}
           badgeLabel={ethernetSummary.badgeLabel}
           primaryLine={ethernetSummary.primaryLine}

@@ -16,7 +16,7 @@ import {
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const IFACE_ICON: Record<string, string> = {
-  Ethernet: "🔌",
+  Ethernet: "🌐",
   "Wi-Fi": "🛜",
   Cellular: "📡",
   Satellite: "🛰️",

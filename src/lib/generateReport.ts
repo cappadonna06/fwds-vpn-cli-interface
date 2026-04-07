@@ -341,7 +341,7 @@ export function generateRecommendedActions(
 export function formatSlack(report: SessionReport): string {
   const lines: string[] = [];
   const ifaceIcon: Record<string, string> = {
-    Ethernet: "🔌",
+    Ethernet: "🌐",
     "Wi-Fi": "🛜",
     Cellular: "📡",
     Satellite: "🛰️",
