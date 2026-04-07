@@ -512,8 +512,8 @@ function DiagCard({
           <span className="diag-card-icon" aria-hidden>{icon}</span>
           <span className="diag-card-title">
             {title}
-            {role ? <span className="diag-card-role-inline"> ({role})</span> : null}
           </span>
+          {role ? <span className="diag-role-pill-inline">{role}</span> : null}
         </div>
         <div className="diag-card-head-right">
           <span className="diag-status-label">

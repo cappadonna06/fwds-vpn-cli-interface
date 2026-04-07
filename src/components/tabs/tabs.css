@@ -1967,10 +1967,15 @@
   font-weight: 620;
 }
 
-.diag-card-role-inline {
+.diag-role-pill-inline {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--border);
+  background: var(--bg-2);
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 11px;
   color: var(--text-muted);
-  font-size: 12px;
-  font-weight: 520;
 }
 
 .diag-card-head-right {
