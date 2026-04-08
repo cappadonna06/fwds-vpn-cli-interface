@@ -627,6 +627,49 @@ default via 100.108.114.46 dev wwan0
     }
 
     #[test]
+    fn wifi_check_in_full_block_ignores_ethernet_done_failure() {
+        let mut state = DiagnosticState::default();
+        let log = r#"2026-04-08T16:36:18-0600 [18230967]# (
+> echo "===== ETH DIAGNOSTICS START ====="
+> echo "--- FRONTLINE ---"
+> ethernet-check
+> echo "===== ETH DIAGNOSTICS END ====="
+> echo "===== WIFI DIAGNOSTICS START ====="
+> echo "--- FRONTLINE ---"
+> wifi-check
+> wifi-signal
+> echo "===== WIFI DIAGNOSTICS END ====="
+> )
+===== ETH DIAGNOSTICS START =====
+--- FRONTLINE ---
+Testing Ethernet...
+Done: Failure: -65553: Network technology is not enabled
+===== ETH DIAGNOSTICS END =====
+===== WIFI DIAGNOSTICS START =====
+--- FRONTLINE ---
+Testing Wi-Fi...
+Internet reachability state: online
+Wi-Fi state: online
+Wi-Fi access point: PrettyFlyForaWifi
+Wi-Fi strength: 52/100 ("weak")
+Wi-Fi supports IPv4? Yes
+Wi-Fi supports IPv6? Yes
+Done: Success
+"wlan0" signal strength: -70 dBm
+===== WIFI DIAGNOSTICS END =====
+"#;
+        parse_log_into_state(log, &mut state);
+        let wifi = state
+            .wifi
+            .expect("wifi should parse from scoped wifi section");
+        assert_eq!(wifi.check_result, "Success");
+        assert!(wifi.check_error.is_none());
+        assert_eq!(wifi.access_point.as_deref(), Some("PrettyFlyForaWifi"));
+        assert_eq!(wifi.wifi_state, "online");
+        assert!(wifi.internet_reachable);
+    }
+
+    #[test]
     fn ethernet_status_does_not_downgrade_on_partial_followup_chunk() {
         let mut state = DiagnosticState::default();
         let eth_check_log = "2026-04-01T10:32:46-0600 [22611067]# ethernet-check\nTesting Ethernet...\nInternet reachability state: online\nEthernet state: online\nEthernet supports IPv4? Yes\nEthernet supports IPv6? Yes\nEthernet name servers: 192.168.4.1\nDone: Success\n";
@@ -1084,7 +1127,9 @@ fn parse_wifi(blocks: &[CommandBlock]) -> Option<WifiDiagnostic> {
 
     // Individual command lookup path: used when commands ran in separate shell blocks
     // (not wrapped in a (…) subshell). Each command has its own dedicated HashMap entry.
-    let wifi_check = find_latest(blocks, &["wifi-check"]).or(wifi_block);
+    let wifi_check = find_latest_body_contains_any(blocks, &["Testing Wi-Fi...", "Wi-Fi state:"])
+        .or_else(|| find_latest(blocks, &["wifi-check"]))
+        .or(wifi_block);
     let wifi_signal = find_latest(blocks, &["wifi-signal"]).or(wifi_block);
     let iw_dev = find_latest(blocks, &["iw dev"]).or(wifi_block);
     let iw_info = find_latest(blocks, &["iw dev wlan0 info"]).or(wifi_block);
@@ -1112,31 +1157,25 @@ fn parse_wifi(blocks: &[CommandBlock]) -> Option<WifiDiagnostic> {
     }
 
     if let Some(text) = wifi_check {
-        w.internet_reachable = capture_after(text, "Internet reachability state:")
-            .map(|v| v.eq_ignore_ascii_case("online"))
-            .unwrap_or(false);
-        w.wifi_state = capture_after(text, "Wi-Fi state:").unwrap_or_else(|| "unknown".into());
-        w.access_point = capture_after(text, "Wi-Fi access point:");
-        let (score, label) = parse_strength_line(capture_line(text, "Wi-Fi strength:"));
-        if score > 0 {
-            w.strength_score = Some(score);
-            w.strength_label = Some(label);
+        // Only parse authoritative wifi-check fields from text that actually contains
+        // Wi-Fi check output markers. This avoids pulling "Done: Failure" from other
+        // sections (e.g. Ethernet) in mixed/full subshell output.
+        let wifi_check_text = if text.contains("===== WIFI DIAGNOSTICS START =====")
+            && text.contains("===== WIFI DIAGNOSTICS END =====")
+        {
+            extract_between(
+                text,
+                "===== WIFI DIAGNOSTICS START =====",
+                "===== WIFI DIAGNOSTICS END =====",
+            )
+            .unwrap_or_else(|| text.to_string())
+        } else {
+            text.to_string()
+        };
+        if wifi_check_text.contains("Testing Wi-Fi...") || wifi_check_text.contains("Wi-Fi state:")
+        {
+            parse_wifi_section(&wifi_check_text, &mut w);
         }
-        w.ipv4 = parse_yes_no(capture_after(text, "Wi-Fi supports IPv4?"));
-        w.ipv6 = parse_yes_no(capture_after(text, "Wi-Fi supports IPv6?"));
-        w.dns_servers = capture_after(text, "Wi-Fi name servers:").unwrap_or_else(|| "—".into());
-        if let Some(done) = capture_after(text, "Done:") {
-            if done.to_ascii_lowercase().starts_with("success") {
-                w.check_result = "Success".into();
-            } else if done.to_ascii_lowercase().starts_with("failure") {
-                w.check_result = "Failure".into();
-                w.check_error = Some(done.trim_start_matches("Failure:").trim().to_string());
-            } else {
-                w.check_result = done;
-            }
-        }
-        w.check_avg_latency_ms = parse_avg_latency(text);
-        w.check_packet_loss_pct = parse_packet_loss(text).unwrap_or(0);
     }
 
     if let Some(text) = wifi_signal {
