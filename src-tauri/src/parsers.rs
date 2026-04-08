@@ -2103,56 +2103,32 @@ fn determine_wifi_status(diag: &mut WifiDiagnostic) {
         return;
     }
 
-    if diag
-        .check_error
-        .as_deref()
-        .map(|e| e.contains("-65554"))
-        .unwrap_or(false)
-        || diag.connected == Some(false)
-        || (diag.connman_wifi_connected == Some(false) && diag.connman_wifi_powered == Some(true))
-    {
-        diag.status = DiagStatus::Red;
-        diag.summary = "Not connected — Wi-Fi offline or association failed".into();
-        return;
-    }
-
-    if diag.link_state.as_deref() == Some("DOWN") {
-        diag.status = DiagStatus::Red;
-        diag.summary = "Interface down — wlan0 not ready".into();
-        return;
-    }
-
-    if diag.connected == Some(true) && diag.ipv4_address.is_none() {
-        diag.status = DiagStatus::Orange;
-        diag.summary = "Connected — no IP assigned (DHCP failure?)".into();
-        return;
-    }
-
-    if let Some(dbm) = diag.signal_dbm {
-        if diag.signal_dbm_trusted && dbm <= -75 {
+    // FAST PATH: frontline check confirmed live internet connectivity.
+    // Skip raw interface state checks (iw/ip data may be stale or from a different moment).
+    // Only apply quality-of-link checks (signal + packet loss) which come from the same run.
+    if diag.check_result == "Success" && diag.internet_reachable {
+        if let Some(dbm) = diag.signal_dbm {
+            if diag.signal_dbm_trusted && dbm <= -75 {
+                let ssid = diag
+                    .ssid
+                    .clone()
+                    .or(diag.access_point.clone())
+                    .unwrap_or_else(|| "Wi-Fi".into());
+                diag.status = DiagStatus::Orange;
+                diag.summary = format!("{ssid} · weak signal ({dbm} dBm)");
+                return;
+            }
+        }
+        if diag.check_packet_loss_pct >= 20 || diag.station_tx_failed.unwrap_or(0) >= 5 {
             let ssid = diag
                 .ssid
                 .clone()
                 .or(diag.access_point.clone())
                 .unwrap_or_else(|| "Wi-Fi".into());
             diag.status = DiagStatus::Orange;
-            diag.summary = format!("{ssid} · weak signal ({dbm} dBm)");
+            diag.summary = format!("{ssid} · unstable link");
             return;
         }
-    }
-
-    if diag.check_packet_loss_pct >= 20 || diag.station_tx_failed.unwrap_or(0) >= 5 {
-        let ssid = diag
-            .ssid
-            .clone()
-            .or(diag.access_point.clone())
-            .unwrap_or_else(|| "Wi-Fi".into());
-        diag.status = DiagStatus::Orange;
-        diag.summary = format!("{ssid} · unstable link");
-        return;
-    }
-
-    if diag.check_result == "Success" && diag.internet_reachable {
         let ssid = diag
             .ssid
             .clone()
@@ -2177,6 +2153,32 @@ fn determine_wifi_status(diag: &mut WifiDiagnostic) {
         };
         diag.status = DiagStatus::Green;
         diag.summary = format!("{ssid} · {signal} · {bitrate}{preferred}");
+        return;
+    }
+
+    // Slow path: check failed or unknown — fall back to raw interface state
+    if diag
+        .check_error
+        .as_deref()
+        .map(|e| e.contains("-65554"))
+        .unwrap_or(false)
+        || diag.connected == Some(false)
+        || (diag.connman_wifi_connected == Some(false) && diag.connman_wifi_powered == Some(true))
+    {
+        diag.status = DiagStatus::Red;
+        diag.summary = "Not connected — Wi-Fi offline or association failed".into();
+        return;
+    }
+
+    if diag.link_state.as_deref() == Some("DOWN") {
+        diag.status = DiagStatus::Red;
+        diag.summary = "Interface down — wlan0 not ready".into();
+        return;
+    }
+
+    if diag.connected == Some(true) && diag.ipv4_address.is_none() {
+        diag.status = DiagStatus::Orange;
+        diag.summary = "Connected — no IP assigned (DHCP failure?)".into();
         return;
     }
 
@@ -2975,6 +2977,32 @@ fn determine_cellular_status(diag: &mut CellularDiagnostic) {
         diag.summary = format!("Cellular disabled{}", imei_note);
         diag.recommended_action = Some("Enable via setup-cellular".into());
         diag.other_actions = vec![];
+        return;
+    }
+
+    // FAST PATH: frontline check confirmed live cellular internet.
+    // Skip AT-state checks (no_service, registered) — they may reflect stale modem state.
+    if diag.check_result == "Success" && diag.internet_reachable {
+        let provider = diag
+            .operator_name
+            .as_deref()
+            .or(diag.basic_provider.as_deref())
+            .or(diag.provider_code.as_deref())
+            .unwrap_or("Unknown");
+        let strength = diag.strength_score.unwrap_or(0);
+        let label = diag.strength_label.as_deref().unwrap_or("");
+        if strength >= 60 {
+            diag.status = DiagStatus::Green;
+            diag.summary = format!("{} · {}/100 · {}", provider, strength, label);
+        } else if strength >= 40 {
+            diag.status = DiagStatus::Orange;
+            diag.summary = format!("{} · {}/100 · weak signal", provider, strength);
+            diag.recommended_action = Some("Check antenna connection and placement".into());
+        } else {
+            diag.status = DiagStatus::Red;
+            diag.summary = format!("{} · {}/100 · signal too weak", provider, strength);
+            diag.recommended_action = Some("Check antenna — signal critically low".into());
+        }
         return;
     }
 

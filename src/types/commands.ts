@@ -801,13 +801,13 @@ export const DIAGNOSTIC_BLOCKS: DiagnosticBlock[] = [
       "cat-resolv-conf",
       "ping-8-8-8-8",
       "ping-google",
-      "connmanctl-technologies",
-      "connmanctl-services",
-      "connmanctl-state",
       "ethtool-driver-eth0",
       "ethtool-stats-eth0",
       "proc-net-dev",
       // WiFi
+      "connmanctl-technologies",
+      "connmanctl-services",
+      "connmanctl-state",
       "wifi-check",
       "wifi-signal",
       "iw-dev",
@@ -871,12 +871,6 @@ echo ""
 echo "--- CONNECTIVITY ---"
 ping -c 3 8.8.8.8
 ping -c 3 google.com
-
-echo ""
-echo "--- CONNMAN ---"
-connmanctl technologies
-connmanctl services
-connmanctl state
 
 echo ""
 echo "--- DRIVER / STATS ---"
@@ -1011,12 +1005,6 @@ echo ""
 echo "--- CONNECTIVITY ---"
 ping -c 3 8.8.8.8
 ping -c 3 google.com
-
-echo ""
-echo "--- CONNMAN ---"
-connmanctl technologies
-connmanctl services
-connmanctl state
 
 echo ""
 echo "--- DRIVER / STATS ---"
@@ -1345,12 +1333,6 @@ ping -c 3 8.8.8.8
 ping -c 3 google.com
 
 echo ""
-echo "--- CONNMAN ---"
-connmanctl technologies
-connmanctl services
-connmanctl state
-
-echo ""
 echo "--- DRIVER / STATS ---"
 ethtool -i eth0
 ethtool -S eth0
@@ -1494,12 +1476,6 @@ echo ""
 echo "--- CONNECTIVITY ---"
 ping -c 3 8.8.8.8
 ping -c 3 google.com
-
-echo ""
-echo "--- CONNMAN ---"
-connmanctl technologies
-connmanctl services
-connmanctl state
 
 echo ""
 echo "--- DRIVER / STATS ---"
