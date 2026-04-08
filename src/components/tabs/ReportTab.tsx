@@ -138,6 +138,73 @@ const QUICK_ACTIONS = (version: string) => [
   { label: "Configured network",  text: "Configured (x) network" },
 ];
 
+// ── Network preset chips (Ethernet + Wi-Fi) ───────────────────────────────────
+
+type IfacePreset = {
+  label: string;
+  status: NetworkStatusRow["status"];
+  summary: string;
+  /** Optional recommended action to auto-add when this preset is applied. */
+  recommendedAction?: {
+    interface: ReportRecommendedAction["interface"];
+    text: string;
+    detail?: string;
+  };
+};
+
+const NETWORK_PRESETS: Partial<Record<NetworkStatusRow["interface"], IfacePreset[]>> = {
+  Ethernet: [
+    { label: "Not connected", status: "unknown", summary: "Not connected" },
+    { label: "N/A",           status: "unknown", summary: "N/A"           },
+  ],
+  "Wi-Fi": [
+    {
+      label: "Not configured",
+      status: "orange",
+      summary: "Not configured",
+      recommendedAction: { interface: "Wi-Fi", text: "Configure Wi-Fi", detail: "Set SSID and passphrase via the WiFi setup workflow." },
+    },
+    { label: "N/A", status: "unknown", summary: "N/A" },
+  ],
+};
+
+// ── Local-state inputs (prevent full-component re-render on keypress) ─────────
+
+function NetworkSummaryInput({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  const [local, setLocal] = useState(value);
+  const focused = useRef(false);
+  // Sync from parent only when the user isn't actively typing
+  useEffect(() => { if (!focused.current) setLocal(value); }, [value]);
+  return (
+    <input
+      className="report-network-summary report-network-summary-input"
+      type="text"
+      value={local}
+      placeholder="Add summary…"
+      onChange={e => setLocal(e.target.value)}
+      onFocus={() => { focused.current = true; }}
+      onBlur={() => { focused.current = false; onChange(local); }}
+    />
+  );
+}
+
+function NetworkNoteInput({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  const [local, setLocal] = useState(value);
+  const focused = useRef(false);
+  useEffect(() => { if (!focused.current) setLocal(value); }, [value]);
+  return (
+    <input
+      className="report-network-note"
+      type="text"
+      value={local}
+      placeholder="Add note…"
+      onChange={e => setLocal(e.target.value)}
+      onFocus={() => { focused.current = true; }}
+      onBlur={() => { focused.current = false; onChange(local); }}
+    />
+  );
+}
+
 // ── ReportTab ─────────────────────────────────────────────────────────────────
 
 export default function ReportTab() {
@@ -287,6 +354,32 @@ export default function ReportTab() {
     }));
   }
 
+  function applyNetworkPreset(iface: string, preset: IfacePreset) {
+    setReport(r => {
+      let recs = r.recommendedActions;
+      if (preset.recommendedAction) {
+        const ra = preset.recommendedAction;
+        const exists = recs.some(a => a.interface === ra.interface && a.text === ra.text);
+        if (!exists) {
+          recs = [...recs, {
+            id: `preset:${ra.interface}:${ra.text}`,
+            interface: ra.interface,
+            text: ra.text,
+            detail: ra.detail ?? "",
+            dismissed: false,
+            checked: false,
+            custom: false,
+          }];
+        }
+      }
+      return {
+        ...r,
+        networkOverrides: { ...r.networkOverrides, [iface]: { status: preset.status, summary: preset.summary } },
+        recommendedActions: recs,
+      };
+    });
+  }
+
   function clearNetworkOverride(iface: string) {
     setReport(r => {
       // eslint-disable-next-line @typescript-eslint/no-unused-vars
@@ -381,11 +474,9 @@ export default function ReportTab() {
                       <span className="report-network-iface">
                         {IFACE_ICON[row.interface]} {row.interface}
                       </span>
-                      <input
-                        className="report-network-summary report-network-summary-input"
-                        type="text"
+                      <NetworkSummaryInput
                         value={row.summary}
-                        onChange={e => overrideNetworkSummary(row.interface, e.target.value)}
+                        onChange={v => overrideNetworkSummary(row.interface, v)}
                       />
                       {hasOverride && (
                         <button
@@ -397,15 +488,22 @@ export default function ReportTab() {
                         </button>
                       )}
                     </div>
-                    <input
-                      className="report-network-note"
-                      type="text"
+                    {NETWORK_PRESETS[row.interface] && (
+                      <div className="report-network-presets">
+                        {NETWORK_PRESETS[row.interface]!.map(preset => (
+                          <button
+                            key={preset.label}
+                            className="report-network-preset-pill"
+                            onClick={() => applyNetworkPreset(row.interface, preset)}
+                          >
+                            {preset.label}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                    <NetworkNoteInput
                       value={report.networkNotes[row.interface] ?? ""}
-                      placeholder="Add note…"
-                      onChange={e => setReport(r => ({
-                        ...r,
-                        networkNotes: { ...r.networkNotes, [row.interface]: e.target.value },
-                      }))}
+                      onChange={v => setReport(r => ({ ...r, networkNotes: { ...r.networkNotes, [row.interface]: v } }))}
                     />
                   </div>
                 );

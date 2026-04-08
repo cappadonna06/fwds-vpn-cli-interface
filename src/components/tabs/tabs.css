@@ -2667,6 +2667,31 @@
   font-style: normal;
 }
 
+/* ── Network preset pills ──────────────────────────────────── */
+
+.report-network-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 2px;
+}
+
+.report-network-preset-pill {
+  font-size: 10.5px;
+  padding: 2px 9px;
+  border-radius: 999px;
+  border: 1px dashed var(--border);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: border-color 100ms, color 100ms;
+}
+
+.report-network-preset-pill:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
 /* ── Recommended actions ──────────────────────────────────── */
 
 .report-rec-row {
