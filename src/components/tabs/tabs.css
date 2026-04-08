@@ -1231,6 +1231,20 @@
   font-size: 12px;
   font-weight: 600;
   color: var(--text-primary);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.diag-block-time-tag {
+  font-size: 10px;
+  font-weight: 650;
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 1px 6px;
+  background: var(--bg-1);
 }
 
 .diag-block-actions {

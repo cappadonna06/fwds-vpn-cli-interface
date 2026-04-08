@@ -53,7 +53,7 @@ const DIAG_BLOCK_SECTIONS: DiagSectionDef[] = [
     id: "all-diagnostics",
     title: "All diagnostics",
     description: "Complete system checks",
-    blockIds: ["networking-all", "full-diags", "full-diags-no-sat"],
+    blockIds: ["full-diags", "full-diags-no-sat"],
   },
   {
     id: "network",
@@ -76,6 +76,16 @@ const DIAG_BLOCK_SECTIONS: DiagSectionDef[] = [
     placeholder: "Coming soon: pump, pressure, manifold",
   },
 ];
+
+const DIAG_BLOCK_TIME_TAGS: Record<string, string[]> = {
+  wifi: ["15s"],
+  cellular: ["30s"],
+  ethernet: ["15s"],
+  "networking-all": ["30s"],
+  "full-diags": ["15m"],
+  "full-diags-no-sat": ["45s"],
+  satellite: ["1m", "15m"],
+};
 
 function resolveBlockScript(block: DiagnosticBlock, tier: "light" | "heavy"): string {
   const custom = tier === "light" ? block.light_script : block.heavy_script;
@@ -289,7 +299,6 @@ function DiagnosticBlockRow({
     send: () => void;
     copied: boolean;
     sent: boolean;
-    estSeconds: number;
   }> = [];
   if (hasDistinctTiers) {
     rows.push({
@@ -298,7 +307,6 @@ function DiagnosticBlockRow({
       send: () => onSendLight(block),
       copied: lightCopied,
       sent: lightSent,
-      estSeconds: sumSeconds(block.light_command_ids),
     });
     rows.push({
       label: "Full",
@@ -306,7 +314,6 @@ function DiagnosticBlockRow({
       send: () => onSendHeavy(block),
       copied: heavyCopied,
       sent: heavySent,
-      estSeconds: sumSeconds(block.heavy_command_ids),
     });
   } else {
     const label = block.id === "networking-all"
@@ -322,7 +329,6 @@ function DiagnosticBlockRow({
       send: () => onSendHeavy(block),
       copied: singleCopied,
       sent: singleSent,
-      estSeconds: sumSeconds(block.heavy_command_ids),
     });
   }
 
@@ -331,7 +337,12 @@ function DiagnosticBlockRow({
       <div className="diag-block-icon">{block.icon}</div>
       <div className="diag-block-content">
         <div className="diag-block-header">
-          <span className="diag-block-label">{block.label}</span>
+          <span className="diag-block-label">
+            {block.label}
+            {(DIAG_BLOCK_TIME_TAGS[block.id] ?? []).map((tag) => (
+              <span key={`${block.id}-${tag}`} className="diag-block-time-tag">[{tag}]</span>
+            ))}
+          </span>
           <button
             className={`cmd-chevron-btn ${isDrawerOpen ? "cmd-chevron-btn-open" : ""}`}
             onClick={() => onOpenDrawer(block.id)}
@@ -347,9 +358,6 @@ function DiagnosticBlockRow({
             <div className="diag-block-actions" key={`${block.id}-${row.label}`}>
               <div className="diag-block-mode-label">
                 <span>{row.label}</span>
-                {row.estSeconds > 0 && (
-                  <span className="cmd-time-badge">{formatSeconds(row.estSeconds)}</span>
-                )}
               </div>
               <button
                 className={`diag-block-btn ${row.copied ? "diag-block-btn-copied" : ""}`}
@@ -366,6 +374,12 @@ function DiagnosticBlockRow({
             </div>
           ))}
         </div>
+        {block.id === "full-diags" && (
+          <div className="diag-block-warning">Runs satellite loopback test and can take up to 15 minutes.</div>
+        )}
+        {block.id === "satellite" && (
+          <div className="diag-block-warning">Full satellite run includes loopback test and can take up to 15 minutes.</div>
+        )}
       </div>
     </div>
   );

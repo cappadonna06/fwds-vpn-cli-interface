@@ -1349,15 +1349,16 @@ release
   },
   {
     id: "full-diags-no-sat",
-    label: "Full Diags (no satellite)",
+    label: "Full Diags (no loopback)",
     icon: "🔬",
-    description: "Complete diagnostic suite excluding satellite commands. Same coverage as Full Diagnostics for Ethernet, Wi-Fi, cellular, and system — use when satellite is not installed or not relevant to the issue at hand.",
-    when_to_run: "Same as Full Diagnostics but when satellite is not installed or not relevant to the current issue.",
+    description: "Complete diagnostics without satellite loopback. Includes satellite IMEI verification plus Ethernet, Wi-Fi, cellular, and system checks.",
+    when_to_run: "Use when you want full network/system coverage but need to skip the long satellite loopback test.",
     light_command_ids: [],
     heavy_command_ids: [
       "ethernet-check", "ethtool-eth0", "ifconfig-eth0",
       "wifi-check", "wifi-signal",
       "cellular-check", "cell-signal", "cell-provider", "cell-ccid", "cell-imei", "cell-apn", "cell-status",
+      "sat-imei",
       "version", "sid", "release",
     ],
     heavy_script: `(
@@ -1480,6 +1481,10 @@ cat /proc/net/dev
 echo ""
 echo "===== MODEM / RADIO DIAGNOSTICS ====="
 cell-support --no-ofono --at
+
+echo ""
+echo "===== SATELLITE BASIC ====="
+sat-imei
 
 echo ""
 echo "===== SYSTEM ====="
