@@ -858,7 +858,7 @@ fn parse_wifi(latest: &HashMap<String, String>) -> Option<WifiDiagnostic> {
         w.interface_exists = text.contains("Interface wlan0");
         w.interface_name = capture_after(text, "Interface");
         w.mac_address = capture_after(text, "addr");
-        w.ssid = capture_after(text, "ssid");
+        w.ssid = capture_after(text, "ssid").filter(|s| !s.starts_with('='));
         w.interface_type = capture_after(text, "type");
         w.tx_power_dbm = capture_after(text, "txpower").and_then(|v| {
             v.split_whitespace()
@@ -873,7 +873,7 @@ fn parse_wifi(latest: &HashMap<String, String>) -> Option<WifiDiagnostic> {
             .or_else(|| capture_after(text, "Interface"));
         w.interface_type = w.interface_type.or_else(|| capture_after(text, "type"));
         w.mac_address = w.mac_address.or_else(|| capture_after(text, "addr"));
-        w.ssid = w.ssid.or_else(|| capture_after(text, "ssid"));
+        w.ssid = w.ssid.or_else(|| capture_after(text, "ssid").filter(|s| !s.starts_with('=')));
     }
     if let Some(text) = iw_link {
         if text.contains("Not connected") {
@@ -1541,9 +1541,19 @@ fn parse_ethernet(
         .and_then(|b| capture_after(b, "Internet reachability state:"))
         .map(|s| s.eq_ignore_ascii_case("online"))
         .unwrap_or(false);
+    const KNOWN_ETH_STATES: &[&str] = &[
+        "up", "down", "dormant", "lowerlayerdown", "notpresent",
+        "unknown", "idle", "failure", "association", "configuration",
+        "ready", "online", "disconnect",
+    ];
     let eth_state = ethernet_check
         .and_then(|b| capture_after(b, "Ethernet state:"))
-        .or_else(|| operstate.and_then(|b| parse_single_value(Some(b))))
+        .or_else(|| {
+            operstate.and_then(|b| parse_single_value(Some(b))).filter(|s| {
+                let lower = s.to_ascii_lowercase();
+                KNOWN_ETH_STATES.iter().any(|&known| lower == known)
+            })
+        })
         .unwrap_or_else(|| "unknown".into());
     let ipv4 = ethernet_check
         .and_then(|b| capture_after(b, "Ethernet supports IPv4?"))
