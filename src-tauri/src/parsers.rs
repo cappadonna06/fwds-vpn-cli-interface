@@ -175,7 +175,29 @@ fn ethernet_has_authoritative_check(diag: &EthernetDiagnostic) -> bool {
 }
 
 fn merge_wifi_diag(prev: WifiDiagnostic, mut next: WifiDiagnostic) -> WifiDiagnostic {
+    let carry_non_authoritative_fields = |prev: &WifiDiagnostic, next: &mut WifiDiagnostic| {
+        next.access_point = next.access_point.clone().or(prev.access_point.clone());
+        next.ssid = next.ssid.clone().or(prev.ssid.clone());
+        next.strength_score = next.strength_score.or(prev.strength_score);
+        next.strength_label = next.strength_label.clone().or(prev.strength_label.clone());
+        next.signal_dbm = next.signal_dbm.or(prev.signal_dbm);
+        next.tx_bitrate_mbps = next.tx_bitrate_mbps.or(prev.tx_bitrate_mbps);
+        next.station_tx_bitrate_mbps = next
+            .station_tx_bitrate_mbps
+            .or(prev.station_tx_bitrate_mbps);
+        next.link_state = next.link_state.clone().or(prev.link_state.clone());
+        next.default_via_wlan0 = next.default_via_wlan0.or(prev.default_via_wlan0);
+        next.default_gateway = next
+            .default_gateway
+            .clone()
+            .or(prev.default_gateway.clone());
+        next.ipv4_address = next.ipv4_address.clone().or(prev.ipv4_address.clone());
+        next.ipv4_prefix = next.ipv4_prefix.or(prev.ipv4_prefix);
+        next.connected = next.connected.or(prev.connected);
+    };
+
     if wifi_has_authoritative_check(&next) {
+        carry_non_authoritative_fields(&prev, &mut next);
         return next;
     }
     if wifi_has_authoritative_check(&prev) {
@@ -185,21 +207,7 @@ fn merge_wifi_diag(prev: WifiDiagnostic, mut next: WifiDiagnostic) -> WifiDiagno
         next.check_error = prev.check_error;
         next.internet_reachable = prev.internet_reachable;
         next.wifi_state = prev.wifi_state;
-        next.access_point = next.access_point.or(prev.access_point);
-        next.ssid = next.ssid.or(prev.ssid);
-        next.strength_score = next.strength_score.or(prev.strength_score);
-        next.strength_label = next.strength_label.or(prev.strength_label);
-        next.signal_dbm = next.signal_dbm.or(prev.signal_dbm);
-        next.tx_bitrate_mbps = next.tx_bitrate_mbps.or(prev.tx_bitrate_mbps);
-        next.station_tx_bitrate_mbps = next
-            .station_tx_bitrate_mbps
-            .or(prev.station_tx_bitrate_mbps);
-        next.link_state = next.link_state.or(prev.link_state);
-        next.default_via_wlan0 = next.default_via_wlan0.or(prev.default_via_wlan0);
-        next.default_gateway = next.default_gateway.or(prev.default_gateway);
-        next.ipv4_address = next.ipv4_address.or(prev.ipv4_address);
-        next.ipv4_prefix = next.ipv4_prefix.or(prev.ipv4_prefix);
-        next.connected = next.connected.or(prev.connected);
+        carry_non_authoritative_fields(&prev, &mut next);
         next.ipv4 = next.ipv4 || prev.ipv4;
         next.ipv6 = next.ipv6 || prev.ipv6;
         if next.dns_servers == "—" {
@@ -716,6 +724,45 @@ Interface wlan0
         let second = state.wifi.expect("wifi still exists");
         assert_eq!(second.check_result, "Success");
         assert_eq!(second.tx_bitrate_mbps.map(|v| v.round() as i32), Some(130));
+    }
+
+    #[test]
+    fn wifi_merge_keeps_bitrate_on_authoritative_sparse_followup() {
+        let mut state = DiagnosticState::default();
+        let wifi_rich = r#"2026-04-08T16:47:11-0600 [18230967]# (
+> echo "===== WIFI DIAGNOSTICS START ====="
+> wifi-check
+> iw dev wlan0 link
+> echo "===== WIFI DIAGNOSTICS END ====="
+> )
+===== WIFI DIAGNOSTICS START =====
+Testing Wi-Fi...
+Internet reachability state: online
+Wi-Fi state: online
+Done: Success
+Connected to c8:84:8c:a9:a2:60 (on wlan0)
+	SSID: PrettyFlyForaWifi
+	signal: -70 dBm
+	tx bitrate: 130.0 MBit/s VHT-MCS 3
+===== WIFI DIAGNOSTICS END =====
+"#;
+        parse_log_into_state(wifi_rich, &mut state);
+        let first = state.wifi.clone().expect("wifi exists");
+        assert_eq!(first.tx_bitrate_mbps.map(|v| v.round() as i32), Some(130));
+        assert_eq!(first.signal_dbm, Some(-70));
+
+        // Later authoritative check without IW bitrate details should not clear speed/dbm.
+        let wifi_sparse = r#"2026-04-08T16:47:40-0600 [18230967]# wifi-check
+Testing Wi-Fi...
+Internet reachability state: online
+Wi-Fi state: online
+Done: Success
+"#;
+        parse_log_into_state(wifi_sparse, &mut state);
+        let second = state.wifi.expect("wifi still exists");
+        assert_eq!(second.check_result, "Success");
+        assert_eq!(second.tx_bitrate_mbps.map(|v| v.round() as i32), Some(130));
+        assert_eq!(second.signal_dbm, Some(-70));
     }
 
     #[test]

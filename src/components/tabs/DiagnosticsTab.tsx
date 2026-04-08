@@ -640,9 +640,6 @@ function summarizeWifi(wifi?: WifiDiagnostic | null): CardSummary {
   if (wifi.check_result === "Failure") {
     return { health: "warning", badgeLabel: "Warning", primaryLine: ssid, secondaryLine: "Connected · limited data", signalLabel: sig, signalScore: wifi.strength_score };
   }
-  if (wifi.check_result === "Success" && ["Weak", "Poor"].includes(sig)) {
-    return { health: "healthy", badgeLabel: "Healthy", primaryLine: ssid, secondaryLine: "Connected · weak RF", signalLabel: sig, signalScore: wifi.strength_score };
-  }
   return { health: "healthy", badgeLabel: "Healthy", primaryLine: ssid, secondaryLine: "Connected", signalLabel: sig, signalScore: wifi.strength_score };
 }
 
