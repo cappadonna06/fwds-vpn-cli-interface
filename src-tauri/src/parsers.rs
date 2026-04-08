@@ -186,8 +186,20 @@ fn merge_wifi_diag(prev: WifiDiagnostic, mut next: WifiDiagnostic) -> WifiDiagno
         next.internet_reachable = prev.internet_reachable;
         next.wifi_state = prev.wifi_state;
         next.access_point = next.access_point.or(prev.access_point);
+        next.ssid = next.ssid.or(prev.ssid);
         next.strength_score = next.strength_score.or(prev.strength_score);
         next.strength_label = next.strength_label.or(prev.strength_label);
+        next.signal_dbm = next.signal_dbm.or(prev.signal_dbm);
+        next.tx_bitrate_mbps = next.tx_bitrate_mbps.or(prev.tx_bitrate_mbps);
+        next.station_tx_bitrate_mbps = next
+            .station_tx_bitrate_mbps
+            .or(prev.station_tx_bitrate_mbps);
+        next.link_state = next.link_state.or(prev.link_state);
+        next.default_via_wlan0 = next.default_via_wlan0.or(prev.default_via_wlan0);
+        next.default_gateway = next.default_gateway.or(prev.default_gateway);
+        next.ipv4_address = next.ipv4_address.or(prev.ipv4_address);
+        next.ipv4_prefix = next.ipv4_prefix.or(prev.ipv4_prefix);
+        next.connected = next.connected.or(prev.connected);
         next.ipv4 = next.ipv4 || prev.ipv4;
         next.ipv6 = next.ipv6 || prev.ipv6;
         if next.dns_servers == "—" {
@@ -667,6 +679,43 @@ Done: Success
         assert_eq!(wifi.access_point.as_deref(), Some("PrettyFlyForaWifi"));
         assert_eq!(wifi.wifi_state, "online");
         assert!(wifi.internet_reachable);
+    }
+
+    #[test]
+    fn wifi_merge_keeps_bitrate_on_non_authoritative_followup() {
+        let mut state = DiagnosticState::default();
+        let wifi_full = r#"2026-04-08T16:47:11-0600 [18230967]# (
+> echo "===== WIFI DIAGNOSTICS START ====="
+> wifi-check
+> iw dev wlan0 link
+> echo "===== WIFI DIAGNOSTICS END ====="
+> )
+===== WIFI DIAGNOSTICS START =====
+Testing Wi-Fi...
+Internet reachability state: online
+Wi-Fi state: online
+Done: Success
+Connected to c8:84:8c:a9:a2:60 (on wlan0)
+	SSID: PrettyFlyForaWifi
+	signal: -70 dBm
+	tx bitrate: 130.0 MBit/s VHT-MCS 3
+===== WIFI DIAGNOSTICS END =====
+"#;
+        parse_log_into_state(wifi_full, &mut state);
+        let first = state.wifi.clone().expect("wifi exists");
+        assert_eq!(first.check_result, "Success");
+        assert_eq!(first.tx_bitrate_mbps.map(|v| v.round() as i32), Some(130));
+
+        // Follow-up partial block without wifi-check should not clear bitrate.
+        let wifi_partial = r#"2026-04-08T16:47:22-0600 [18230967]# iw dev wlan0 info
+Interface wlan0
+	ifindex 5
+	addr 00:04:f3:71:55:57
+"#;
+        parse_log_into_state(wifi_partial, &mut state);
+        let second = state.wifi.expect("wifi still exists");
+        assert_eq!(second.check_result, "Success");
+        assert_eq!(second.tx_bitrate_mbps.map(|v| v.round() as i32), Some(130));
     }
 
     #[test]
