@@ -712,6 +712,46 @@ export const COMMANDS: ControllerCommand[] = [
     reboot_required: false,
     guard: "none",
   },
+  {
+    id: "ethtool-driver-eth0",
+    label: "ethtool -i eth0",
+    command: "ethtool -i eth0",
+    category: "diagnostic",
+    description: "Ethernet driver name, version, and bus info.",
+    reboot_required: false,
+    guard: "none",
+    est_seconds: 1,
+  },
+  {
+    id: "dmesg-eth",
+    label: "dmesg | grep -i eth",
+    command: "dmesg | grep -i eth",
+    category: "diagnostic",
+    description: "Kernel log entries for Ethernet — link up/down events, driver errors.",
+    reboot_required: false,
+    guard: "none",
+    est_seconds: 1,
+  },
+  {
+    id: "ping-8-8-8-8",
+    label: "ping -c 3 8.8.8.8",
+    command: "ping -c 3 8.8.8.8",
+    category: "diagnostic",
+    description: "ICMP reachability to Google DNS — confirms IP-layer internet access.",
+    reboot_required: false,
+    guard: "none",
+    est_seconds: 5,
+  },
+  {
+    id: "ping-google",
+    label: "ping -c 3 google.com",
+    command: "ping -c 3 google.com",
+    category: "diagnostic",
+    description: "ICMP reachability via DNS name — confirms both DNS and internet are working.",
+    reboot_required: false,
+    guard: "none",
+    est_seconds: 5,
+  },
 ];
 
 export const FAVORITE_COMMAND_IDS = [
@@ -749,24 +789,35 @@ export const DIAGNOSTIC_BLOCKS: DiagnosticBlock[] = [
     description: "All subsystems, no satellite loopback — runs in ~2 minutes",
     light_command_ids: [],
     heavy_command_ids: [
+      // ETH
       "ethernet-check",
       "ethtool-eth0",
       "cat-eth0-carrier",
       "cat-eth0-operstate",
+      "dmesg-eth",
       "ip-link-eth0",
       "ip-addr-eth0",
       "ip-route",
+      "cat-resolv-conf",
+      "ping-8-8-8-8",
+      "ping-google",
       "connmanctl-technologies",
       "connmanctl-services",
       "connmanctl-state",
+      "ethtool-driver-eth0",
       "ethtool-stats-eth0",
       "proc-net-dev",
+      // WiFi
       "wifi-check",
       "wifi-signal",
-      "iw-dev-link",
-      "iw-dev-station",
+      "iw-dev",
+      "iw-wlan0-info",
+      "iw-wlan0-link",
+      "iw-wlan0-station-dump",
       "ip-link-wlan0",
       "ip-addr-wlan0",
+      "ethtool-driver-wlan0",
+      // Cellular
       "cellular-check",
       "cell-imei",
       "cell-ccid",
@@ -776,7 +827,12 @@ export const DIAGNOSTIC_BLOCKS: DiagnosticBlock[] = [
       "cell-status",
       "cell-signal",
       "cell-apn",
+      "ip-link-wwan0",
+      "ip-addr-wwan0",
       "cell-support-at",
+      // Satellite
+      "sat-imei",
+      // System
       "version",
       "sid",
       "release",
@@ -799,6 +855,7 @@ echo "--- LINK / PHY ---"
 ethtool eth0
 cat /sys/class/net/eth0/carrier
 cat /sys/class/net/eth0/operstate
+dmesg | grep -i eth
 
 echo ""
 echo "--- INTERFACE ---"
@@ -808,6 +865,12 @@ ip addr show eth0
 echo ""
 echo "--- ROUTING / DNS ---"
 ip route
+cat /etc/resolv.conf
+
+echo ""
+echo "--- CONNECTIVITY ---"
+ping -c 3 8.8.8.8
+ping -c 3 google.com
 
 echo ""
 echo "--- CONNMAN ---"
@@ -817,6 +880,7 @@ connmanctl state
 
 echo ""
 echo "--- DRIVER / STATS ---"
+ethtool -i eth0
 ethtool -S eth0
 cat /proc/net/dev
 
@@ -833,6 +897,8 @@ wifi-signal
 
 echo ""
 echo "--- IW ---"
+iw dev
+iw dev wlan0 info
 iw dev wlan0 link
 iw dev wlan0 station dump
 
@@ -840,6 +906,22 @@ echo ""
 echo "--- INTERFACE ---"
 ip link show wlan0
 ip addr show wlan0
+
+echo ""
+echo "--- ROUTING / DNS ---"
+ip route
+cat /etc/resolv.conf
+
+echo ""
+echo "--- CONNMAN ---"
+connmanctl technologies
+connmanctl services
+connmanctl state
+
+echo ""
+echo "--- DRIVER / STATS ---"
+ethtool -i wlan0
+cat /proc/net/dev
 
 echo ""
 echo "===== WIFI DIAGNOSTICS END ====="
@@ -860,8 +942,25 @@ cell-signal
 cell-apn
 
 echo ""
+echo "===== NETWORK TECHNOLOGY ====="
+connmanctl technologies
+connmanctl services
+connmanctl state
+
+echo ""
+echo "===== INTERFACE / ROUTING ====="
+ip link show wwan0
+ip addr show wwan0
+ip route
+cat /proc/net/dev
+
+echo ""
 echo "===== MODEM / RADIO DIAGNOSTICS ====="
 cell-support --no-ofono --at
+
+echo ""
+echo "===== SATELLITE BASIC ====="
+sat-imei
 
 echo ""
 echo "===== SYSTEM ====="
