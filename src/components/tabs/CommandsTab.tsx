@@ -374,13 +374,13 @@ function DiagnosticBlockRow({
             </div>
           ))}
         </div>
-        {block.id === "full-diags" && (
-          <div className="diag-block-warning">Runs satellite loopback test and can take up to 15 minutes.</div>
-        )}
-        {block.id === "satellite" && (
-          <div className="diag-block-warning">Full satellite run includes loopback test and can take up to 15 minutes.</div>
-        )}
       </div>
+      {block.id === "full-diags" && (
+        <div className="diag-block-warning">Runs satellite loopback test and can take up to 15 minutes.</div>
+      )}
+      {block.id === "satellite" && (
+        <div className="diag-block-warning">Full satellite run includes loopback test and can take up to 15 minutes.</div>
+      )}
     </div>
   );
 }

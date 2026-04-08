@@ -1195,6 +1195,7 @@
   display: flex;
   align-items: flex-start;
   gap: 10px;
+  flex-wrap: wrap;
   padding: 11px 12px;
   border-radius: 10px;
   border: 1px solid var(--border);
@@ -1319,7 +1320,7 @@
   line-height: 1.4;
   width: 100%;
   box-sizing: border-box;
-  text-align: center;
+  text-align: left;
 }
 
 .diag-block-sections {
