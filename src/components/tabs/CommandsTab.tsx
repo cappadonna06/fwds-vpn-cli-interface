@@ -276,14 +276,14 @@ function DiagnosticBlockRow({
                   onClick={() => onCopyHeavy(block)}
                   title={heavyTooltip}
                 >
-                  {heavyCopied ? "✓" : "Heavy"}
+                  {heavyCopied ? "✓" : "Full"}
                 </button>
                 <button
                   className={`diag-block-btn diag-block-btn-heavy ${heavySent ? "diag-block-btn-copied" : ""}`}
                   onClick={() => onSendHeavy(block)}
-                  title="Send heavy script to terminal"
+                  title="Send full script to terminal"
                 >
-                  {heavySent ? "✓" : "Send H"}
+                  {heavySent ? "✓" : "Send F"}
                 </button>
               </>
             ) : (
@@ -431,13 +431,13 @@ function DiagnosticBlockDrawer({
                   className={`cmd-copy-btn diag-block-btn-heavy ${heavyCopied ? "cmd-copy-btn-copied" : ""}`}
                   onClick={() => onCopyHeavy(block)}
                 >
-                  {heavyCopied ? "✓ Copied" : "Copy Heavy"}
+                  {heavyCopied ? "✓ Copied" : "Copy Full"}
                 </button>
                 <button
                   className={`cmd-copy-btn diag-block-btn-heavy ${heavySent ? "cmd-copy-btn-copied" : ""}`}
                   onClick={() => onSendHeavy(block)}
                 >
-                  {heavySent ? "✓ Sent" : "Send Heavy"}
+                  {heavySent ? "✓ Sent" : "Send Full"}
                 </button>
               </>
             ) : block.heavy_command_ids.length > 0 ? (
@@ -506,11 +506,11 @@ function DiagnosticBlockDrawer({
             </div>
           )}
 
-          {/* Heavy tier */}
+          {/* Full tier */}
           {hasDistinctTiers && heavyCmds.length > 0 && (
             <div className="cmd-drawer-section">
               <div className="cmd-drawer-section-title">
-                Heavy tier
+                Full
                 {heavyTotal > 0 && (
                   <span className="block-drawer-tier-time">{formatSeconds(heavyTotal)} total</span>
                 )}
