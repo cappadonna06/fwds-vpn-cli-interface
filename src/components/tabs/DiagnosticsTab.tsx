@@ -426,6 +426,11 @@ function formatLoopback(seconds?: number | null): string {
 
 function buildWifiSections(wifi?: WifiDiagnostic | null): DiagSection[] {
   if (!wifi) return [{ title: "Status", rows: [{ label: "Details", value: "No recent data" }] }];
+  const internetTest = wifi.check_result === "Success"
+    ? "Passed"
+    : wifi.check_result === "Failure"
+      ? "Failed"
+      : "Not run";
 
   const network: DiagRow[] = [
     { label: "Network", value: (wifi.ssid && !wifi.ssid.startsWith('=') ? wifi.ssid : null) || wifi.access_point || "Unknown" },
@@ -433,7 +438,7 @@ function buildWifiSections(wifi?: WifiDiagnostic | null): DiagSection[] {
     { label: "Signal", value: `${signalLabel(wifi.strength_score)}${wifi.signal_dbm !== null && wifi.signal_dbm !== undefined ? ` (${wifi.signal_dbm} dBm)` : ""}` },
     { label: "Role", value: wifi.default_via_wlan0 === true ? "Active" : wifi.connected === true ? "Backup" : "Inactive" },
     { label: "Speed", value: wifi.tx_bitrate_mbps !== null && wifi.tx_bitrate_mbps !== undefined ? `${wifi.tx_bitrate_mbps.toFixed(0)} Mbps` : "—" },
-    { label: "Internet test", value: wifi.internet_reachable ? "Passed" : "Failed" },
+    { label: "Internet test", value: internetTest },
   ];
 
   const action: DiagRow[] = [];
@@ -614,7 +619,7 @@ function summarizeWifi(wifi?: WifiDiagnostic | null): CardSummary {
   if ((wifi.strength_score ?? 0) > 0 && (wifi.strength_score ?? 0) < 25) {
     return { health: "warning", badgeLabel: "Warning", primaryLine: ssid, secondaryLine: "Monitoring recommended", signalLabel: sig, signalScore: wifi.strength_score };
   }
-  if (!wifi.internet_reachable) {
+  if (wifi.check_result === "Failure") {
     return { health: "warning", badgeLabel: "Warning", primaryLine: ssid, secondaryLine: "Connected · limited data", signalLabel: sig, signalScore: wifi.strength_score };
   }
   return { health: "healthy", badgeLabel: "Healthy", primaryLine: ssid, secondaryLine: "Connected", signalLabel: sig, signalScore: wifi.strength_score };
