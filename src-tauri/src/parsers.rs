@@ -644,6 +644,41 @@ default via 100.108.114.46 dev wwan0
     }
 
     #[test]
+    fn ethernet_parse_scopes_to_eth_section_in_full_block() {
+        let mut state = DiagnosticState::default();
+        let log = r#"2026-04-08T09:54:01-0600 [45230110]# (
+> echo "===== ETH DIAGNOSTICS START ====="
+> ethernet-check
+> ethtool eth0
+> ip addr show eth0
+> cat /proc/net/dev
+> echo "===== ETH DIAGNOSTICS END ====="
+> echo "===== WIFI DIAGNOSTICS START ====="
+> wifi-check
+> )
+===== ETH DIAGNOSTICS START =====
+Testing Ethernet...
+Done: Failure: -65553: Network technology is not enabled
+Settings for eth0:
+        Link detected: no
+2: eth0: <BROADCAST,MULTICAST> mtu 1500 qdisc noop state DOWN group default qlen 1000
+Inter-|   Receive                                                |  Transmit
+  eth0:       0       0    0    0    0     0          0         0        0       0
+===== ETH DIAGNOSTICS END =====
+===== WIFI DIAGNOSTICS START =====
+Testing Wi-Fi...
+Internet reachability state: online
+Done: Success
+"#;
+
+        parse_log_into_state(log, &mut state);
+        let eth = state.ethernet.expect("ethernet should parse");
+        assert_eq!(eth.check_result, "Failure: -65553: Network technology is not enabled");
+        assert!(!eth.internet_reachable);
+        assert_eq!(eth.link_detected, Some(false));
+    }
+
+    #[test]
     fn split_blocks_captures_orphan_output_chunk() {
         let log = "Testing Wi-Fi...\nInternet reachability state: online\nDone: Success\n";
         let blocks = split_blocks(log);
@@ -1030,7 +1065,6 @@ fn parse_wifi(latest: &HashMap<String, String>) -> Option<WifiDiagnostic> {
 
 fn parse_cellular_from_latest(latest: &HashMap<String, String>) -> Option<CellularDiagnostic> {
     let mut diag = default_cellular();
-    let mut has_any = false;
     // Only set true for commands that are exclusively part of cellular diagnostic scripts.
     // Commands shared with WiFi (connmanctl, ip route, proc/net/dev, date/version/sid) must NOT
     // set this flag — the WiFi subshell creates a single block whose key contains those command
@@ -1057,7 +1091,6 @@ fn parse_cellular_from_latest(latest: &HashMap<String, String>) -> Option<Cellul
         &["===== cellular connectivity test ====="],
     ) {
         parse_cellular_block(block, &mut diag);
-        has_any = true;
         has_cellular_specific = true;
         full_section_parsed = true;
     }
@@ -1067,26 +1100,21 @@ fn parse_cellular_from_latest(latest: &HashMap<String, String>) -> Option<Cellul
         // Each command has its own dedicated block with clean single-value output.
         if let Some(block) = find_latest(latest, &["run cellular diagnostics"]) {
             parse_cellular_block(block, &mut diag);
-            has_any = true;
             has_cellular_specific = true;
         }
 
         // date/version/sid appear in many diagnostic runs — NOT cellular-specific
         if let Some(text) = find_latest(latest, &["date"]) {
             diag.controller_date = parse_single_value(Some(text)).or(diag.controller_date);
-            has_any = has_any || !text.trim().is_empty();
         }
         if let Some(text) = find_latest(latest, &["version"]) {
             diag.controller_version = parse_single_value(Some(text)).or(diag.controller_version);
-            has_any = has_any || !text.trim().is_empty();
         }
         if let Some(text) = find_latest(latest, &["sid"]) {
             diag.controller_sid = parse_single_value(Some(text)).or(diag.controller_sid);
-            has_any = has_any || !text.trim().is_empty();
         }
         if let Some(text) = find_latest(latest, &["cellular-check"]) {
             parse_cellular_check_text(text, &mut diag);
-            has_any = true;
             has_cellular_specific = true;
         }
         let basic_cmds = [
@@ -1102,7 +1130,6 @@ fn parse_cellular_from_latest(latest: &HashMap<String, String>) -> Option<Cellul
         let mut basic_lines: Vec<String> = Vec::new();
         for cmd in basic_cmds {
             if let Some(text) = find_latest(latest, &[cmd]) {
-                has_any = true;
                 has_cellular_specific = true;
                 if let Some(v) = parse_single_value(Some(text)) {
                     basic_lines.push(v);
@@ -1115,36 +1142,28 @@ fn parse_cellular_from_latest(latest: &HashMap<String, String>) -> Option<Cellul
         // connmanctl commands appear in the WiFi subshell key as substrings — NOT cellular-specific
         if let Some(text) = find_latest(latest, &["connmanctl technologies"]) {
             parse_connman_cellular(text, &mut diag);
-            has_any = true;
         }
         if let Some(text) = find_latest(latest, &["connmanctl services"]) {
             parse_connman_cellular(text, &mut diag);
-            has_any = true;
         }
         if let Some(text) = find_latest(latest, &["connmanctl state"]) {
             parse_connman_cellular(text, &mut diag);
-            has_any = true;
         }
         // ip/wwan/proc commands also appear in WiFi subshell — NOT cellular-specific
         if let Some(text) = find_latest(latest, &["ip link show wwan0"]) {
             parse_wwan_interface(text, &mut diag);
-            has_any = true;
         }
         if let Some(text) = find_latest(latest, &["ip addr show wwan0"]) {
             parse_wwan_interface(text, &mut diag);
-            has_any = true;
         }
         if let Some(text) = find_latest(latest, &["ip route"]) {
             parse_wwan_interface(text, &mut diag);
-            has_any = true;
         }
         if let Some(text) = find_latest(latest, &["cat /proc/net/dev"]) {
             parse_proc_net_dev(text, &mut diag);
-            has_any = true;
         }
         if let Some(text) = find_latest(latest, &["cell-support --no-ofono --at"]) {
             parse_cell_support_at(text, &mut diag);
-            has_any = true;
             has_cellular_specific = true;
         }
     }
@@ -1509,6 +1528,25 @@ fn determine_satellite_status(diag: &mut SatelliteDiagnostic) {
         return;
     }
 
+    if diag.light_test_ran && diag.light_test_success == Some(true) {
+        diag.status = DiagStatus::Green;
+        diag.summary = "Satellite check passed".into();
+        diag.recommended_action = None;
+        diag.other_actions = vec![];
+        return;
+    }
+
+    if diag.light_test_ran
+        && diag.light_test_success == Some(false)
+        && !diag.light_test_blocked_in_use.unwrap_or(false)
+    {
+        diag.status = DiagStatus::Red;
+        diag.summary = "Satellite quick check failed".into();
+        diag.recommended_action = Some("Run full loopback test for details".into());
+        diag.other_actions = vec![];
+        return;
+    }
+
     if diag.modem_present == Some(true) {
         diag.status = DiagStatus::Grey;
         diag.summary = "Satellite not validated".into();
@@ -1553,7 +1591,13 @@ fn parse_ethernet(
         return None;
     }
 
-    let internet_reachable = ethernet_check
+    let ethernet_check_scoped = ethernet_check.map(|b| extract_eth_diagnostics_section(b));
+    let ethtool_scoped = ethtool.map(|b| extract_eth_diagnostics_section(b));
+    let interface_info_scoped = interface_info.map(|b| extract_eth_diagnostics_section(b));
+    let proc_net_dev_scoped = proc_net_dev.map(|b| extract_eth_diagnostics_section(b));
+    let operstate_scoped = operstate.map(|b| extract_eth_diagnostics_section(b));
+
+    let internet_reachable = ethernet_check_scoped
         .and_then(|b| capture_after(b, "Internet reachability state:"))
         .map(|s| s.eq_ignore_ascii_case("online"))
         .unwrap_or(false);
@@ -1562,47 +1606,47 @@ fn parse_ethernet(
         "unknown", "idle", "failure", "association", "configuration",
         "ready", "online", "disconnect",
     ];
-    let eth_state = ethernet_check
+    let eth_state = ethernet_check_scoped
         .and_then(|b| capture_after(b, "Ethernet state:"))
         .or_else(|| {
-            operstate.and_then(|b| parse_single_value(Some(b))).filter(|s| {
+            operstate_scoped.and_then(parse_single_value_str).filter(|s| {
                 let lower = s.to_ascii_lowercase();
                 KNOWN_ETH_STATES.iter().any(|&known| lower == known)
             })
         })
         .unwrap_or_else(|| "unknown".into());
-    let ipv4 = ethernet_check
+    let ipv4 = ethernet_check_scoped
         .and_then(|b| capture_after(b, "Ethernet supports IPv4?"))
         .map(|v| parse_yes_no(Some(v)))
         .unwrap_or(false);
-    let ipv6 = ethernet_check
+    let ipv6 = ethernet_check_scoped
         .and_then(|b| capture_after(b, "Ethernet supports IPv6?"))
         .map(|v| parse_yes_no(Some(v)))
         .unwrap_or(false);
-    let dns_servers = ethernet_check
+    let dns_servers = ethernet_check_scoped
         .and_then(|b| capture_after(b, "Ethernet name servers:"))
         .unwrap_or_else(|| "—".into());
-    let check_result = ethernet_check
+    let check_result = ethernet_check_scoped
         .and_then(|b| capture_after(b, "Done:"))
         .unwrap_or_else(|| "Unknown".into());
 
-    let speed = ethtool.and_then(|b| capture_after(b, "Speed:"));
-    let duplex = ethtool.and_then(|b| capture_after(b, "Duplex:"));
-    let link_detected = ethtool
+    let speed = ethtool_scoped.and_then(|b| capture_after(b, "Speed:"));
+    let duplex = ethtool_scoped.and_then(|b| capture_after(b, "Duplex:"));
+    let link_detected = ethtool_scoped
         .and_then(|b| capture_after(b, "Link detected:"))
         .map(|s| s.eq_ignore_ascii_case("yes"));
 
-    let ip_address = interface_info.and_then(parse_interface_ip);
-    let netmask = interface_info.and_then(parse_interface_netmask);
-    let rx_errors = proc_net_dev
+    let ip_address = interface_info_scoped.and_then(parse_interface_ip);
+    let netmask = interface_info_scoped.and_then(parse_interface_netmask);
+    let rx_errors = proc_net_dev_scoped
         .and_then(parse_proc_net_dev_stats)
         .map(|(rx_err, _, _)| rx_err)
         .unwrap_or(0);
-    let tx_errors = proc_net_dev
+    let tx_errors = proc_net_dev_scoped
         .and_then(parse_proc_net_dev_stats)
         .map(|(_, tx_err, _)| tx_err)
         .unwrap_or(0);
-    let rx_dropped = proc_net_dev
+    let rx_dropped = proc_net_dev_scoped
         .and_then(parse_proc_net_dev_stats)
         .map(|(_, _, rx_drop)| rx_drop)
         .unwrap_or(0);
@@ -1647,6 +1691,20 @@ fn parse_ethernet(
         full_block_run,
         ethernet_diag_attempted,
     })
+}
+
+fn extract_eth_diagnostics_section(text: &str) -> &str {
+    let lower = text.to_ascii_lowercase();
+    let start_marker = "===== eth diagnostics start =====";
+    let end_marker = "===== eth diagnostics end =====";
+    let Some(start_idx) = lower.find(start_marker) else {
+        return text;
+    };
+    let end_idx = lower[start_idx..]
+        .find(end_marker)
+        .map(|offset| start_idx + offset + end_marker.len())
+        .unwrap_or(text.len());
+    &text[start_idx..end_idx]
 }
 
 fn parse_system(
@@ -1902,6 +1960,17 @@ fn parse_single_value(block: Option<&String>) -> Option<String> {
     })
 }
 
+fn parse_single_value_str(text: &str) -> Option<String> {
+    text.lines().rev().find_map(|l| {
+        let v = l.trim();
+        if v.is_empty() {
+            None
+        } else {
+            Some(v.to_string())
+        }
+    })
+}
+
 fn capture_after(text: &str, key: &str) -> Option<String> {
     text.lines().find_map(|line| {
         let trimmed = line.trim();
@@ -1919,14 +1988,14 @@ fn capture_line(text: &str, contains: &str) -> Option<String> {
         .map(|l| l.trim().to_string())
 }
 
-fn parse_interface_ip(text: &String) -> Option<String> {
+fn parse_interface_ip(text: &str) -> Option<String> {
     let re = Regex::new(r"inet\s+(\d+\.\d+\.\d+\.\d+)").ok()?;
     re.captures(text)
         .and_then(|c| c.get(1))
         .map(|m| m.as_str().to_string())
 }
 
-fn parse_interface_netmask(text: &String) -> Option<String> {
+fn parse_interface_netmask(text: &str) -> Option<String> {
     let hex_re = Regex::new(r"netmask\s+([0-9a-fx]+)").ok()?;
     if let Some(v) = hex_re
         .captures(text)
@@ -1942,7 +2011,7 @@ fn parse_interface_netmask(text: &String) -> Option<String> {
         .map(|m| format!("/{}", m.as_str()))
 }
 
-fn parse_proc_net_dev_stats(text: &String) -> Option<(u64, u64, u64)> {
+fn parse_proc_net_dev_stats(text: &str) -> Option<(u64, u64, u64)> {
     for line in text.lines() {
         let trimmed = line.trim();
         if !trimmed.starts_with("eth0:") {

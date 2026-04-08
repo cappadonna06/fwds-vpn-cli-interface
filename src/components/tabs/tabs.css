@@ -1195,16 +1195,18 @@
   display: flex;
   align-items: flex-start;
   gap: 10px;
-  padding: 9px 6px;
-  border-radius: 6px;
-  border: 1px solid transparent;
-  margin-bottom: 4px;
+  flex-wrap: wrap;
+  padding: 11px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  margin-bottom: 0;
+  background: color-mix(in srgb, var(--bg-1) 92%, var(--accent) 3%);
   transition: background 0.1s, border-color 0.1s;
 }
 
 .diag-block-row:hover {
-  background: var(--bg-2);
-  border-color: var(--border);
+  background: color-mix(in srgb, var(--bg-1) 88%, var(--accent) 6%);
+  border-color: color-mix(in srgb, var(--accent) 20%, var(--border));
 }
 
 .diag-block-icon {
@@ -1230,21 +1232,44 @@
   font-size: 12px;
   font-weight: 600;
   color: var(--text-primary);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
 }
 
 .diag-block-actions {
   display: flex;
-  gap: 4px;
-  flex-shrink: 0;
+  gap: 8px;
+  align-items: center;
+  justify-content: flex-start;
+  margin-top: 6px;
+  flex-wrap: wrap;
+}
+
+.diag-block-actions-stack {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.diag-block-mode-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-weight: 560;
 }
 
 .diag-block-btn {
   font-size: 11px;
-  font-weight: 500;
-  padding: 3px 9px;
-  border-radius: 3px;
+  font-weight: 560;
+  padding: 4px 10px;
+  border-radius: 999px;
   border: 1px solid var(--border);
-  background: var(--bg-3);
+  background: var(--bg-1);
   color: var(--text-secondary);
   cursor: pointer;
   transition: background 0.1s, color 0.1s;
@@ -1262,7 +1287,6 @@
   color: var(--accent);
   background: color-mix(in srgb, var(--accent) 8%, transparent);
 }
-
 .diag-block-btn-heavy:hover {
   background: color-mix(in srgb, var(--accent) 15%, transparent);
   color: var(--accent);
@@ -1278,6 +1302,11 @@
   font-size: 11px;
   color: var(--text-secondary);
   line-height: 1.4;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .diag-block-warning {
@@ -1286,9 +1315,77 @@
   background: color-mix(in srgb, var(--warning) 10%, transparent);
   border: 1px solid color-mix(in srgb, var(--warning) 30%, transparent);
   border-radius: 3px;
-  padding: 3px 7px;
-  margin-top: 5px;
+  padding: 6px 10px;
+  margin-top: 6px;
   line-height: 1.4;
+  width: 100%;
+  box-sizing: border-box;
+  text-align: left;
+}
+
+.diag-block-sections {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.diag-block-section {
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--bg-1) 98%, var(--accent) 2%);
+  border-radius: 12px;
+  padding: 12px;
+}
+
+.diag-block-section-head h4 {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-primary);
+}
+
+.diag-block-section-head p {
+  margin: 3px 0 0;
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+
+.diag-block-grid {
+  margin-top: 10px;
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 8px;
+}
+
+.diag-block-grid-network {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+@media (max-width: 1320px) {
+  .diag-block-grid-network {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 900px) {
+  .diag-block-actions {
+    row-gap: 6px;
+  }
+
+  .diag-block-btn {
+    width: fit-content;
+  }
+}
+
+.diag-block-section-disabled {
+  opacity: 0.78;
+}
+
+.diag-block-placeholder {
+  margin-top: 10px;
+  font-size: 12px;
+  color: var(--text-muted);
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  padding: 10px;
 }
 
 /* ─── Command detail drawer ──────────────────────────────────────────────── */
@@ -1880,7 +1977,7 @@
 .diag-header {
   display: flex;
   justify-content: space-between;
-  align-items: flex-end;
+  align-items: flex-start;
   gap: 16px;
   flex-wrap: wrap;
 }
@@ -1888,7 +1985,7 @@
 .diag-header-left {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 6px;
 }
 
 .diag-header-left h2 {
@@ -1901,6 +1998,8 @@
   display: flex;
   align-items: center;
   gap: 10px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
 .diag-system-line {
@@ -2209,6 +2308,38 @@
   background: var(--bg-2);
 }
 
+.diag-card-menu-inline {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 4px 6px 6px;
+}
+
+.diag-card-menu-inline-label {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.diag-card-menu-inline-actions {
+  display: inline-flex;
+  gap: 6px;
+}
+
+.diag-card-menu-chip {
+  border: 1px solid var(--border);
+  background: var(--bg-1);
+  color: var(--text-primary);
+  border-radius: 999px;
+  padding: 3px 9px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.diag-card-menu-chip:hover {
+  background: var(--bg-2);
+}
+
 .diag-card-menu-divider {
   height: 1px;
   background: var(--border-soft);
@@ -2228,6 +2359,45 @@
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+
+.diag-header-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.diag-global-tier-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 0;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-2);
+  padding: 2px;
+}
+
+.diag-tier-btn {
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  border-radius: 999px;
+  padding: 5px 11px;
+  font-size: 12px;
+  font-weight: 560;
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease;
+}
+
+.diag-tier-btn:hover {
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  color: var(--text-primary);
+}
+
+.diag-tier-btn-active {
+  color: #fff;
+  background: var(--accent);
 }
 
 .diag-empty-title {

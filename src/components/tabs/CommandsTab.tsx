@@ -39,6 +39,54 @@ function sumSeconds(ids: string[]): number {
   }, 0);
 }
 
+type DiagSectionDef = {
+  id: string;
+  title: string;
+  description: string;
+  blockIds: string[];
+  disabled?: boolean;
+  placeholder?: string;
+};
+
+const DIAG_BLOCK_SECTIONS: DiagSectionDef[] = [
+  {
+    id: "all-diagnostics",
+    title: "All diagnostics",
+    description: "Complete system checks",
+    blockIds: ["full-diags", "full-diags-no-sat"],
+  },
+  {
+    id: "network",
+    title: "Network",
+    description: "Connectivity and interface checks",
+    blockIds: ["networking-all", "ethernet", "wifi", "cellular", "satellite", "sim-picker"],
+  },
+  {
+    id: "system",
+    title: "System",
+    description: "Firmware and controller identity",
+    blockIds: ["system"],
+  },
+  {
+    id: "hydraulics",
+    title: "Hydraulics",
+    description: "Not wired yet",
+    blockIds: [],
+    disabled: true,
+    placeholder: "Coming soon: pump, pressure, manifold",
+  },
+];
+
+const DIAG_BLOCK_TIME_TAGS: Record<string, string[]> = {
+  wifi: ["15s"],
+  cellular: ["30s"],
+  ethernet: ["15s"],
+  "networking-all": ["30s"],
+  "full-diags": ["15m"],
+  "full-diags-no-sat": ["45s"],
+  satellite: ["1m", "15m"],
+};
+
 function resolveBlockScript(block: DiagnosticBlock, tier: "light" | "heavy"): string {
   const custom = tier === "light" ? block.light_script : block.heavy_script;
   if (custom && custom.trim().length > 0) return custom;
@@ -245,80 +293,94 @@ function DiagnosticBlockRow({
     block.heavy_command_ids.length > 0 &&
     JSON.stringify(block.light_command_ids) !== JSON.stringify(block.heavy_command_ids);
 
-  const lightTooltip = resolveBlockScript(block, "light");
-  const heavyTooltip = resolveBlockScript(block, "heavy");
+  const rows: Array<{
+    label: string;
+    copy: () => void;
+    send: () => void;
+    copied: boolean;
+    sent: boolean;
+  }> = [];
+  if (hasDistinctTiers) {
+    rows.push({
+      label: "Light",
+      copy: () => onCopyLight(block),
+      send: () => onSendLight(block),
+      copied: lightCopied,
+      sent: lightSent,
+    });
+    rows.push({
+      label: "Full",
+      copy: () => onCopyHeavy(block),
+      send: () => onSendHeavy(block),
+      copied: heavyCopied,
+      sent: heavySent,
+    });
+  } else {
+    const label = block.id === "networking-all"
+      ? "Light"
+      : block.id === "full-diags"
+        ? "Full"
+        : block.id === "full-diags-no-sat"
+          ? "No satellite"
+          : "Full";
+    rows.push({
+      label,
+      copy: () => onCopyHeavy(block),
+      send: () => onSendHeavy(block),
+      copied: singleCopied,
+      sent: singleSent,
+    });
+  }
 
   return (
-    <div className={`diag-block-row ${isDrawerOpen ? "diag-block-row-open" : ""}`}>
+    <div className={`diag-block-row diag-block-tile ${isDrawerOpen ? "diag-block-row-open" : ""}`}>
       <div className="diag-block-icon">{block.icon}</div>
       <div className="diag-block-content">
         <div className="diag-block-header">
-          <span className="diag-block-label">{block.label}</span>
-          <div className="diag-block-actions">
-            {hasDistinctTiers ? (
-              <>
-                <button
-                  className={`diag-block-btn ${lightCopied ? "diag-block-btn-copied" : ""}`}
-                  onClick={() => onCopyLight(block)}
-                  title={lightTooltip}
-                >
-                  {lightCopied ? "✓" : "Light"}
-                </button>
-                <button
-                  className={`diag-block-btn ${lightSent ? "diag-block-btn-copied" : ""}`}
-                  onClick={() => onSendLight(block)}
-                  title="Send light script to terminal"
-                >
-                  {lightSent ? "✓" : "Send L"}
-                </button>
-                <button
-                  className={`diag-block-btn diag-block-btn-heavy ${heavyCopied ? "diag-block-btn-copied" : ""}`}
-                  onClick={() => onCopyHeavy(block)}
-                  title={heavyTooltip}
-                >
-                  {heavyCopied ? "✓" : "Full"}
-                </button>
-                <button
-                  className={`diag-block-btn diag-block-btn-heavy ${heavySent ? "diag-block-btn-copied" : ""}`}
-                  onClick={() => onSendHeavy(block)}
-                  title="Send full script to terminal"
-                >
-                  {heavySent ? "✓" : "Send F"}
-                </button>
-              </>
-            ) : (
-              <>
-                <button
-                  className={`diag-block-btn ${singleCopied ? "diag-block-btn-copied" : ""}`}
-                  onClick={() => onCopyHeavy(block)}
-                  title={heavyTooltip}
-                >
-                  {singleCopied ? "✓" : "Copy"}
-                </button>
-                <button
-                  className={`diag-block-btn ${singleSent ? "diag-block-btn-copied" : ""}`}
-                  onClick={() => onSendHeavy(block)}
-                  title="Send script to terminal"
-                >
-                  {singleSent ? "✓" : "Send"}
-                </button>
-              </>
-            )}
-            <button
-              className={`cmd-chevron-btn ${isDrawerOpen ? "cmd-chevron-btn-open" : ""}`}
-              onClick={() => onOpenDrawer(block.id)}
-              title="Block details"
-              aria-label="Show block details"
-            >
-              ▾
-            </button>
-          </div>
+          <span className="diag-block-label">
+            {block.label}
+            {(DIAG_BLOCK_TIME_TAGS[block.id] ?? []).map((tag) => (
+              <span key={`${block.id}-${tag}`} className="cmd-time-badge">~{tag}</span>
+            ))}
+          </span>
+          <button
+            className={`cmd-chevron-btn ${isDrawerOpen ? "cmd-chevron-btn-open" : ""}`}
+            onClick={() => onOpenDrawer(block.id)}
+            title="Block details"
+            aria-label="Show block details"
+          >
+            ▾
+          </button>
         </div>
         <div className="diag-block-desc">{block.description.split(".")[0]}.</div>
-        {block.time_warning && (
-          <div className="diag-block-warning">{block.time_warning}</div>
-        )}
+        <div className="diag-block-actions-stack">
+          {rows.map((row) => (
+            <div className="diag-block-actions" key={`${block.id}-${row.label}`}>
+              <div className="diag-block-mode-label">
+                <span>{row.label}</span>
+              </div>
+              <button
+                className={`diag-block-btn ${row.copied ? "diag-block-btn-copied" : ""}`}
+                onClick={row.copy}
+              >
+                {row.copied ? "✓ Copied" : "Copy"}
+              </button>
+              <button
+                className={`diag-block-btn ${row.sent ? "diag-block-btn-copied" : ""}`}
+                onClick={row.send}
+              >
+                {row.sent ? "✓ Sent" : "Send"}
+              </button>
+            </div>
+          ))}
+        </div>
       </div>
+      {block.id === "full-diags" && (
+        <div className="diag-block-warning">Runs satellite loopback test and can take up to 15 minutes.</div>
+      )}
+      {block.id === "satellite" && (
+        <div className="diag-block-warning">Full satellite run includes loopback test and can take up to 15 minutes.</div>
+      )}
     </div>
   );
 }
@@ -1096,21 +1158,46 @@ export default function CommandsTab() {
 
         {/* Right — diagnostic blocks */}
         <div className="commands-blocks">
-          <div className="commands-blocks-heading">Diagnostic Blocks</div>
-          {DIAGNOSTIC_BLOCKS.map((block) => (
-            <DiagnosticBlockRow
-              key={block.id}
-              block={block}
-              onCopyLight={blockCopyLight}
-              onCopyHeavy={blockCopyHeavy}
-              onSendLight={blockSendLight}
-              onSendHeavy={blockSendHeavy}
-              copiedBlockId={copiedBlockId}
-              sentBlockId={sentBlockId}
-              onOpenDrawer={handleOpenBlockDrawer}
-              isDrawerOpen={openBlockDrawerId === block.id}
-            />
-          ))}
+          <div className="commands-blocks-heading">Diagnostics Blocks</div>
+          <div className="diag-block-sections">
+            {DIAG_BLOCK_SECTIONS.map((section) => {
+              const blocks = section.blockIds
+                .map((id) => DIAGNOSTIC_BLOCKS.find((b) => b.id === id))
+                .filter((b): b is DiagnosticBlock => !!b);
+
+              return (
+                <section
+                  key={section.id}
+                  className={`diag-block-section ${section.disabled ? "diag-block-section-disabled" : ""}`}
+                >
+                  <div className="diag-block-section-head">
+                    <h4>{section.title}</h4>
+                    <p>{section.description}</p>
+                  </div>
+                  {section.disabled ? (
+                    <div className="diag-block-placeholder">{section.placeholder}</div>
+                  ) : (
+                    <div className={`diag-block-grid ${section.id === "network" ? "diag-block-grid-network" : ""}`}>
+                      {blocks.map((block) => (
+                        <DiagnosticBlockRow
+                          key={`${section.id}-${block.id}`}
+                          block={block}
+                          onCopyLight={blockCopyLight}
+                          onCopyHeavy={blockCopyHeavy}
+                          onSendLight={blockSendLight}
+                          onSendHeavy={blockSendHeavy}
+                          copiedBlockId={copiedBlockId}
+                          sentBlockId={sentBlockId}
+                          onOpenDrawer={handleOpenBlockDrawer}
+                          isDrawerOpen={openBlockDrawerId === block.id}
+                        />
+                      ))}
+                    </div>
+                  )}
+                </section>
+              );
+            })}
+          </div>
         </div>
       </div>
 

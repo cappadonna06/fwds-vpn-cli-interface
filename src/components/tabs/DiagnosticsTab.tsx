@@ -269,19 +269,6 @@ function speedLabel(speed?: string | null): string {
   return speed;
 }
 
-function resolve_carrier_ts(code: string): string {
-  const verizon = ["311270","311271","311272","311273","311274","311275",
-    "311276","311277","311278","311279","311280","311480","311481","311482",
-    "311483","311484","311485","311486","311487","311488","311489"];
-  const tmobile = ["310260","310026","310490","310660","312250","310230","310240","310250"];
-  const att = ["310410","310380","310980","311180","310030","310560","310680"];
-  if (verizon.includes(code)) return "Verizon";
-  if (tmobile.includes(code)) return "T-Mobile";
-  if (att.includes(code)) return "AT&T";
-  if (code === "313100") return "FirstNet (AT&T)";
-  return `Carrier (${code})`;
-}
-
 const ALL_CARRIERS = [
   { name: "AT&T",     codes: ["310410","310380","310980","311180","310030","310560","310680"] },
   { name: "T-Mobile", codes: ["310260","310026","310490","310660","312250","310230","310240","310250"] },
@@ -521,7 +508,12 @@ function buildSatelliteSections(sat?: SatelliteDiagnostic | null): DiagSection[]
         : "Not run";
 
   const actions: DiagRow[] = [];
-  if (!sat.loopback_test_ran && sat.modem_present === true) actions.push({ label: "Recommended action", value: "Run full satellite loopback test" });
+  if (!sat.loopback_test_ran && sat.modem_present === true) {
+    actions.push({
+      label: "Recommended action",
+      value: sat.light_test_success === true ? "Run loopback for full verification" : "Run full satellite loopback test",
+    });
+  }
   else if (sat.loopback_test_blocked_in_use) actions.push({ label: "Recommended action", value: "Retry test when interface is idle" });
   else if (sat.loopback_test_success === false) actions.push({ label: "Recommended action", value: "Check antenna placement and connection" });
   else if (sat.recommended_action) actions.push({ label: "Recommended action", value: sat.recommended_action });
@@ -532,6 +524,14 @@ function buildSatelliteSections(sat?: SatelliteDiagnostic | null): DiagSection[]
       rows: [
         { label: "Modem", value: sat.modem_present === true ? "Detected" : sat.modem_present === false ? "Not detected" : "Unknown" },
         { label: "Loopback", value: loopback },
+        ...(sat.light_test_ran ? [{
+          label: "Quick check",
+          value: sat.light_test_success === true
+            ? "Passed"
+            : sat.light_test_blocked_in_use
+              ? "Blocked"
+              : "Failed",
+        }] : []),
         { label: "Visibility", value: sat.satellites_seen !== null && sat.satellites_seen !== undefined ? `${sat.satellites_seen} satellites` : "Not available" },
         { label: "Last test time", value: sat.loopback_test_success === true ? formatLoopback(sat.total_time_seconds) : "—" },
         { label: "Network state", value: sat.connman_state || "—" },
@@ -551,9 +551,10 @@ function buildSatelliteSections(sat?: SatelliteDiagnostic | null): DiagSection[]
 function buildEthernetSections(ethernet?: EthernetDiagnostic | null): DiagSection[] {
   if (!ethernet) return [{ title: "Status", rows: [{ label: "Status", value: "No data yet" }, { label: "Last test", value: "—" }] }];
 
-  const connected = ethernet.internet_reachable || ethernet.link_detected === true;
+  const internetPassed = ethernet.check_result === "Success" && ethernet.internet_reachable === true;
+  const connected = internetPassed || ethernet.link_detected === true;
   const actions: DiagRow[] = [];
-  if (!ethernet.internet_reachable && ethernet.link_detected === false) actions.push({ label: "Recommended action", value: "Check cable or switch" });
+  if (!internetPassed && ethernet.link_detected === false) actions.push({ label: "Recommended action", value: "Check cable or switch" });
   else if (!ethernet.ip_address) actions.push({ label: "Recommended action", value: "Check DHCP / static IP configuration" });
   else if (ethernet.flap_count > 0) actions.push({ label: "Recommended action", value: "Inspect link stability and port health" });
 
@@ -564,7 +565,7 @@ function buildEthernetSections(ethernet?: EthernetDiagnostic | null): DiagSectio
         { label: "Connection", value: connected ? "Connected" : "No link" },
         { label: "Speed", value: speedLabel(ethernet.speed) + (ethernet.duplex ? ` (${ethernet.duplex})` : "") },
         { label: "Role", value: connected ? "Connected path" : "Inactive" },
-        { label: "Internet test", value: ethernet.internet_reachable ? "Passed" : "Failed" },
+        { label: "Internet test", value: internetPassed ? "Passed" : "Failed" },
         { label: "Stability", value: ethernet.flap_count > 0 ? "Recent link flaps" : "Stable" },
       ],
     },
@@ -604,7 +605,9 @@ function resolveRole(network: "wifi" | "cellular" | "ethernet", primary: "wifi" 
 
 function summarizeWifi(wifi?: WifiDiagnostic | null): CardSummary {
   if (!wifi) return { health: "neutral", badgeLabel: "No data", primaryLine: "No data yet" };
-  const connected = wifi.connected === true || wifi.connman_wifi_connected === true;
+  const connected = wifi.connected === true
+    || wifi.connman_wifi_connected === true
+    || wifi.internet_reachable === true;
   const ssid = wifi.ssid || wifi.access_point || "Wi-Fi";
   if (!connected) return { health: "neutral", badgeLabel: "Inactive", primaryLine: "Not connected", secondaryLine: ssid };
   const sig = signalLabel(wifi.strength_score);
@@ -648,7 +651,8 @@ function summarizeCellular(cell?: CellularDiagnostic | null): CardSummary {
 
 function summarizeEthernet(ethernet?: EthernetDiagnostic | null): CardSummary {
   if (!ethernet) return { health: "neutral", badgeLabel: "No data", primaryLine: "No data yet" };
-  if (ethernet.internet_reachable === true) return { health: "healthy", badgeLabel: "Healthy", primaryLine: "Connected", secondaryLine: "Internet reachable" };
+  const internetPassed = ethernet.check_result === "Success" && ethernet.internet_reachable === true;
+  if (internetPassed) return { health: "healthy", badgeLabel: "Healthy", primaryLine: "Connected", secondaryLine: "Internet reachable" };
   if (ethernet.link_detected === false) return { health: "neutral", badgeLabel: "Inactive", primaryLine: "No link detected" };
   if (ethernet.flap_count > 0) return { health: "warning", badgeLabel: "Warning", primaryLine: "Connected", secondaryLine: "Unstable link" };
   if (!ethernet.ip_address) return { health: "error", badgeLabel: "Issue", primaryLine: "Connected", secondaryLine: "No IP assigned" };
@@ -661,6 +665,8 @@ function summarizeSatellite(sat?: SatelliteDiagnostic | null): CardSummary {
   if (sat.loopback_test_success === true) return { health: "healthy", badgeLabel: "Verified", primaryLine: "Link verified" };
   if (sat.loopback_test_blocked_in_use) return { health: "warning", badgeLabel: "Warning", primaryLine: "Test blocked" };
   if (sat.loopback_test_ran && sat.loopback_test_success === false) return { health: "error", badgeLabel: "Issue", primaryLine: "Loopback failed" };
+  if (sat.light_test_success === true) return { health: "healthy", badgeLabel: "Healthy", primaryLine: "Satellite check passed" };
+  if (sat.light_test_ran && sat.light_test_success === false) return { health: "error", badgeLabel: "Issue", primaryLine: "Quick check failed" };
   if (sat.satellites_seen === 0) return { health: "error", badgeLabel: "Issue", primaryLine: "No satellites visible" };
   return { health: "neutral", badgeLabel: "Not validated", primaryLine: "Modem present", secondaryLine: "Full test not run" };
 }
@@ -712,7 +718,7 @@ function DiagCard({
             <span className={`diag-status-dot diag-status-${health}`} />
             <span>{statusLabel}</span>
           </span>
-          {(onCopyCommand || onSendCommand || onClear) && (
+          {onClear && (
             <div className="diag-card-menu-wrap">
               <button
                 type="button"
@@ -724,31 +730,40 @@ function DiagCard({
               </button>
               {menuOpen && (
                 <div className="diag-card-menu">
-                  {onCopyCommand && (
-                    <button
-                      type="button"
-                      className="diag-card-menu-item"
-                      onClick={() => {
-                        onCopyCommand();
-                        setMenuOpen(false);
-                      }}
-                    >
-                      {copied ? "Copied" : "Copy diagnostics commands"}
-                    </button>
+                  {(onCopyCommand || onSendCommand) && (
+                    <>
+                      <div className="diag-card-menu-inline">
+                        <span className="diag-card-menu-inline-label">Diag commands</span>
+                        <div className="diag-card-menu-inline-actions">
+                          {onCopyCommand && (
+                            <button
+                              type="button"
+                              className="diag-card-menu-chip"
+                              onClick={() => {
+                                onCopyCommand();
+                                setMenuOpen(false);
+                              }}
+                            >
+                              {copied ? "Copied" : "Copy"}
+                            </button>
+                          )}
+                          {onSendCommand && (
+                            <button
+                              type="button"
+                              className="diag-card-menu-chip"
+                              onClick={() => {
+                                onSendCommand();
+                                setMenuOpen(false);
+                              }}
+                            >
+                              {sent ? "Sent" : "Send"}
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                      <div className="diag-card-menu-divider" />
+                    </>
                   )}
-                  {onSendCommand && (
-                    <button
-                      type="button"
-                      className="diag-card-menu-item"
-                      onClick={() => {
-                        onSendCommand();
-                        setMenuOpen(false);
-                      }}
-                    >
-                      {sent ? "Sent" : "Send to terminal"}
-                    </button>
-                  )}
-                  {(onCopyCommand || onSendCommand) && onClear && <div className="diag-card-menu-divider" />}
                   {onClear && (
                     <button
                       type="button"
@@ -838,6 +853,7 @@ export default function DiagnosticsTab() {
   const [systemUpdatedAt, setSystemUpdatedAt] = useState<string | null>(null);
   const [copiedCommandId, setCopiedCommandId] = useState<string | null>(null);
   const [sentCommandId, setSentCommandId] = useState<string | null>(null);
+  const [globalDiagTier, setGlobalDiagTier] = useState<"quick" | "full" | "no-satellite">("quick");
 
   useEffect(() => {
     invoke("start_log_watcher").catch(() => {});
@@ -949,6 +965,11 @@ export default function DiagnosticsTab() {
     safeVersion ? `v${safeVersion}` : null,
     system?.release_date ? system.release_date : null,
   ].filter(Boolean).join(" · ");
+  const globalDiagBlockId = globalDiagTier === "full"
+    ? "full-diags"
+    : globalDiagTier === "no-satellite"
+      ? "full-diags-no-sat"
+      : "networking-all";
 
   return (
     <section className="tab-content diag-page">
@@ -957,6 +978,19 @@ export default function DiagnosticsTab() {
           <h2>System Diagnostics</h2>
           {systemIdentity && <div className="diag-system-line">{systemIdentity}</div>}
           {systemUpdatedAt && <div className="diag-system-line">System updated {systemUpdatedAt}</div>}
+          <div className="diag-header-toolbar">
+            <div className="diag-global-tier-group" role="group" aria-label="Diagnostics mode">
+              <button type="button" className={`diag-tier-btn ${globalDiagTier === "quick" ? "diag-tier-btn-active" : ""}`} onClick={() => setGlobalDiagTier("quick")}>Quick</button>
+              <button type="button" className={`diag-tier-btn ${globalDiagTier === "full" ? "diag-tier-btn-active" : ""}`} onClick={() => setGlobalDiagTier("full")}>Full</button>
+              <button type="button" className={`diag-tier-btn ${globalDiagTier === "no-satellite" ? "diag-tier-btn-active" : ""}`} onClick={() => setGlobalDiagTier("no-satellite")}>No satellite</button>
+            </div>
+            <button className="btn btn-secondary" onClick={() => copyDiagnosticBlock(globalDiagBlockId)}>
+              {copiedCommandId === globalDiagBlockId ? "Copied" : "Copy"}
+            </button>
+            <button className="btn btn-secondary" onClick={() => sendDiagnosticBlock(globalDiagBlockId)}>
+              {sentCommandId === globalDiagBlockId ? "Sent" : "Send"}
+            </button>
+          </div>
         </div>
 
         <div className="diag-header-right">
@@ -964,27 +998,7 @@ export default function DiagnosticsTab() {
           <button className="btn btn-secondary" onClick={clearCards}>Clear</button>
         </div>
       </div>
-
-      {showNoSessionBanner && (
-        <div className="diag-empty">
-          <div className="diag-empty-title">Run diagnostics</div>
-          <div className="diag-empty-actions">
-            <button className="btn btn-secondary" onClick={() => copyDiagnosticBlock("full-diags")}>
-              {copiedCommandId === "full-diags" ? "Copied" : "Copy full diagnostics commands"}
-            </button>
-            <button className="btn btn-secondary" onClick={() => sendDiagnosticBlock("full-diags")}>
-              {sentCommandId === "full-diags" ? "Sent" : "Send to terminal"}
-            </button>
-            <button className="btn btn-secondary" onClick={() => copyDiagnosticBlock("full-diags-no-sat")}>
-              {copiedCommandId === "full-diags-no-sat" ? "Copied" : "Copy diagnostics (no satellite)"}
-            </button>
-            <button className="btn btn-secondary" onClick={() => sendDiagnosticBlock("full-diags-no-sat")}>
-              {sentCommandId === "full-diags-no-sat" ? "Sent" : "Send (no satellite)"}
-            </button>
-          </div>
-          <div className="diag-empty-sub">Use these commands in the terminal to populate system status.</div>
-        </div>
-      )}
+      {showNoSessionBanner && <div className="diag-empty-sub">Run diagnostics from terminal to populate live cards.</div>}
 
       <div className="diag-grid">
         <DiagCard
