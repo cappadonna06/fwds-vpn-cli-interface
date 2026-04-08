@@ -402,6 +402,29 @@ function cleanCellValue(value?: string | null): string | null {
   return v;
 }
 
+// Resolves 5–6 digit MCC-MNC codes to human carrier names.
+// Mirrors the Rust resolve_carrier() function in parsers.rs.
+// Non-numeric strings are returned as-is (already a name).
+function resolveCarrierCode(code?: string | null): string | null {
+  if (!code) return null;
+  if (!/^\d{5,6}$/.test(code)) return code;
+  const map: Record<string, string> = {
+    "311270": "Verizon", "311271": "Verizon", "311272": "Verizon", "311273": "Verizon",
+    "311274": "Verizon", "311275": "Verizon", "311276": "Verizon", "311277": "Verizon",
+    "311278": "Verizon", "311279": "Verizon", "311280": "Verizon", "311480": "Verizon",
+    "311481": "Verizon", "311482": "Verizon", "311483": "Verizon", "311484": "Verizon",
+    "311485": "Verizon", "311486": "Verizon", "311487": "Verizon", "311488": "Verizon",
+    "311489": "Verizon",
+    "310260": "T-Mobile", "310026": "T-Mobile", "310490": "T-Mobile", "310660": "T-Mobile",
+    "312250": "T-Mobile", "310230": "T-Mobile", "310240": "T-Mobile", "310250": "T-Mobile",
+    "310410": "AT&T", "310380": "AT&T", "310980": "AT&T", "311180": "AT&T",
+    "310030": "AT&T", "310560": "AT&T", "310680": "AT&T",
+    "313100": "FirstNet (AT&T)",
+    "310000": "Dish",
+  };
+  return map[code] ?? code;
+}
+
 function formatLoopback(seconds?: number | null): string {
   if (seconds === null || seconds === undefined) return "—";
   const m = Math.floor(seconds / 60);
@@ -452,9 +475,9 @@ function buildCellularSections(cell?: CellularDiagnostic | null): DiagSection[] 
     {
       title: "Cellular",
       rows: [
-        { label: "Carrier", value: cleanCellValue(cell.operator_name) || cleanCellValue(cell.provider_code) || cleanCellValue(cell.basic_provider) || "—" },
+        { label: "Carrier", value: cleanCellValue(cell.operator_name) || resolveCarrierCode(cell.provider_code) || resolveCarrierCode(cell.basic_provider) || "—" },
         { label: "Signal", value: signalLabel(cell.strength_score) + (cell.strength_score !== null && cell.strength_score !== undefined ? ` (${cell.strength_score}/100)` : "") },
-        { label: "Connection", value: cell.connman_cell_connected === true ? "Connected" : "Not connected" },
+        { label: "Connection", value: (cell.connman_cell_connected === true || cell.internet_reachable === true) ? "Connected" : "Not connected" },
         { label: "Role", value: roleLabel(cell.role) || "Inactive" },
         { label: "SIM", value: cell.sim_inserted === false ? "Missing" : cell.sim_ready === true ? "Ready" : "Unknown" },
         { label: "Modem", value: cell.modem_not_present ? "Not detected" : cell.modem_unreachable ? "Detected — not responding" : cell.cellular_disabled && cell.imei ? "Powered off (detected)" : cell.cellular_disabled ? "Powered off" : cell.modem_present === true ? cell.modem_model ?? "Detected" : "Unknown" },
@@ -595,8 +618,17 @@ function summarizeCellular(cell?: CellularDiagnostic | null): CardSummary {
   if (cell.modem_present === false) return { health: "error", badgeLabel: "Issue", primaryLine: "No modem detected" };
   if (cell.sim_inserted === false) return { health: "error", badgeLabel: "Issue", primaryLine: "No SIM detected" };
   if (cell.qcsq === "NOSERVICE") return { health: "error", badgeLabel: "Issue", primaryLine: "No service" };
-  const carrier = cell.operator_name || cell.basic_provider || cell.provider_code || "Cellular";
-  const connected = cell.connman_cell_connected === true;
+  // Resolve MCC-MNC codes (e.g. "311480") to human names ("Verizon") for display.
+  // operator_name from +COPS AT command is authoritative; basic_provider/provider_code
+  // from earlier commands may still carry the raw numeric code.
+  const carrier = cell.operator_name
+    || resolveCarrierCode(cell.basic_provider)
+    || resolveCarrierCode(cell.provider_code)
+    || "Cellular";
+  // internet_reachable is set by cellular-check (authoritative connectivity test).
+  // Use it as a fallback for connman connection state, which arrives later in the
+  // diagnostic output and may still be null during streaming.
+  const connected = cell.connman_cell_connected === true || cell.internet_reachable === true;
   const sig = signalLabel(cell.strength_score);
   if (!connected && cell.connman_cell_ready === true) {
     return { health: "warning", badgeLabel: "Warning", primaryLine: carrier, secondaryLine: "Registered · not connected", signalLabel: sig, signalScore: cell.strength_score };
