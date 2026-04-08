@@ -2,8 +2,9 @@ use regex::Regex;
 use std::collections::HashMap;
 
 use crate::{
-    CellularDiagnostic, DiagStatus, DiagnosticState, EthernetDiagnostic, SatelliteDiagnostic,
-    SystemDiagnostic, WifiDiagnostic,
+    CellularDiagnostic, CopsNetwork, DiagStatus, DiagnosticState, EthernetDiagnostic,
+    SatelliteDiagnostic, SimPickerDiagnostic, SimPickerRecommendation, SystemDiagnostic,
+    WifiDiagnostic,
 };
 
 #[derive(Clone, Debug)]
@@ -128,6 +129,33 @@ pub fn parse_log_into_state(log: &str, state: &mut DiagnosticState) {
     }
     if let Some(next) = satellite {
         state.satellite = Some(next);
+    }
+
+    // SIM Picker: look for the block sentinel or any cell-support --scan output
+    let sim_picker_block = find_latest_body_contains(&latest, &["===== sim picker start ====="])
+        .or_else(|| find_latest(&latest, &["cell-support --no-ofono --at --scan"]));
+    if let Some(block) = sim_picker_block {
+        let sp = parse_sim_picker(block);
+        if sp.scan_attempted || sp.full_block_run {
+            // When the unified SIM Picker block was run it contains all cellular commands too.
+            // Parse cellular from it so the Cellular card populates even if no separate
+            // cellular diag block exists in the log.
+            if sp.full_block_run {
+                let cell = parse_cellular(block);
+                state.cellular = Some(match state.cellular.take() {
+                    Some(prev) => {
+                        // Only replace if the block-parsed result has more data
+                        if cell.imei.is_some() || cell.internet_reachable {
+                            cell
+                        } else {
+                            prev
+                        }
+                    }
+                    None => cell,
+                });
+            }
+            state.sim_picker = Some(sp);
+        }
     }
     if ethernet.is_some() {
         if let Some(next) = ethernet {
@@ -830,7 +858,7 @@ fn parse_wifi(latest: &HashMap<String, String>) -> Option<WifiDiagnostic> {
         w.interface_exists = text.contains("Interface wlan0");
         w.interface_name = capture_after(text, "Interface");
         w.mac_address = capture_after(text, "addr");
-        w.ssid = capture_after(text, "ssid");
+        w.ssid = capture_after(text, "ssid").filter(|s| !s.starts_with('='));
         w.interface_type = capture_after(text, "type");
         w.tx_power_dbm = capture_after(text, "txpower").and_then(|v| {
             v.split_whitespace()
@@ -845,7 +873,7 @@ fn parse_wifi(latest: &HashMap<String, String>) -> Option<WifiDiagnostic> {
             .or_else(|| capture_after(text, "Interface"));
         w.interface_type = w.interface_type.or_else(|| capture_after(text, "type"));
         w.mac_address = w.mac_address.or_else(|| capture_after(text, "addr"));
-        w.ssid = w.ssid.or_else(|| capture_after(text, "ssid"));
+        w.ssid = w.ssid.or_else(|| capture_after(text, "ssid").filter(|s| !s.starts_with('=')));
     }
     if let Some(text) = iw_link {
         if text.contains("Not connected") {
@@ -991,99 +1019,133 @@ fn parse_wifi(latest: &HashMap<String, String>) -> Option<WifiDiagnostic> {
 fn parse_cellular_from_latest(latest: &HashMap<String, String>) -> Option<CellularDiagnostic> {
     let mut diag = default_cellular();
     let mut has_any = false;
+    // Only set true for commands that are exclusively part of cellular diagnostic scripts.
+    // Commands shared with WiFi (connmanctl, ip route, proc/net/dev, date/version/sid) must NOT
+    // set this flag — the WiFi subshell creates a single block whose key contains those command
+    // strings as substrings, causing find_latest() to return the WiFi block body.
+    let mut has_cellular_specific = false;
+    // When the full multi-section block is found (via body markers), all sections are parsed
+    // correctly by parse_cellular_block using extract_between. Individual command lookups must be
+    // SKIPPED in this case — they would all return the same full block body via substring key
+    // matching, causing parse_single_value to return the last non-empty line of the entire output
+    // (which can be garbage mid-stream), and parse_basic_cell_info's positional assignment would
+    // write that garbage to IMEI, ICCID, APN, etc.
+    let mut full_section_parsed = false;
 
+    // One uniquely-cellular marker is sufficient. The previous 3-marker requirement created a
+    // ~12-second window before "===== modem / radio diagnostics =====" appeared in the body,
+    // during which individual command lookups ran and all returned the same full block body
+    // via substring key matching. parse_single_value on that body returned the last non-empty
+    // line (e.g. a /proc/net/dev "lo: 184779..." line), which parse_basic_cell_info then
+    // positionally assigned to basic_provider (→ card title) and basic_apn.
+    // With a single early marker, full_section_parsed triggers within ~0.5s and
+    // parse_cellular_block safely handles missing later sections via extract_between.
     if let Some(block) = find_latest_body_contains(
         latest,
-        &[
-            "===== cellular connectivity test =====",
-            "===== basic cell info =====",
-            "===== modem / radio diagnostics =====",
-        ],
+        &["===== cellular connectivity test ====="],
     ) {
         parse_cellular_block(block, &mut diag);
         has_any = true;
+        has_cellular_specific = true;
+        full_section_parsed = true;
     }
 
-    if let Some(block) = find_latest(latest, &["run cellular diagnostics"]) {
-        parse_cellular_block(block, &mut diag);
-        has_any = true;
-    }
-
-    if let Some(text) = find_latest(latest, &["date"]) {
-        diag.controller_date = parse_single_value(Some(text)).or(diag.controller_date);
-        has_any = has_any || !text.trim().is_empty();
-    }
-    if let Some(text) = find_latest(latest, &["version"]) {
-        diag.controller_version = parse_single_value(Some(text)).or(diag.controller_version);
-        has_any = has_any || !text.trim().is_empty();
-    }
-    if let Some(text) = find_latest(latest, &["sid"]) {
-        diag.controller_sid = parse_single_value(Some(text)).or(diag.controller_sid);
-        has_any = has_any || !text.trim().is_empty();
-    }
-    if let Some(text) = find_latest(latest, &["cellular-check"]) {
-        parse_cellular_check_text(text, &mut diag);
-        has_any = true;
-    }
-    let basic_cmds = [
-        "cell-imei",
-        "cell-ccid",
-        "cell-imsi",
-        "cell-hni",
-        "cell-provider",
-        "cell-status",
-        "cell-signal",
-        "cell-apn",
-    ];
-    let mut basic_lines: Vec<String> = Vec::new();
-    for cmd in basic_cmds {
-        if let Some(text) = find_latest(latest, &[cmd]) {
+    if !full_section_parsed {
+        // Individual command lookup path — used when commands ran separately (not in a subshell).
+        // Each command has its own dedicated block with clean single-value output.
+        if let Some(block) = find_latest(latest, &["run cellular diagnostics"]) {
+            parse_cellular_block(block, &mut diag);
             has_any = true;
-            if let Some(v) = parse_single_value(Some(text)) {
-                basic_lines.push(v);
+            has_cellular_specific = true;
+        }
+
+        // date/version/sid appear in many diagnostic runs — NOT cellular-specific
+        if let Some(text) = find_latest(latest, &["date"]) {
+            diag.controller_date = parse_single_value(Some(text)).or(diag.controller_date);
+            has_any = has_any || !text.trim().is_empty();
+        }
+        if let Some(text) = find_latest(latest, &["version"]) {
+            diag.controller_version = parse_single_value(Some(text)).or(diag.controller_version);
+            has_any = has_any || !text.trim().is_empty();
+        }
+        if let Some(text) = find_latest(latest, &["sid"]) {
+            diag.controller_sid = parse_single_value(Some(text)).or(diag.controller_sid);
+            has_any = has_any || !text.trim().is_empty();
+        }
+        if let Some(text) = find_latest(latest, &["cellular-check"]) {
+            parse_cellular_check_text(text, &mut diag);
+            has_any = true;
+            has_cellular_specific = true;
+        }
+        let basic_cmds = [
+            "cell-imei",
+            "cell-ccid",
+            "cell-imsi",
+            "cell-hni",
+            "cell-provider",
+            "cell-status",
+            "cell-signal",
+            "cell-apn",
+        ];
+        let mut basic_lines: Vec<String> = Vec::new();
+        for cmd in basic_cmds {
+            if let Some(text) = find_latest(latest, &[cmd]) {
+                has_any = true;
+                has_cellular_specific = true;
+                if let Some(v) = parse_single_value(Some(text)) {
+                    basic_lines.push(v);
+                }
             }
         }
-    }
-    if !basic_lines.is_empty() {
-        parse_basic_cell_info(&basic_lines.join("\n"), &mut diag);
-    }
-    if let Some(text) = find_latest(latest, &["connmanctl technologies"]) {
-        parse_connman_cellular(text, &mut diag);
-        has_any = true;
-    }
-    if let Some(text) = find_latest(latest, &["connmanctl services"]) {
-        parse_connman_cellular(text, &mut diag);
-        has_any = true;
-    }
-    if let Some(text) = find_latest(latest, &["connmanctl state"]) {
-        parse_connman_cellular(text, &mut diag);
-        has_any = true;
-    }
-    if let Some(text) = find_latest(latest, &["ip link show wwan0"]) {
-        parse_wwan_interface(text, &mut diag);
-        has_any = true;
-    }
-    if let Some(text) = find_latest(latest, &["ip addr show wwan0"]) {
-        parse_wwan_interface(text, &mut diag);
-        has_any = true;
-    }
-    if let Some(text) = find_latest(latest, &["ip route"]) {
-        parse_wwan_interface(text, &mut diag);
-        has_any = true;
-    }
-    if let Some(text) = find_latest(latest, &["cat /proc/net/dev"]) {
-        parse_proc_net_dev(text, &mut diag);
-        has_any = true;
-    }
-    if let Some(text) = find_latest(latest, &["cell-support --no-ofono --at"]) {
-        parse_cell_support_at(text, &mut diag);
-        has_any = true;
+        if !basic_lines.is_empty() {
+            parse_basic_cell_info(&basic_lines.join("\n"), &mut diag);
+        }
+        // connmanctl commands appear in the WiFi subshell key as substrings — NOT cellular-specific
+        if let Some(text) = find_latest(latest, &["connmanctl technologies"]) {
+            parse_connman_cellular(text, &mut diag);
+            has_any = true;
+        }
+        if let Some(text) = find_latest(latest, &["connmanctl services"]) {
+            parse_connman_cellular(text, &mut diag);
+            has_any = true;
+        }
+        if let Some(text) = find_latest(latest, &["connmanctl state"]) {
+            parse_connman_cellular(text, &mut diag);
+            has_any = true;
+        }
+        // ip/wwan/proc commands also appear in WiFi subshell — NOT cellular-specific
+        if let Some(text) = find_latest(latest, &["ip link show wwan0"]) {
+            parse_wwan_interface(text, &mut diag);
+            has_any = true;
+        }
+        if let Some(text) = find_latest(latest, &["ip addr show wwan0"]) {
+            parse_wwan_interface(text, &mut diag);
+            has_any = true;
+        }
+        if let Some(text) = find_latest(latest, &["ip route"]) {
+            parse_wwan_interface(text, &mut diag);
+            has_any = true;
+        }
+        if let Some(text) = find_latest(latest, &["cat /proc/net/dev"]) {
+            parse_proc_net_dev(text, &mut diag);
+            has_any = true;
+        }
+        if let Some(text) = find_latest(latest, &["cell-support --no-ofono --at"]) {
+            parse_cell_support_at(text, &mut diag);
+            has_any = true;
+            has_cellular_specific = true;
+        }
     }
 
-    if !has_any {
+    // Only return a cellular struct when at least one cellular-specific command ran.
+    // Returning None here prevents a WiFi-only run from populating the cellular card
+    // with connman/routing data found as key substrings of the WiFi subshell block.
+    if !has_cellular_specific {
         return None;
     }
-    diag.full_block_run = latest.contains_key("cell-support --no-ofono --at");
+    // full_block_run = true when the big section-based subshell ran (full_section_parsed)
+    // OR when cell-support --no-ofono --at was run as a standalone command.
+    diag.full_block_run = full_section_parsed || latest.contains_key("cell-support --no-ofono --at");
     compute_cellular_flags(&mut diag);
     determine_cellular_status(&mut diag);
     Some(diag)
@@ -1483,9 +1545,19 @@ fn parse_ethernet(
         .and_then(|b| capture_after(b, "Internet reachability state:"))
         .map(|s| s.eq_ignore_ascii_case("online"))
         .unwrap_or(false);
+    const KNOWN_ETH_STATES: &[&str] = &[
+        "up", "down", "dormant", "lowerlayerdown", "notpresent",
+        "unknown", "idle", "failure", "association", "configuration",
+        "ready", "online", "disconnect",
+    ];
     let eth_state = ethernet_check
         .and_then(|b| capture_after(b, "Ethernet state:"))
-        .or_else(|| operstate.and_then(|b| parse_single_value(Some(b))))
+        .or_else(|| {
+            operstate.and_then(|b| parse_single_value(Some(b))).filter(|s| {
+                let lower = s.to_ascii_lowercase();
+                KNOWN_ETH_STATES.iter().any(|&known| lower == known)
+            })
+        })
         .unwrap_or_else(|| "unknown".into());
     let ipv4 = ethernet_check
         .and_then(|b| capture_after(b, "Ethernet supports IPv4?"))
@@ -2091,6 +2163,11 @@ fn clean_cell_display_value(value: String) -> Option<String> {
     if trimmed.is_empty() {
         return None;
     }
+    // Reject multi-token garbage: /proc/net/dev lines have 17 tokens, ICMP lines have 10+.
+    // Valid cell values (APN, carrier name, IMEI, ICCID, status) are all 1–3 tokens.
+    if trimmed.split_whitespace().count() > 3 {
+        return None;
+    }
     let upper = trimmed.to_ascii_uppercase();
     if upper == "0.0.0.0" || upper == "—" || upper == "-" {
         return None;
@@ -2274,9 +2351,240 @@ fn parse_cell_support_at(text: &str, diag: &mut CellularDiagnostic) {
     diag.pdp_active = extract_regex(text, r"\+CGACT:\s*1,(\d)").map(|v| v == "1");
     diag.pdp_ip =
         extract_regex(text, r"\+CGPADDR:\s*1,(\d+\.\d+\.\d+\.\d+)").filter(|ip| ip != "0.0.0.0");
-    diag.at_apn = extract_regex(text, r"\+CGCONTRDP:.*?,[^,]*,[^,]*,[^,]*,[^,]*,([^,\s]+)")
-        .or_else(|| extract_regex(text, r#"\+CGCONTRDP:.*?(vzwinternet|super)"#));
+    // +CGCONTRDP: <cid>,<bearer_id>,<APN>[,<local_addr>[,<subnet>[,<gw>[,<dns_prim>...]]]]
+    // Capture field 3 (APN name) directly — previous regex counted too many commas and
+    // captured the gateway/DNS IP in field 6 instead of the APN in field 3.
+    diag.at_apn = extract_regex(text, r"\+CGCONTRDP:\s*\d+,\s*\d+,\s*([^,\s]+)")
+        .filter(|s| !s.is_empty() && s != "0.0.0.0");
 }
+
+fn parse_cops_scan(line: &str) -> Vec<CopsNetwork> {
+    let mut networks = Vec::new();
+    let re = match Regex::new(r#"\((\d+),"([^"]*?)","([^"]*?)","(\d+)",(\d+)\)"#) {
+        Ok(r) => r,
+        Err(_) => return networks,
+    };
+    for cap in re.captures_iter(line) {
+        let numeric = cap[4].to_string();
+        let resolved_name = resolve_carrier(&numeric);
+        networks.push(CopsNetwork {
+            stat: cap[1].parse().unwrap_or(0),
+            long_name: cap[2].to_string(),
+            numeric,
+            act: cap[5].parse().unwrap_or(0),
+            resolved_name,
+        });
+    }
+    networks
+}
+
+fn resolve_carrier(code: &str) -> String {
+    match code {
+        "311270" | "311271" | "311272" | "311273" | "311274" | "311275" |
+        "311276" | "311277" | "311278" | "311279" | "311280" | "311480" |
+        "311481" | "311482" | "311483" | "311484" | "311485" | "311486" |
+        "311487" | "311488" | "311489" => "Verizon".into(),
+        "310260" | "310026" | "310490" | "310660" | "312250" | "310230" |
+        "310240" | "310250" => "T-Mobile".into(),
+        "310410" | "310380" | "310980" | "311180" | "310030" | "310560" |
+        "310680" => "AT&T".into(),
+        "313100" => "FirstNet (AT&T — restricted)".into(),
+        "310000" => "Dish".into(),
+        _ => format!("Carrier ({})", code),
+    }
+}
+
+pub fn parse_sim_picker(block: &str) -> SimPickerDiagnostic {
+    let mut diag = SimPickerDiagnostic::default();
+    diag.full_block_run = block.to_ascii_lowercase().contains("sim picker start");
+    parse_installed_sim(block, &mut diag);
+    determine_scan_outcome(block, &mut diag);
+    // nwscanmode: +QCFG: "nwscanmode",N
+    diag.nwscanmode = Regex::new(r#"\+QCFG:\s*"nwscanmode",(\d+)"#)
+        .ok()
+        .and_then(|re| re.captures(block))
+        .and_then(|cap| cap[1].parse::<u8>().ok());
+    // +QCSQ: "CAT-M1",-62,-91,107,-13  → cap[2] is RSRP
+    diag.qcsq_rsrp = Regex::new(r#"\+QCSQ:\s*"[^"]+",(-?\d+),(-?\d+)"#)
+        .ok()
+        .and_then(|re| re.captures(block))
+        .and_then(|cap| cap[2].parse::<i32>().ok());
+    // +QNWINFO: "CAT-M1","311480","LTE BAND 13",5230 → cap[1] is registered MCC-MNC
+    diag.current_registered_code = Regex::new(r#"\+QNWINFO:\s*"[^"]+","(\d{5,6})""#)
+        .ok()
+        .and_then(|re| re.captures(block))
+        .map(|cap| cap[1].to_string());
+    determine_recommendation(&mut diag);
+    diag
+}
+
+fn parse_installed_sim(at_block: &str, diag: &mut SimPickerDiagnostic) {
+    // ICCID from +QCCID: 89148000008235254186
+    if let Some(iccid) = extract_regex(at_block, r"\+QCCID:\s*(\d{15,20})") {
+        diag.installed_iccid = Some(iccid);
+    }
+    // IMSI — 15-digit number starting with 3, appears alone on a line
+    if let Some(imsi) = extract_regex(at_block, r"(?m)^(3\d{14})$") {
+        let carrier_code = imsi[..imsi.len().min(6)].to_string();
+        let carrier_name = resolve_carrier(&carrier_code);
+        diag.installed_imsi = Some(imsi);
+        diag.installed_carrier_code = Some(carrier_code);
+        diag.installed_carrier_name = Some(carrier_name);
+    }
+}
+
+fn determine_scan_outcome(at_block: &str, diag: &mut SimPickerDiagnostic) {
+    diag.scan_attempted = at_block.contains("Scanning...");
+
+    if at_block.contains("CME ERROR: operation not allowed") {
+        diag.scan_failed = true;
+        diag.scan_completed = false;
+        return;
+    }
+
+    for line in at_block.lines() {
+        if line.starts_with("+COPS:") && line.contains('"') {
+            let networks = parse_cops_scan(line);
+            if !networks.is_empty() {
+                diag.detected_networks = networks;
+                diag.scan_completed = true;
+                diag.scan_empty = false;
+                return;
+            }
+        }
+    }
+
+    if diag.scan_attempted {
+        diag.scan_completed = true;
+        diag.scan_empty = true;
+    }
+}
+
+fn determine_recommendation(diag: &mut SimPickerDiagnostic) {
+    if !diag.scan_attempted {
+        diag.recommendation = SimPickerRecommendation::NotRun;
+        diag.recommendation_detail = "Run the SIM Picker scan to check available carriers.".into();
+        return;
+    }
+
+    if diag.scan_failed {
+        diag.recommendation = SimPickerRecommendation::ScanFailed;
+        diag.recommendation_detail = if diag.nwscanmode == Some(1) {
+            "Modem locked to LTE-only mode. Run setup-cellular to reset scan mode, then retry.".into()
+        } else {
+            "Network scan failed. Reboot controller and try again.".into()
+        };
+        return;
+    }
+
+    if diag.scan_empty {
+        diag.recommendation = SimPickerRecommendation::DeadZone;
+        diag.recommendation_detail =
+            "No carriers detected at this location. No SIM will provide service here. Check antenna placement and sky view.".into();
+        return;
+    }
+
+    let installed_code = diag.installed_carrier_code.clone().unwrap_or_default();
+    let installed_name = resolve_carrier(&installed_code);
+
+    // Find the installed carrier's entry in scan results
+    let installed_network = diag.detected_networks.iter()
+        .find(|n| resolve_carrier(&n.numeric) == installed_name)
+        .cloned();
+
+    let installed_stat = installed_network.as_ref().map(|n| n.stat);
+
+    // +QNWINFO gives the currently registered MCC-MNC, which is authoritative even when
+    // the carrier doesn't appear in +COPS=? scan results (e.g., truncated output or
+    // scan while already locked to a network). If it resolves to the installed carrier,
+    // treat as if stat=2 (currently connected).
+    let currently_on_installed = diag.current_registered_code.as_deref()
+        .map(|code| resolve_carrier(code) == installed_name)
+        .unwrap_or(false);
+
+    diag.installed_carrier_detected = installed_stat.is_some() || currently_on_installed;
+
+    // stat=2 means actively connected; currently_on_installed is equivalent evidence.
+    // Combined with good signal (RSRP > -100 dBm, or unknown), never recommend a swap.
+    if installed_stat == Some(2) || currently_on_installed {
+        let strong = diag.qcsq_rsrp.map(|r| r > -100).unwrap_or(true);
+        if strong {
+            diag.recommendation = SimPickerRecommendation::KeepCurrent;
+            diag.recommendation_detail = format!(
+                "{} is connected and has good signal at this location. No SIM change needed.",
+                diag.installed_carrier_name.as_deref().unwrap_or(&installed_name)
+            );
+            return;
+        }
+        // Connected but weak — fall through to check alternatives
+    }
+
+    // Valid alternatives: exclude the installed carrier and restricted networks
+    let valid_alts: Vec<&CopsNetwork> = diag.detected_networks.iter()
+        .filter(|n| {
+            resolve_carrier(&n.numeric) != installed_name
+                && n.numeric != "313100" // FirstNet — restricted public safety network
+        })
+        .collect();
+
+    // Best alternative: prefer stat=1 (available) over stat=3 (detected/wrong SIM)
+    let best_alt = valid_alts.iter()
+        .min_by_key(|n| match n.stat { 1 => 0, 3 => 1, 0 => 2, _ => 3 })
+        .copied()
+        .cloned();
+
+    if !diag.installed_carrier_detected {
+        // Installed carrier not visible at all
+        if let Some(ref alt) = best_alt {
+            diag.recommendation = SimPickerRecommendation::SwapTo(alt.resolved_name.clone());
+            diag.best_network_code = Some(alt.numeric.clone());
+            diag.best_network_name = Some(alt.resolved_name.clone());
+            diag.recommendation_detail = format!(
+                "{} not detected. {} is {} at this location — install {} SIM.",
+                diag.installed_carrier_name.as_deref().unwrap_or("Installed carrier"),
+                alt.resolved_name,
+                if alt.stat == 1 { "available" } else { "detectable" },
+                alt.resolved_name,
+            );
+        } else {
+            diag.recommendation = SimPickerRecommendation::DeadZone;
+            diag.recommendation_detail = format!(
+                "{} not detected and no valid alternatives found. Check antenna.",
+                diag.installed_carrier_name.as_deref().unwrap_or("Installed carrier")
+            );
+        }
+        return;
+    }
+
+    // Installed carrier detected (stat=3 or stat=0) but not actively connected
+    if let Some(ref alt) = best_alt {
+        if alt.stat == 1 {
+            diag.recommendation = SimPickerRecommendation::SwapTo(alt.resolved_name.clone());
+            diag.best_network_code = Some(alt.numeric.clone());
+            diag.best_network_name = Some(alt.resolved_name.clone());
+            diag.recommendation_detail = format!(
+                "{} detected but not connected. {} is available — may provide better service.",
+                diag.installed_carrier_name.as_deref().unwrap_or("Installed carrier"),
+                alt.resolved_name,
+            );
+            return;
+        }
+    }
+
+    diag.recommendation = SimPickerRecommendation::KeepCurrent;
+    diag.recommendation_detail = if best_alt.is_none() {
+        format!(
+            "{} is the only carrier detected at this location.",
+            diag.installed_carrier_name.as_deref().unwrap_or("Installed carrier")
+        )
+    } else {
+        format!(
+            "{} is detected at this location. No clearly better alternative found.",
+            diag.installed_carrier_name.as_deref().unwrap_or("Installed carrier")
+        )
+    };
+}
+
 
 /// Pre-compute boolean flag fields from raw parsed data.
 /// Must be called before determine_cellular_status.
@@ -2368,34 +2676,12 @@ fn determine_cellular_status(diag: &mut CellularDiagnostic) {
             return;
         }
 
-        let is_us_cell = diag
-            .provider_code
-            .as_deref()
-            .map(|c| c.starts_with("31127"))
-            .unwrap_or(false)
-            || diag
-                .imsi
-                .as_deref()
-                .map(|s| s.starts_with("311270"))
-                .unwrap_or(false);
-
-        if is_us_cell {
-            diag.summary = "No service — US Cellular SIM".into();
-            diag.recommended_action = Some("Consider Verizon SIM swap".into());
-            diag.other_actions = vec![
-                "US Cellular has limited rural coverage".into(),
-                "Check coverage area".into(),
-                "Reboot controller".into(),
-            ];
-        } else {
-            diag.summary = "No service — searching for network".into();
-            diag.recommended_action = Some("Check coverage area and antenna".into());
-            diag.other_actions = vec![
-                "Move to known good coverage area".into(),
-                "Reboot controller".into(),
-                "Try alternate SIM".into(),
-            ];
-        }
+        diag.summary = "No service — searching for network".into();
+        diag.recommended_action = Some("Check coverage area and antenna".into());
+        diag.other_actions = vec![
+            "Reboot controller".into(),
+            "Check antenna placement".into(),
+        ];
         return;
     }
 
@@ -2434,6 +2720,45 @@ fn determine_cellular_status(diag: &mut CellularDiagnostic) {
             diag.summary = format!("{} · {}/100 · signal too weak", provider, strength);
             diag.recommended_action =
                 Some("Check antenna — signal critically low".into());
+        }
+        return;
+    }
+
+    // 7. Fallback: connman confirms connected even though check wasn't run explicitly.
+    //    This happens when cellular data is parsed from the SIM Picker block — connman
+    //    state reflects the live connection but cellular-check ran inside the subshell
+    //    and its output may not match the section-based parsing expectations.
+    //    Guard: only apply when genuine cellular data exists (full AT block ran OR
+    //    cellular-check produced a result). Without this guard, incidentally parsed
+    //    connman data from a WiFi-only run could trigger a false Green status.
+    if diag.connman_cell_connected == Some(true)
+        && (diag.full_block_run || diag.check_result != "Unknown")
+    {
+        let provider = diag
+            .operator_name
+            .as_deref()
+            .or(diag.basic_provider.as_deref())
+            .or(diag.provider_code.as_deref())
+            .unwrap_or("Unknown");
+        let strength = diag.strength_score.unwrap_or(0);
+        let label = diag.strength_label.as_deref().unwrap_or("");
+        if strength >= 60 {
+            diag.status = DiagStatus::Green;
+            diag.summary = format!("{} · {}/100 · {}", provider, strength, label);
+        } else if strength >= 40 {
+            diag.status = DiagStatus::Orange;
+            diag.summary = format!("{} · {}/100 · weak signal", provider, strength);
+            diag.recommended_action =
+                Some("Check antenna connection and placement".into());
+        } else if strength > 0 {
+            diag.status = DiagStatus::Red;
+            diag.summary = format!("{} · {}/100 · signal too weak", provider, strength);
+            diag.recommended_action =
+                Some("Check antenna — signal critically low".into());
+        } else {
+            // Connected but no signal score (e.g., only connman output, no AT data yet)
+            diag.status = DiagStatus::Green;
+            diag.summary = format!("{} · connected", provider);
         }
         return;
     }

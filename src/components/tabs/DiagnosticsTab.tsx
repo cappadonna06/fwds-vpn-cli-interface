@@ -54,6 +54,14 @@ interface WifiDiagnostic {
   proc_tx_packets?: number | null;
 }
 
+interface CopsNetwork {
+  stat: number;
+  long_name: string;
+  numeric: string;
+  act: number;
+  resolved_name: string;
+}
+
 interface CellularDiagnostic {
   status: DiagStatus;
   summary: string;
@@ -105,6 +113,8 @@ interface CellularDiagnostic {
   setup_attempted?: boolean;
   setup_timed_out?: boolean;
   cellular_disabled?: boolean;
+  no_service?: boolean;
+  sim_present?: boolean;
 }
 
 interface SatelliteDiagnostic {
@@ -171,12 +181,43 @@ interface SystemDiagnostic {
   release_date?: string | null;
 }
 
+type SimPickerRecommendation =
+  | "NotRun"
+  | "ScanFailed"
+  | "DeadZone"
+  | "KeepCurrent"
+  | "WeakButBest"
+  | { SwapTo: string };
+
+interface SimPickerDiagnostic {
+  scan_attempted: boolean;
+  scan_completed: boolean;
+  scan_failed: boolean;
+  scan_empty: boolean;
+  full_block_run: boolean;
+  installed_iccid?: string | null;
+  installed_imsi?: string | null;
+  installed_carrier_code?: string | null;
+  installed_carrier_name?: string | null;
+  detected_networks: CopsNetwork[];
+  nwscanmode?: number | null;
+  best_network_code?: string | null;
+  best_network_name?: string | null;
+  installed_carrier_detected: boolean;
+  current_registered_code?: string | null;
+  recommendation: SimPickerRecommendation;
+  recommendation_detail: string;
+  qcsq_rsrp?: number | null;
+  last_updated?: string | null;
+}
+
 interface DiagnosticState {
   wifi?: WifiDiagnostic | null;
   cellular?: CellularDiagnostic | null;
   satellite?: SatelliteDiagnostic | null;
   ethernet?: EthernetDiagnostic | null;
   system?: SystemDiagnostic | null;
+  sim_picker?: SimPickerDiagnostic | null;
   last_updated?: string | null;
   session_has_data?: boolean;
 }
@@ -226,6 +267,113 @@ function speedLabel(speed?: string | null): string {
   return speed;
 }
 
+function resolve_carrier_ts(code: string): string {
+  const verizon = ["311270","311271","311272","311273","311274","311275",
+    "311276","311277","311278","311279","311280","311480","311481","311482",
+    "311483","311484","311485","311486","311487","311488","311489"];
+  const tmobile = ["310260","310026","310490","310660","312250","310230","310240","310250"];
+  const att = ["310410","310380","310980","311180","310030","310560","310680"];
+  if (verizon.includes(code)) return "Verizon";
+  if (tmobile.includes(code)) return "T-Mobile";
+  if (att.includes(code)) return "AT&T";
+  if (code === "313100") return "FirstNet (AT&T)";
+  return `Carrier (${code})`;
+}
+
+const ALL_CARRIERS = [
+  { name: "AT&T",     codes: ["310410","310380","310980","311180","310030","310560","310680"] },
+  { name: "T-Mobile", codes: ["310260","310026","310490","310660","312250","310230","310240","310250"] },
+  { name: "Verizon",  codes: ["311270","311271","311272","311273","311274","311275","311276","311277",
+                               "311278","311279","311280","311480","311481","311482","311483","311484",
+                               "311485","311486","311487","311488","311489"] },
+];
+
+function simPickerHealth(sp?: SimPickerDiagnostic | null): HealthTone {
+  if (!sp) return "neutral";
+  const rec = sp.recommendation;
+  if (typeof rec === "string") {
+    if (rec === "NotRun" || rec === "DeadZone") return "neutral";
+    if (rec === "ScanFailed" || rec === "WeakButBest") return "warning";
+    if (rec === "KeepCurrent") return "healthy";
+  }
+  // SwapTo
+  return sp.installed_carrier_detected ? "warning" : "error";
+}
+
+function simPickerBadge(_sp?: SimPickerDiagnostic | null): string {
+  return "";
+}
+
+function simPickerPrimary(sp?: SimPickerDiagnostic | null): string {
+  if (!sp || !sp.scan_attempted) return "Check which carrier has coverage here";
+  if (sp.scan_failed) return "Network scan failed";
+  if (sp.scan_empty) return "No carriers detected";
+  const rec = sp.recommendation;
+  if (typeof rec === "object" && "SwapTo" in rec) {
+    return sp.installed_carrier_detected
+      ? `${sp.installed_carrier_name ?? "Installed"} weak · Install ${rec.SwapTo} SIM`
+      : `${sp.installed_carrier_name ?? "Installed"} not detected · Install ${rec.SwapTo} SIM`;
+  }
+  if (rec === "KeepCurrent") {
+    return `${sp.installed_carrier_name ?? "Installed"} · Keep current SIM`;
+  }
+  return sp.recommendation_detail || "Scan complete";
+}
+
+function simPickerSecondary(sp?: SimPickerDiagnostic | null): string | null {
+  if (!sp || !sp.scan_attempted) return "Copy the command block, run in terminal, then return here.";
+  if (!sp.recommendation_detail) return null;
+  return sp.recommendation_detail;
+}
+
+function buildSimPickerSections(sp?: SimPickerDiagnostic | null): DiagSection[] {
+  if (!sp || !sp.scan_attempted) {
+    return [{ title: "Status", rows: [{ label: "Scan", value: "Not run" }] }];
+  }
+
+  const rows: DiagRow[] = [];
+
+  if (sp.scan_failed) {
+    rows.push({ label: "Scan", value: "Failed" });
+    if (sp.nwscanmode === 1) rows.push({ label: "Note", value: "Modem in LTE-only mode — run setup-cellular to reset" });
+    return [{ title: "Scan", rows }];
+  }
+
+  if (sp.scan_empty) {
+    rows.push({ label: "Result", value: "No carriers detected" });
+    rows.push({ label: "Next step", value: "Check antenna placement and sky view" });
+    return [{ title: "Scan", rows }];
+  }
+
+  // Carrier list: show all three major carriers
+  const networkRows: DiagRow[] = ALL_CARRIERS.map(carrier => {
+    const detected = sp.detected_networks.find(n => carrier.codes.includes(n.numeric));
+    const label = detected
+      ? (detected.stat === 1 ? "Available" : detected.stat === 2 ? "Connected" : "Detected")
+      : "Not seen";
+    return { label: carrier.name, value: label };
+  });
+
+  // Show FirstNet if detected, marked as restricted
+  const firstNet = sp.detected_networks.find(n => n.numeric === "313100");
+  if (firstNet) {
+    networkRows.push({ label: "FirstNet (AT&T)", value: "Detected — restricted" });
+  }
+
+  const installedRows: DiagRow[] = [
+    { label: "Installed SIM", value: sp.installed_carrier_name ?? sp.installed_carrier_code ?? "Unknown" },
+    { label: "Installed detected", value: sp.installed_carrier_detected ? "Yes" : "No" },
+  ];
+  if (sp.best_network_name) {
+    installedRows.push({ label: "Recommended", value: `Install ${sp.best_network_name} SIM` });
+  }
+
+  return [
+    { title: "Carriers scanned", rows: networkRows },
+    { title: "Recommendation", rows: installedRows },
+  ];
+}
+
 function signalLabel(score?: number | null): string {
   if (score === null || score === undefined || Number.isNaN(score)) return "No service";
   if (score >= 75) return "Strong";
@@ -246,12 +394,38 @@ function cleanCellValue(value?: string | null): string | null {
   if (!value) return null;
   const v = value.trim().replace(/^"+|"+$/g, "").replace(/,+$/, "");
   if (!v) return null;
+  // Reject multi-token garbage (/proc/net/dev lines, ICMP output, etc.).
+  // Valid cell values (APN, carrier, IMEI, status) are all 1–3 whitespace-separated tokens.
+  if (v.split(/\s+/).length > 3) return null;
   const upper = v.toUpperCase();
   if (v === "0.0.0.0" || v === "—" || v === "-") return null;
   if (upper.startsWith("+")) return null;
   if (upper.includes("CGPADDR") || upper.includes("CGACT") || upper.includes("QCSQ")) return null;
   if (upper.startsWith("ERROR")) return null;
   return v;
+}
+
+// Resolves 5–6 digit MCC-MNC codes to human carrier names.
+// Mirrors the Rust resolve_carrier() function in parsers.rs.
+// Non-numeric strings are returned as-is (already a name).
+function resolveCarrierCode(code?: string | null): string | null {
+  if (!code) return null;
+  if (!/^\d{5,6}$/.test(code)) return code;
+  const map: Record<string, string> = {
+    "311270": "Verizon", "311271": "Verizon", "311272": "Verizon", "311273": "Verizon",
+    "311274": "Verizon", "311275": "Verizon", "311276": "Verizon", "311277": "Verizon",
+    "311278": "Verizon", "311279": "Verizon", "311280": "Verizon", "311480": "Verizon",
+    "311481": "Verizon", "311482": "Verizon", "311483": "Verizon", "311484": "Verizon",
+    "311485": "Verizon", "311486": "Verizon", "311487": "Verizon", "311488": "Verizon",
+    "311489": "Verizon",
+    "310260": "T-Mobile", "310026": "T-Mobile", "310490": "T-Mobile", "310660": "T-Mobile",
+    "312250": "T-Mobile", "310230": "T-Mobile", "310240": "T-Mobile", "310250": "T-Mobile",
+    "310410": "AT&T", "310380": "AT&T", "310980": "AT&T", "311180": "AT&T",
+    "310030": "AT&T", "310560": "AT&T", "310680": "AT&T",
+    "313100": "FirstNet (AT&T)",
+    "310000": "Dish",
+  };
+  return map[code] ?? code;
 }
 
 function formatLoopback(seconds?: number | null): string {
@@ -265,7 +439,7 @@ function buildWifiSections(wifi?: WifiDiagnostic | null): DiagSection[] {
   if (!wifi) return [{ title: "Status", rows: [{ label: "Details", value: "No recent data" }] }];
 
   const network: DiagRow[] = [
-    { label: "Network", value: wifi.ssid || wifi.access_point || "Unknown" },
+    { label: "Network", value: (wifi.ssid && !wifi.ssid.startsWith('=') ? wifi.ssid : null) || wifi.access_point || "Unknown" },
     { label: "Connection", value: wifi.connected === true ? "Connected" : "Not connected" },
     { label: "Signal", value: `${signalLabel(wifi.strength_score)}${wifi.signal_dbm !== null && wifi.signal_dbm !== undefined ? ` (${wifi.signal_dbm} dBm)` : ""}` },
     { label: "Role", value: wifi.default_via_wlan0 === true ? "Active" : wifi.connected === true ? "Backup" : "Inactive" },
@@ -304,9 +478,9 @@ function buildCellularSections(cell?: CellularDiagnostic | null): DiagSection[] 
     {
       title: "Cellular",
       rows: [
-        { label: "Carrier", value: cleanCellValue(cell.operator_name) || cleanCellValue(cell.provider_code) || cleanCellValue(cell.basic_provider) || "—" },
+        { label: "Carrier", value: cleanCellValue(cell.operator_name) || resolveCarrierCode(cell.provider_code) || resolveCarrierCode(cell.basic_provider) || "—" },
         { label: "Signal", value: signalLabel(cell.strength_score) + (cell.strength_score !== null && cell.strength_score !== undefined ? ` (${cell.strength_score}/100)` : "") },
-        { label: "Connection", value: cell.connman_cell_connected === true ? "Connected" : "Not connected" },
+        { label: "Connection", value: (cell.connman_cell_connected === true || cell.internet_reachable === true) ? "Connected" : "Not connected" },
         { label: "Role", value: roleLabel(cell.role) || "Inactive" },
         { label: "SIM", value: cell.sim_inserted === false ? "Missing" : cell.sim_ready === true ? "Ready" : "Unknown" },
         { label: "Modem", value: cell.modem_not_present ? "Not detected" : cell.modem_unreachable ? "Detected — not responding" : cell.cellular_disabled && cell.imei ? "Powered off (detected)" : cell.cellular_disabled ? "Powered off" : cell.modem_present === true ? cell.modem_model ?? "Detected" : "Unknown" },
@@ -373,7 +547,7 @@ function buildSatelliteSections(sat?: SatelliteDiagnostic | null): DiagSection[]
 }
 
 function buildEthernetSections(ethernet?: EthernetDiagnostic | null): DiagSection[] {
-  if (!ethernet) return [{ title: "Status", rows: [{ label: "Status", value: "Not diagnosed" }, { label: "Last test", value: "—" }] }];
+  if (!ethernet) return [{ title: "Status", rows: [{ label: "Status", value: "No data yet" }, { label: "Last test", value: "—" }] }];
 
   const connected = ethernet.internet_reachable || ethernet.link_detected === true;
   const actions: DiagRow[] = [];
@@ -447,8 +621,17 @@ function summarizeCellular(cell?: CellularDiagnostic | null): CardSummary {
   if (cell.modem_present === false) return { health: "error", badgeLabel: "Issue", primaryLine: "No modem detected" };
   if (cell.sim_inserted === false) return { health: "error", badgeLabel: "Issue", primaryLine: "No SIM detected" };
   if (cell.qcsq === "NOSERVICE") return { health: "error", badgeLabel: "Issue", primaryLine: "No service" };
-  const carrier = cell.operator_name || cell.basic_provider || cell.provider_code || "Cellular";
-  const connected = cell.connman_cell_connected === true;
+  // Resolve MCC-MNC codes (e.g. "311480") to human names ("Verizon") for display.
+  // operator_name from +COPS AT command is authoritative; basic_provider/provider_code
+  // from earlier commands may still carry the raw numeric code.
+  const carrier = cell.operator_name
+    || resolveCarrierCode(cell.basic_provider)
+    || resolveCarrierCode(cell.provider_code)
+    || "Cellular";
+  // internet_reachable is set by cellular-check (authoritative connectivity test).
+  // Use it as a fallback for connman connection state, which arrives later in the
+  // diagnostic output and may still be null during streaming.
+  const connected = cell.connman_cell_connected === true || cell.internet_reachable === true;
   const sig = signalLabel(cell.strength_score);
   if (!connected && cell.connman_cell_ready === true) {
     return { health: "warning", badgeLabel: "Warning", primaryLine: carrier, secondaryLine: "Registered · not connected", signalLabel: sig, signalScore: cell.strength_score };
@@ -462,7 +645,7 @@ function summarizeCellular(cell?: CellularDiagnostic | null): CardSummary {
 }
 
 function summarizeEthernet(ethernet?: EthernetDiagnostic | null): CardSummary {
-  if (!ethernet) return { health: "neutral", badgeLabel: "Not diagnosed", primaryLine: "Not diagnosed" };
+  if (!ethernet) return { health: "neutral", badgeLabel: "No data", primaryLine: "No data yet" };
   if (ethernet.internet_reachable === true) return { health: "healthy", badgeLabel: "Healthy", primaryLine: "Connected", secondaryLine: "Internet reachable" };
   if (ethernet.link_detected === false) return { health: "neutral", badgeLabel: "Inactive", primaryLine: "No link detected" };
   if (ethernet.flap_count > 0) return { health: "warning", badgeLabel: "Warning", primaryLine: "Connected", secondaryLine: "Unstable link" };
@@ -619,12 +802,14 @@ export default function DiagnosticsTab() {
     cellular: false,
     satellite: false,
     ethernet: false,
+    sim_picker: false,
   });
   const [cardUpdatedAt, setCardUpdatedAt] = useState<Record<string, string | null>>({
     wifi: null,
     cellular: null,
     satellite: null,
     ethernet: null,
+    sim_picker: null,
   });
   const prevCardsRef = useRef<Record<string, string>>({
     wifi: "",
@@ -650,6 +835,7 @@ export default function DiagnosticsTab() {
           cellular: JSON.stringify(state.cellular ?? null),
           satellite: JSON.stringify(state.satellite ?? null),
           ethernet: JSON.stringify(state.ethernet ?? null),
+          sim_picker: JSON.stringify(state.sim_picker ?? null),
         };
         const nextSystem = JSON.stringify(state.system ?? null);
 
@@ -684,6 +870,7 @@ export default function DiagnosticsTab() {
   const satellite = diag?.satellite;
   const ethernet = diag?.ethernet;
   const system = diag?.system;
+  const simPicker = diag?.sim_picker;
   const wifiSummary = summarizeWifi(wifi);
   const cellularSummary = summarizeCellular(cellular);
   const satelliteSummary = summarizeSatellite(satellite);
@@ -707,8 +894,8 @@ export default function DiagnosticsTab() {
     });
     setLastUpdated(null);
     setSystemUpdatedAt(null);
-    setCardUpdatedAt({ wifi: null, cellular: null, satellite: null, ethernet: null });
-    prevCardsRef.current = { wifi: "", cellular: "", satellite: "", ethernet: "" };
+    setCardUpdatedAt({ wifi: null, cellular: null, satellite: null, ethernet: null, sim_picker: null });
+    prevCardsRef.current = { wifi: "", cellular: "", satellite: "", ethernet: "", sim_picker: "" };
     prevSystemRef.current = "";
     setCopiedCommandId(null);
   }
@@ -856,6 +1043,32 @@ export default function DiagnosticsTab() {
             setDiag(prev => prev ? { ...prev, ethernet: null } : prev);
             setCardUpdatedAt(prev => ({ ...prev, ethernet: null }));
           }}
+        />
+      </div>
+
+      <div className="diag-sim-picker-section">
+        <div className="diag-section-divider">
+          <span className="diag-section-divider-label">SIM Picker</span>
+        </div>
+        <DiagCard
+          title="SIM Picker"
+          icon="📶"
+          health={simPickerHealth(simPicker)}
+          statusLabel={simPickerBadge(simPicker)}
+          primaryLine={simPickerPrimary(simPicker)}
+          secondaryLine={simPickerSecondary(simPicker)}
+          sections={buildSimPickerSections(simPicker)}
+          expanded={expanded.sim_picker}
+          onToggle={() => setExpanded((p) => ({ ...p, sim_picker: !p.sim_picker }))}
+          updatedAt={cardUpdatedAt.sim_picker}
+          onCopyCommand={() => copyDiagnosticBlock("sim-picker")}
+          copied={copiedCommandId === "sim-picker"}
+          compact={!simPicker?.scan_attempted}
+          onClear={simPicker ? async () => {
+            await invoke("clear_diagnostic_interface", { interface: "sim_picker" }).catch(() => {});
+            setDiag(prev => prev ? { ...prev, sim_picker: null } : prev);
+            setCardUpdatedAt(prev => ({ ...prev, sim_picker: null }));
+          } : undefined}
         />
       </div>
     </section>

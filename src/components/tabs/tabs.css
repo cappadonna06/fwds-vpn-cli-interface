@@ -2582,6 +2582,19 @@
   flex-shrink: 0;
 }
 
+.report-status-dot-btn {
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  background: inherit;
+  transition: transform 0.1s, box-shadow 0.1s;
+}
+
+.report-status-dot-btn:hover {
+  transform: scale(1.5);
+  box-shadow: 0 0 0 2px var(--border-soft);
+}
+
 .report-status-dot-green { background: var(--success); }
 .report-status-dot-orange { background: var(--warning); }
 .report-status-dot-red { background: var(--danger); }
@@ -2601,6 +2614,41 @@
   flex: 1;
 }
 
+.report-network-summary-input {
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid transparent;
+  outline: none;
+  padding: 0;
+  font-family: inherit;
+}
+
+.report-network-summary-input:hover {
+  border-bottom-color: var(--border-soft);
+}
+
+.report-network-summary-input:focus {
+  border-bottom-color: var(--accent);
+  color: var(--text-primary);
+}
+
+.report-network-reset {
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: 13px;
+  padding: 0 2px;
+  line-height: 1;
+  flex-shrink: 0;
+  opacity: 0.6;
+}
+
+.report-network-reset:hover {
+  opacity: 1;
+  color: var(--text-secondary);
+}
+
 .report-network-note {
   font-size: 11.5px;
   background: transparent;
@@ -2617,6 +2665,31 @@
   border-bottom-color: var(--accent);
   color: var(--text-secondary);
   font-style: normal;
+}
+
+/* ── Network preset pills ──────────────────────────────────── */
+
+.report-network-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 2px;
+}
+
+.report-network-preset-pill {
+  font-size: 10.5px;
+  padding: 2px 9px;
+  border-radius: 999px;
+  border: 1px dashed var(--border);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: border-color 100ms, color 100ms;
+}
+
+.report-network-preset-pill:hover {
+  border-color: var(--accent);
+  color: var(--accent);
 }
 
 /* ── Recommended actions ──────────────────────────────────── */
@@ -2878,4 +2951,139 @@
 .report-quick-action-pill:hover {
   border-color: var(--accent);
   color: var(--accent);
+}
+
+/* SIM Picker card */
+.sim-picker-carrier-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 8px 0;
+}
+
+.sim-picker-carrier-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12.5px;
+  padding: 4px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.sim-picker-carrier-row:last-child {
+  border-bottom: none;
+}
+
+.sim-picker-carrier-stat {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.sim-picker-carrier-stat-available { background: var(--success); }
+.sim-picker-carrier-stat-detected  { background: var(--text-muted); }
+.sim-picker-carrier-stat-connected { background: var(--accent); }
+.sim-picker-carrier-stat-notseen   { background: transparent; border: 1px solid var(--border); }
+
+.sim-picker-carrier-name {
+  font-weight: 500;
+  color: var(--text-primary);
+  min-width: 70px;
+}
+
+.sim-picker-carrier-available .sim-picker-carrier-name {
+  color: var(--success);
+}
+
+.sim-picker-carrier-code {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-muted);
+  min-width: 50px;
+}
+
+.sim-picker-carrier-label {
+  font-size: 11px;
+  color: var(--text-muted);
+  flex: 1;
+}
+
+.sim-picker-carrier-available .sim-picker-carrier-label {
+  color: var(--success);
+}
+
+.sim-picker-installed-row {
+  font-size: 11.5px;
+  color: var(--text-muted);
+  padding: 6px 0;
+  border-top: 1px solid var(--border);
+  margin-top: 4px;
+}
+
+.sim-picker-rec-box {
+  margin-top: 8px;
+  padding: 10px 12px;
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 25%, transparent);
+  border-radius: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.sim-picker-rec-label {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--accent);
+}
+
+.sim-picker-rec-value {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.sim-picker-rec-detail {
+  font-size: 11.5px;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+.sim-picker-not-run {
+  font-size: 12.5px;
+  color: var(--text-muted);
+  line-height: 1.6;
+  padding: 4px 0;
+}
+
+/* SIM Picker bottom section */
+.diag-sim-picker-section {
+  margin-top: 24px;
+}
+
+.diag-section-divider {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.diag-section-divider::before,
+.diag-section-divider::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+
+.diag-section-divider-label {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+  white-space: nowrap;
 }
