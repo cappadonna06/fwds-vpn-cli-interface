@@ -644,6 +644,41 @@ default via 100.108.114.46 dev wwan0
     }
 
     #[test]
+    fn ethernet_parse_scopes_to_eth_section_in_full_block() {
+        let mut state = DiagnosticState::default();
+        let log = r#"2026-04-08T09:54:01-0600 [45230110]# (
+> echo "===== ETH DIAGNOSTICS START ====="
+> ethernet-check
+> ethtool eth0
+> ip addr show eth0
+> cat /proc/net/dev
+> echo "===== ETH DIAGNOSTICS END ====="
+> echo "===== WIFI DIAGNOSTICS START ====="
+> wifi-check
+> )
+===== ETH DIAGNOSTICS START =====
+Testing Ethernet...
+Done: Failure: -65553: Network technology is not enabled
+Settings for eth0:
+        Link detected: no
+2: eth0: <BROADCAST,MULTICAST> mtu 1500 qdisc noop state DOWN group default qlen 1000
+Inter-|   Receive                                                |  Transmit
+  eth0:       0       0    0    0    0     0          0         0        0       0
+===== ETH DIAGNOSTICS END =====
+===== WIFI DIAGNOSTICS START =====
+Testing Wi-Fi...
+Internet reachability state: online
+Done: Success
+"#;
+
+        parse_log_into_state(log, &mut state);
+        let eth = state.ethernet.expect("ethernet should parse");
+        assert_eq!(eth.check_result, "Failure: -65553: Network technology is not enabled");
+        assert!(!eth.internet_reachable);
+        assert_eq!(eth.link_detected, Some(false));
+    }
+
+    #[test]
     fn split_blocks_captures_orphan_output_chunk() {
         let log = "Testing Wi-Fi...\nInternet reachability state: online\nDone: Success\n";
         let blocks = split_blocks(log);
@@ -1572,7 +1607,13 @@ fn parse_ethernet(
         return None;
     }
 
-    let internet_reachable = ethernet_check
+    let ethernet_check_scoped = ethernet_check.map(|b| extract_eth_diagnostics_section(b));
+    let ethtool_scoped = ethtool.map(|b| extract_eth_diagnostics_section(b));
+    let interface_info_scoped = interface_info.map(|b| extract_eth_diagnostics_section(b));
+    let proc_net_dev_scoped = proc_net_dev.map(|b| extract_eth_diagnostics_section(b));
+    let operstate_scoped = operstate.map(|b| extract_eth_diagnostics_section(b));
+
+    let internet_reachable = ethernet_check_scoped
         .and_then(|b| capture_after(b, "Internet reachability state:"))
         .map(|s| s.eq_ignore_ascii_case("online"))
         .unwrap_or(false);
@@ -1581,47 +1622,47 @@ fn parse_ethernet(
         "unknown", "idle", "failure", "association", "configuration",
         "ready", "online", "disconnect",
     ];
-    let eth_state = ethernet_check
+    let eth_state = ethernet_check_scoped
         .and_then(|b| capture_after(b, "Ethernet state:"))
         .or_else(|| {
-            operstate.and_then(|b| parse_single_value(Some(b))).filter(|s| {
+            operstate_scoped.and_then(parse_single_value_str).filter(|s| {
                 let lower = s.to_ascii_lowercase();
                 KNOWN_ETH_STATES.iter().any(|&known| lower == known)
             })
         })
         .unwrap_or_else(|| "unknown".into());
-    let ipv4 = ethernet_check
+    let ipv4 = ethernet_check_scoped
         .and_then(|b| capture_after(b, "Ethernet supports IPv4?"))
         .map(|v| parse_yes_no(Some(v)))
         .unwrap_or(false);
-    let ipv6 = ethernet_check
+    let ipv6 = ethernet_check_scoped
         .and_then(|b| capture_after(b, "Ethernet supports IPv6?"))
         .map(|v| parse_yes_no(Some(v)))
         .unwrap_or(false);
-    let dns_servers = ethernet_check
+    let dns_servers = ethernet_check_scoped
         .and_then(|b| capture_after(b, "Ethernet name servers:"))
         .unwrap_or_else(|| "—".into());
-    let check_result = ethernet_check
+    let check_result = ethernet_check_scoped
         .and_then(|b| capture_after(b, "Done:"))
         .unwrap_or_else(|| "Unknown".into());
 
-    let speed = ethtool.and_then(|b| capture_after(b, "Speed:"));
-    let duplex = ethtool.and_then(|b| capture_after(b, "Duplex:"));
-    let link_detected = ethtool
+    let speed = ethtool_scoped.and_then(|b| capture_after(b, "Speed:"));
+    let duplex = ethtool_scoped.and_then(|b| capture_after(b, "Duplex:"));
+    let link_detected = ethtool_scoped
         .and_then(|b| capture_after(b, "Link detected:"))
         .map(|s| s.eq_ignore_ascii_case("yes"));
 
-    let ip_address = interface_info.and_then(parse_interface_ip);
-    let netmask = interface_info.and_then(parse_interface_netmask);
-    let rx_errors = proc_net_dev
+    let ip_address = interface_info_scoped.and_then(parse_interface_ip);
+    let netmask = interface_info_scoped.and_then(parse_interface_netmask);
+    let rx_errors = proc_net_dev_scoped
         .and_then(parse_proc_net_dev_stats)
         .map(|(rx_err, _, _)| rx_err)
         .unwrap_or(0);
-    let tx_errors = proc_net_dev
+    let tx_errors = proc_net_dev_scoped
         .and_then(parse_proc_net_dev_stats)
         .map(|(_, tx_err, _)| tx_err)
         .unwrap_or(0);
-    let rx_dropped = proc_net_dev
+    let rx_dropped = proc_net_dev_scoped
         .and_then(parse_proc_net_dev_stats)
         .map(|(_, _, rx_drop)| rx_drop)
         .unwrap_or(0);
@@ -1666,6 +1707,20 @@ fn parse_ethernet(
         full_block_run,
         ethernet_diag_attempted,
     })
+}
+
+fn extract_eth_diagnostics_section(text: &str) -> &str {
+    let lower = text.to_ascii_lowercase();
+    let start_marker = "===== eth diagnostics start =====";
+    let end_marker = "===== eth diagnostics end =====";
+    let Some(start_idx) = lower.find(start_marker) else {
+        return text;
+    };
+    let end_idx = lower[start_idx..]
+        .find(end_marker)
+        .map(|offset| start_idx + offset + end_marker.len())
+        .unwrap_or(text.len());
+    &text[start_idx..end_idx]
 }
 
 fn parse_system(
@@ -1921,6 +1976,17 @@ fn parse_single_value(block: Option<&String>) -> Option<String> {
     })
 }
 
+fn parse_single_value_str(text: &str) -> Option<String> {
+    text.lines().rev().find_map(|l| {
+        let v = l.trim();
+        if v.is_empty() {
+            None
+        } else {
+            Some(v.to_string())
+        }
+    })
+}
+
 fn capture_after(text: &str, key: &str) -> Option<String> {
     text.lines().find_map(|line| {
         let trimmed = line.trim();
@@ -1938,14 +2004,14 @@ fn capture_line(text: &str, contains: &str) -> Option<String> {
         .map(|l| l.trim().to_string())
 }
 
-fn parse_interface_ip(text: &String) -> Option<String> {
+fn parse_interface_ip(text: &str) -> Option<String> {
     let re = Regex::new(r"inet\s+(\d+\.\d+\.\d+\.\d+)").ok()?;
     re.captures(text)
         .and_then(|c| c.get(1))
         .map(|m| m.as_str().to_string())
 }
 
-fn parse_interface_netmask(text: &String) -> Option<String> {
+fn parse_interface_netmask(text: &str) -> Option<String> {
     let hex_re = Regex::new(r"netmask\s+([0-9a-fx]+)").ok()?;
     if let Some(v) = hex_re
         .captures(text)
@@ -1961,7 +2027,7 @@ fn parse_interface_netmask(text: &String) -> Option<String> {
         .map(|m| format!("/{}", m.as_str()))
 }
 
-fn parse_proc_net_dev_stats(text: &String) -> Option<(u64, u64, u64)> {
+fn parse_proc_net_dev_stats(text: &str) -> Option<(u64, u64, u64)> {
     for line in text.lines() {
         let trimmed = line.trim();
         if !trimmed.starts_with("eth0:") {

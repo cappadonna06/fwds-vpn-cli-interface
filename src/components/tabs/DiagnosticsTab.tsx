@@ -564,9 +564,10 @@ function buildSatelliteSections(sat?: SatelliteDiagnostic | null): DiagSection[]
 function buildEthernetSections(ethernet?: EthernetDiagnostic | null): DiagSection[] {
   if (!ethernet) return [{ title: "Status", rows: [{ label: "Status", value: "No data yet" }, { label: "Last test", value: "—" }] }];
 
-  const connected = ethernet.internet_reachable || ethernet.link_detected === true;
+  const internetPassed = ethernet.check_result === "Success" && ethernet.internet_reachable === true;
+  const connected = internetPassed || ethernet.link_detected === true;
   const actions: DiagRow[] = [];
-  if (!ethernet.internet_reachable && ethernet.link_detected === false) actions.push({ label: "Recommended action", value: "Check cable or switch" });
+  if (!internetPassed && ethernet.link_detected === false) actions.push({ label: "Recommended action", value: "Check cable or switch" });
   else if (!ethernet.ip_address) actions.push({ label: "Recommended action", value: "Check DHCP / static IP configuration" });
   else if (ethernet.flap_count > 0) actions.push({ label: "Recommended action", value: "Inspect link stability and port health" });
 
@@ -577,7 +578,7 @@ function buildEthernetSections(ethernet?: EthernetDiagnostic | null): DiagSectio
         { label: "Connection", value: connected ? "Connected" : "No link" },
         { label: "Speed", value: speedLabel(ethernet.speed) + (ethernet.duplex ? ` (${ethernet.duplex})` : "") },
         { label: "Role", value: connected ? "Connected path" : "Inactive" },
-        { label: "Internet test", value: ethernet.internet_reachable ? "Passed" : "Failed" },
+        { label: "Internet test", value: internetPassed ? "Passed" : "Failed" },
         { label: "Stability", value: ethernet.flap_count > 0 ? "Recent link flaps" : "Stable" },
       ],
     },
@@ -663,7 +664,8 @@ function summarizeCellular(cell?: CellularDiagnostic | null): CardSummary {
 
 function summarizeEthernet(ethernet?: EthernetDiagnostic | null): CardSummary {
   if (!ethernet) return { health: "neutral", badgeLabel: "No data", primaryLine: "No data yet" };
-  if (ethernet.internet_reachable === true) return { health: "healthy", badgeLabel: "Healthy", primaryLine: "Connected", secondaryLine: "Internet reachable" };
+  const internetPassed = ethernet.check_result === "Success" && ethernet.internet_reachable === true;
+  if (internetPassed) return { health: "healthy", badgeLabel: "Healthy", primaryLine: "Connected", secondaryLine: "Internet reachable" };
   if (ethernet.link_detected === false) return { health: "neutral", badgeLabel: "Inactive", primaryLine: "No link detected" };
   if (ethernet.flap_count > 0) return { health: "warning", badgeLabel: "Warning", primaryLine: "Connected", secondaryLine: "Unstable link" };
   if (!ethernet.ip_address) return { health: "error", badgeLabel: "Issue", primaryLine: "Connected", secondaryLine: "No IP assigned" };
