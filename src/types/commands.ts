@@ -1228,6 +1228,7 @@ echo "--- LINK / PHY ---"
 ethtool eth0
 cat /sys/class/net/eth0/carrier
 cat /sys/class/net/eth0/operstate
+dmesg | grep -i eth
 
 echo ""
 echo "--- INTERFACE ---"
@@ -1237,6 +1238,12 @@ ip addr show eth0
 echo ""
 echo "--- ROUTING / DNS ---"
 ip route
+cat /etc/resolv.conf
+
+echo ""
+echo "--- CONNECTIVITY ---"
+ping -c 3 8.8.8.8
+ping -c 3 google.com
 
 echo ""
 echo "--- CONNMAN ---"
@@ -1246,6 +1253,7 @@ connmanctl state
 
 echo ""
 echo "--- DRIVER / STATS ---"
+ethtool -i eth0
 ethtool -S eth0
 cat /proc/net/dev
 
@@ -1262,6 +1270,8 @@ wifi-signal
 
 echo ""
 echo "--- IW ---"
+iw dev
+iw dev wlan0 info
 iw dev wlan0 link
 iw dev wlan0 station dump
 
@@ -1269,6 +1279,22 @@ echo ""
 echo "--- INTERFACE ---"
 ip link show wlan0
 ip addr show wlan0
+
+echo ""
+echo "--- ROUTING / DNS ---"
+ip route
+cat /etc/resolv.conf
+
+echo ""
+echo "--- CONNMAN ---"
+connmanctl technologies
+connmanctl services
+connmanctl state
+
+echo ""
+echo "--- DRIVER / STATS ---"
+ethtool -i wlan0
+cat /proc/net/dev
 
 echo ""
 echo "===== WIFI DIAGNOSTICS END ====="
@@ -1289,13 +1315,29 @@ cell-signal
 cell-apn
 
 echo ""
+echo "===== NETWORK TECHNOLOGY ====="
+connmanctl technologies
+connmanctl services
+connmanctl state
+
+echo ""
+echo "===== INTERFACE / ROUTING ====="
+ip link show wwan0
+ip addr show wwan0
+ip route
+cat /proc/net/dev
+
+echo ""
 echo "===== MODEM / RADIO DIAGNOSTICS ====="
 cell-support --no-ofono --at
 
 echo ""
-echo "===== SATELLITE ====="
-satellite-check -t
+echo "===== SATELLITE BASIC ====="
 sat-imei
+
+echo ""
+echo "===== SATELLITE LOOPBACK TEST ====="
+satellite-check -t
 
 echo ""
 echo "===== SYSTEM ====="
@@ -1318,5 +1360,132 @@ release
       "cellular-check", "cell-signal", "cell-provider", "cell-ccid", "cell-imei", "cell-apn", "cell-status",
       "version", "sid", "release",
     ],
+    heavy_script: `(
+echo "===== CONTROLLER INFO ====="
+date
+version
+sid
+
+echo ""
+echo "===== ETH DIAGNOSTICS START ====="
+
+echo ""
+echo "--- FRONTLINE ---"
+ethernet-check
+
+echo ""
+echo "--- LINK / PHY ---"
+ethtool eth0
+cat /sys/class/net/eth0/carrier
+cat /sys/class/net/eth0/operstate
+dmesg | grep -i eth
+
+echo ""
+echo "--- INTERFACE ---"
+ip link show eth0
+ip addr show eth0
+
+echo ""
+echo "--- ROUTING / DNS ---"
+ip route
+cat /etc/resolv.conf
+
+echo ""
+echo "--- CONNECTIVITY ---"
+ping -c 3 8.8.8.8
+ping -c 3 google.com
+
+echo ""
+echo "--- CONNMAN ---"
+connmanctl technologies
+connmanctl services
+connmanctl state
+
+echo ""
+echo "--- DRIVER / STATS ---"
+ethtool -i eth0
+ethtool -S eth0
+cat /proc/net/dev
+
+echo ""
+echo "===== ETH DIAGNOSTICS END ====="
+
+echo ""
+echo "===== WIFI DIAGNOSTICS START ====="
+
+echo ""
+echo "--- FRONTLINE ---"
+wifi-check
+wifi-signal
+
+echo ""
+echo "--- IW ---"
+iw dev
+iw dev wlan0 info
+iw dev wlan0 link
+iw dev wlan0 station dump
+
+echo ""
+echo "--- INTERFACE ---"
+ip link show wlan0
+ip addr show wlan0
+
+echo ""
+echo "--- ROUTING / DNS ---"
+ip route
+cat /etc/resolv.conf
+
+echo ""
+echo "--- CONNMAN ---"
+connmanctl technologies
+connmanctl services
+connmanctl state
+
+echo ""
+echo "--- DRIVER / STATS ---"
+ethtool -i wlan0
+cat /proc/net/dev
+
+echo ""
+echo "===== WIFI DIAGNOSTICS END ====="
+
+echo ""
+echo "===== CELLULAR CONNECTIVITY TEST ====="
+cellular-check
+
+echo ""
+echo "===== BASIC CELL INFO ====="
+cell-imei
+cell-ccid
+cell-imsi
+cell-hni
+cell-provider
+cell-status
+cell-signal
+cell-apn
+
+echo ""
+echo "===== NETWORK TECHNOLOGY ====="
+connmanctl technologies
+connmanctl services
+connmanctl state
+
+echo ""
+echo "===== INTERFACE / ROUTING ====="
+ip link show wwan0
+ip addr show wwan0
+ip route
+cat /proc/net/dev
+
+echo ""
+echo "===== MODEM / RADIO DIAGNOSTICS ====="
+cell-support --no-ofono --at
+
+echo ""
+echo "===== SYSTEM ====="
+version
+sid
+release
+)`,
   },
 ];

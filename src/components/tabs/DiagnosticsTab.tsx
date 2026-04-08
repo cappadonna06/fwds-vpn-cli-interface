@@ -241,6 +241,8 @@ interface DiagCardProps {
   onToggle: () => void;
   onCopyCommand?: () => void;
   copied?: boolean;
+  onSendCommand?: () => void;
+  sent?: boolean;
   compact?: boolean;
   onClear?: () => void;
 }
@@ -688,6 +690,8 @@ function DiagCard({
   onToggle,
   onCopyCommand,
   copied,
+  onSendCommand,
+  sent,
   compact,
   onClear,
 }: DiagCardProps) {
@@ -708,7 +712,7 @@ function DiagCard({
             <span className={`diag-status-dot diag-status-${health}`} />
             <span>{statusLabel}</span>
           </span>
-          {(onCopyCommand || onClear) && (
+          {(onCopyCommand || onSendCommand || onClear) && (
             <div className="diag-card-menu-wrap">
               <button
                 type="button"
@@ -732,7 +736,19 @@ function DiagCard({
                       {copied ? "Copied" : "Copy diagnostics commands"}
                     </button>
                   )}
-                  {onCopyCommand && onClear && <div className="diag-card-menu-divider" />}
+                  {onSendCommand && (
+                    <button
+                      type="button"
+                      className="diag-card-menu-item"
+                      onClick={() => {
+                        onSendCommand();
+                        setMenuOpen(false);
+                      }}
+                    >
+                      {sent ? "Sent" : "Send to terminal"}
+                    </button>
+                  )}
+                  {(onCopyCommand || onSendCommand) && onClear && <div className="diag-card-menu-divider" />}
                   {onClear && (
                     <button
                       type="button"
@@ -821,6 +837,7 @@ export default function DiagnosticsTab() {
   const postClearUntilRef = useRef<number>(0);
   const [systemUpdatedAt, setSystemUpdatedAt] = useState<string | null>(null);
   const [copiedCommandId, setCopiedCommandId] = useState<string | null>(null);
+  const [sentCommandId, setSentCommandId] = useState<string | null>(null);
 
   useEffect(() => {
     invoke("start_log_watcher").catch(() => {});
@@ -898,6 +915,7 @@ export default function DiagnosticsTab() {
     prevCardsRef.current = { wifi: "", cellular: "", satellite: "", ethernet: "", sim_picker: "" };
     prevSystemRef.current = "";
     setCopiedCommandId(null);
+    setSentCommandId(null);
   }
 
   async function copyDiagnosticBlock(blockId: string) {
@@ -908,6 +926,20 @@ export default function DiagnosticsTab() {
     await navigator.clipboard.writeText(script).catch(() => {});
     setCopiedCommandId(blockId);
     setTimeout(() => setCopiedCommandId((prev) => (prev === blockId ? null : prev)), 1400);
+  }
+
+  async function sendDiagnosticBlock(blockId: string) {
+    const block = DIAGNOSTIC_BLOCKS.find((item) => item.id === blockId);
+    if (!block) return;
+    const script = resolveBlockScript(block, "heavy");
+    if (!script) return;
+    try {
+      await invoke("send_input", { text: script });
+      setSentCommandId(blockId);
+      setTimeout(() => setSentCommandId((prev) => (prev === blockId ? null : prev)), 1400);
+    } catch {
+      // No active controller session — silent; user can still use Copy
+    }
   }
 
   const safeSid = system?.sid && /^\d{8}$/.test(system.sid) ? system.sid : null;
@@ -940,8 +972,14 @@ export default function DiagnosticsTab() {
             <button className="btn btn-secondary" onClick={() => copyDiagnosticBlock("full-diags")}>
               {copiedCommandId === "full-diags" ? "Copied" : "Copy full diagnostics commands"}
             </button>
+            <button className="btn btn-secondary" onClick={() => sendDiagnosticBlock("full-diags")}>
+              {sentCommandId === "full-diags" ? "Sent" : "Send to terminal"}
+            </button>
             <button className="btn btn-secondary" onClick={() => copyDiagnosticBlock("full-diags-no-sat")}>
               {copiedCommandId === "full-diags-no-sat" ? "Copied" : "Copy diagnostics (no satellite)"}
+            </button>
+            <button className="btn btn-secondary" onClick={() => sendDiagnosticBlock("full-diags-no-sat")}>
+              {sentCommandId === "full-diags-no-sat" ? "Sent" : "Send (no satellite)"}
             </button>
           </div>
           <div className="diag-empty-sub">Use these commands in the terminal to populate system status.</div>
@@ -965,6 +1003,8 @@ export default function DiagnosticsTab() {
           updatedAt={cardUpdatedAt.wifi}
           onCopyCommand={() => copyDiagnosticBlock("wifi")}
           copied={copiedCommandId === "wifi"}
+          onSendCommand={() => sendDiagnosticBlock("wifi")}
+          sent={sentCommandId === "wifi"}
           compact={wifiSummary.health === "neutral"}
           onClear={async () => {
             await invoke("clear_diagnostic_interface", { interface: "wifi" }).catch(() => {});
@@ -989,6 +1029,8 @@ export default function DiagnosticsTab() {
           updatedAt={cardUpdatedAt.cellular}
           onCopyCommand={() => copyDiagnosticBlock("cellular")}
           copied={copiedCommandId === "cellular"}
+          onSendCommand={() => sendDiagnosticBlock("cellular")}
+          sent={sentCommandId === "cellular"}
           compact={cellularSummary.health === "neutral"}
           onClear={async () => {
             await invoke("clear_diagnostic_interface", { interface: "cellular" }).catch(() => {});
@@ -1013,6 +1055,8 @@ export default function DiagnosticsTab() {
           updatedAt={cardUpdatedAt.satellite}
           onCopyCommand={() => copyDiagnosticBlock("satellite")}
           copied={copiedCommandId === "satellite"}
+          onSendCommand={() => sendDiagnosticBlock("satellite")}
+          sent={sentCommandId === "satellite"}
           compact={satelliteSummary.health === "neutral"}
           onClear={async () => {
             await invoke("clear_diagnostic_interface", { interface: "satellite" }).catch(() => {});
@@ -1037,6 +1081,8 @@ export default function DiagnosticsTab() {
           updatedAt={cardUpdatedAt.ethernet}
           onCopyCommand={() => copyDiagnosticBlock("ethernet")}
           copied={copiedCommandId === "ethernet"}
+          onSendCommand={() => sendDiagnosticBlock("ethernet")}
+          sent={sentCommandId === "ethernet"}
           compact={ethernetSummary.health === "neutral"}
           onClear={async () => {
             await invoke("clear_diagnostic_interface", { interface: "ethernet" }).catch(() => {});
@@ -1063,6 +1109,8 @@ export default function DiagnosticsTab() {
           updatedAt={cardUpdatedAt.sim_picker}
           onCopyCommand={() => copyDiagnosticBlock("sim-picker")}
           copied={copiedCommandId === "sim-picker"}
+          onSendCommand={() => sendDiagnosticBlock("sim-picker")}
+          sent={sentCommandId === "sim-picker"}
           compact={!simPicker?.scan_attempted}
           onClear={simPicker ? async () => {
             await invoke("clear_diagnostic_interface", { interface: "sim_picker" }).catch(() => {});

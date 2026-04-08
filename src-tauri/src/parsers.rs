@@ -347,6 +347,18 @@ fn build_satellite_parse_block(latest: &HashMap<String, String>) -> Option<Strin
     }
 
     if parts.is_empty() {
+        // Fall back to finding the satellite section embedded in a full-block body.
+        // When the full (...) subshell ran, split_blocks produces one block whose key
+        // is "(" and whose body contains all sections including satellite markers.
+        if let Some(full_block) = find_latest_body_contains_any(
+            latest,
+            &[
+                "===== satellite loopback test =====",
+                "===== satellite basic =====",
+            ],
+        ) {
+            return Some(full_block.clone());
+        }
         None
     } else {
         Some(parts.join("\n\n"))

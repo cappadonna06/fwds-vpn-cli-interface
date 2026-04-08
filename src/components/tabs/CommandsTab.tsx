@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback, ReactNode } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import {
   COMMANDS,
   FAVORITE_COMMAND_IDS,
@@ -71,8 +72,11 @@ interface CommandRowProps {
   onCopy: (cmd: ControllerCommand) => void;
   /** Called after the inline confirm banner is accepted (guard:confirm only) */
   onConfirmedCopy: (cmd: ControllerCommand) => void;
+  onSend: (cmd: ControllerCommand) => void;
+  onConfirmedSend: (cmd: ControllerCommand) => void;
   onOpenDrawer: (id: string) => void;
   isCopied: boolean;
+  isSent: boolean;
   isFavorite: boolean;
   onToggleFavorite: (id: string) => void;
   openDrawerId: string | null;
@@ -83,8 +87,11 @@ function CommandRow({
   cmd,
   onCopy,
   onConfirmedCopy,
+  onSend,
+  onConfirmedSend,
   onOpenDrawer,
   isCopied,
+  isSent,
   isFavorite,
   onToggleFavorite,
   openDrawerId,
@@ -93,18 +100,33 @@ function CommandRow({
   const isDrawerOpen = openDrawerId === cmd.id;
   const isDestructive = !!cmd.destructive;
   const [showBanner, setShowBanner] = useState(false);
+  const [bannerAction, setBannerAction] = useState<"copy" | "send">("copy");
 
   function handleCopyClick() {
     if (cmd.guard === "confirm") {
+      setBannerAction("copy");
       setShowBanner(true);
     } else {
       onCopy(cmd);
     }
   }
 
+  function handleSendClick() {
+    if (cmd.guard === "confirm") {
+      setBannerAction("send");
+      setShowBanner(true);
+    } else {
+      onSend(cmd);
+    }
+  }
+
   function handleBannerConfirm() {
     setShowBanner(false);
-    onConfirmedCopy(cmd);
+    if (bannerAction === "send") {
+      onConfirmedSend(cmd);
+    } else {
+      onConfirmedCopy(cmd);
+    }
   }
 
   return (
@@ -152,7 +174,7 @@ function CommandRow({
               className={`btn ${cmd.destructive ? "btn-danger" : "btn-primary"} cmd-inline-confirm-btn`}
               onClick={handleBannerConfirm}
             >
-              Copy anyway
+              {bannerAction === "send" ? "Send anyway" : "Copy anyway"}
             </button>
           </div>
         )}
@@ -165,6 +187,13 @@ function CommandRow({
           title="Copy command to clipboard"
         >
           {isCopied ? "✓ Copied" : "Copy"}
+        </button>
+        <button
+          className={`cmd-copy-btn ${isSent ? "cmd-copy-btn-copied" : ""}`}
+          onClick={handleSendClick}
+          title="Send command to terminal"
+        >
+          {isSent ? "✓ Sent" : "Send"}
         </button>
         <button
           className={`cmd-chevron-btn ${isDrawerOpen ? "cmd-chevron-btn-open" : ""}`}
@@ -185,7 +214,10 @@ interface DiagnosticBlockRowProps {
   block: DiagnosticBlock;
   onCopyLight: (block: DiagnosticBlock) => void;
   onCopyHeavy: (block: DiagnosticBlock) => void;
+  onSendLight: (block: DiagnosticBlock) => void;
+  onSendHeavy: (block: DiagnosticBlock) => void;
   copiedBlockId: string | null;
+  sentBlockId: string | null;
   onOpenDrawer: (id: string) => void;
   isDrawerOpen: boolean;
 }
@@ -194,13 +226,19 @@ function DiagnosticBlockRow({
   block,
   onCopyLight,
   onCopyHeavy,
+  onSendLight,
+  onSendHeavy,
   copiedBlockId,
+  sentBlockId,
   onOpenDrawer,
   isDrawerOpen,
 }: DiagnosticBlockRowProps) {
   const lightCopied = copiedBlockId === `${block.id}-light`;
   const heavyCopied = copiedBlockId === `${block.id}-heavy`;
   const singleCopied = copiedBlockId === `${block.id}-single`;
+  const lightSent = sentBlockId === `${block.id}-light`;
+  const heavySent = sentBlockId === `${block.id}-heavy`;
+  const singleSent = sentBlockId === `${block.id}-single`;
 
   const hasDistinctTiers =
     block.light_command_ids.length > 0 &&
@@ -227,21 +265,44 @@ function DiagnosticBlockRow({
                   {lightCopied ? "✓" : "Light"}
                 </button>
                 <button
+                  className={`diag-block-btn ${lightSent ? "diag-block-btn-copied" : ""}`}
+                  onClick={() => onSendLight(block)}
+                  title="Send light script to terminal"
+                >
+                  {lightSent ? "✓" : "Send L"}
+                </button>
+                <button
                   className={`diag-block-btn diag-block-btn-heavy ${heavyCopied ? "diag-block-btn-copied" : ""}`}
                   onClick={() => onCopyHeavy(block)}
                   title={heavyTooltip}
                 >
-                  {heavyCopied ? "✓" : "Heavy"}
+                  {heavyCopied ? "✓" : "Full"}
+                </button>
+                <button
+                  className={`diag-block-btn diag-block-btn-heavy ${heavySent ? "diag-block-btn-copied" : ""}`}
+                  onClick={() => onSendHeavy(block)}
+                  title="Send full script to terminal"
+                >
+                  {heavySent ? "✓" : "Send F"}
                 </button>
               </>
             ) : (
-              <button
-                className={`diag-block-btn ${singleCopied ? "diag-block-btn-copied" : ""}`}
-                onClick={() => onCopyHeavy(block)}
-                title={heavyTooltip}
-              >
-                {singleCopied ? "✓" : "Copy"}
-              </button>
+              <>
+                <button
+                  className={`diag-block-btn ${singleCopied ? "diag-block-btn-copied" : ""}`}
+                  onClick={() => onCopyHeavy(block)}
+                  title={heavyTooltip}
+                >
+                  {singleCopied ? "✓" : "Copy"}
+                </button>
+                <button
+                  className={`diag-block-btn ${singleSent ? "diag-block-btn-copied" : ""}`}
+                  onClick={() => onSendHeavy(block)}
+                  title="Send script to terminal"
+                >
+                  {singleSent ? "✓" : "Send"}
+                </button>
+              </>
             )}
             <button
               className={`cmd-chevron-btn ${isDrawerOpen ? "cmd-chevron-btn-open" : ""}`}
@@ -270,7 +331,10 @@ interface DiagnosticBlockDrawerProps {
   onClose: () => void;
   onCopyLight: (block: DiagnosticBlock) => void;
   onCopyHeavy: (block: DiagnosticBlock) => void;
+  onSendLight: (block: DiagnosticBlock) => void;
+  onSendHeavy: (block: DiagnosticBlock) => void;
   copiedBlockId: string | null;
+  sentBlockId: string | null;
 }
 
 function DiagnosticBlockDrawer({
@@ -279,7 +343,10 @@ function DiagnosticBlockDrawer({
   onClose,
   onCopyLight,
   onCopyHeavy,
+  onSendLight,
+  onSendHeavy,
   copiedBlockId,
+  sentBlockId,
 }: DiagnosticBlockDrawerProps) {
   useEffect(() => {
     function handleKey(e: KeyboardEvent) {
@@ -297,6 +364,9 @@ function DiagnosticBlockDrawer({
   const lightCopied = copiedBlockId === `${block.id}-light`;
   const heavyCopied = copiedBlockId === `${block.id}-heavy`;
   const singleCopied = copiedBlockId === `${block.id}-single`;
+  const lightSent = sentBlockId === `${block.id}-light`;
+  const heavySent = sentBlockId === `${block.id}-heavy`;
+  const singleSent = sentBlockId === `${block.id}-single`;
 
   const lightTotal = sumSeconds(block.light_command_ids);
   const heavyTotal = sumSeconds(block.heavy_command_ids);
@@ -352,19 +422,39 @@ function DiagnosticBlockDrawer({
                   {lightCopied ? "✓ Copied" : "Copy Light"}
                 </button>
                 <button
+                  className={`cmd-copy-btn ${lightSent ? "cmd-copy-btn-copied" : ""}`}
+                  onClick={() => onSendLight(block)}
+                >
+                  {lightSent ? "✓ Sent" : "Send Light"}
+                </button>
+                <button
                   className={`cmd-copy-btn diag-block-btn-heavy ${heavyCopied ? "cmd-copy-btn-copied" : ""}`}
                   onClick={() => onCopyHeavy(block)}
                 >
-                  {heavyCopied ? "✓ Copied" : "Copy Heavy"}
+                  {heavyCopied ? "✓ Copied" : "Copy Full"}
+                </button>
+                <button
+                  className={`cmd-copy-btn diag-block-btn-heavy ${heavySent ? "cmd-copy-btn-copied" : ""}`}
+                  onClick={() => onSendHeavy(block)}
+                >
+                  {heavySent ? "✓ Sent" : "Send Full"}
                 </button>
               </>
             ) : block.heavy_command_ids.length > 0 ? (
-              <button
-                className={`cmd-copy-btn ${singleCopied ? "cmd-copy-btn-copied" : ""}`}
-                onClick={() => onCopyHeavy(block)}
-              >
-                {singleCopied ? "✓ Copied" : "Copy commands"}
-              </button>
+              <>
+                <button
+                  className={`cmd-copy-btn ${singleCopied ? "cmd-copy-btn-copied" : ""}`}
+                  onClick={() => onCopyHeavy(block)}
+                >
+                  {singleCopied ? "✓ Copied" : "Copy commands"}
+                </button>
+                <button
+                  className={`cmd-copy-btn ${singleSent ? "cmd-copy-btn-copied" : ""}`}
+                  onClick={() => onSendHeavy(block)}
+                >
+                  {singleSent ? "✓ Sent" : "Send commands"}
+                </button>
+              </>
             ) : null}
             <button className="cmd-drawer-close" onClick={onClose} aria-label="Close">
               ×
@@ -416,11 +506,11 @@ function DiagnosticBlockDrawer({
             </div>
           )}
 
-          {/* Heavy tier */}
+          {/* Full tier */}
           {hasDistinctTiers && heavyCmds.length > 0 && (
             <div className="cmd-drawer-section">
               <div className="cmd-drawer-section-title">
-                Heavy tier
+                Full
                 {heavyTotal > 0 && (
                   <span className="block-drawer-tier-time">{formatSeconds(heavyTotal)} total</span>
                 )}
@@ -445,7 +535,9 @@ interface CommandDrawerProps {
   allCommands: ControllerCommand[];
   onClose: () => void;
   onCopy: (cmd: ControllerCommand) => void;
+  onSend: (cmd: ControllerCommand) => void;
   isCopied: boolean;
+  isSent: boolean;
   onNavigate: (id: string) => void;
 }
 
@@ -454,7 +546,9 @@ function CommandDrawer({
   allCommands,
   onClose,
   onCopy,
+  onSend,
   isCopied,
+  isSent,
   onNavigate,
 }: CommandDrawerProps) {
   useEffect(() => {
@@ -486,6 +580,12 @@ function CommandDrawer({
               onClick={() => onCopy(cmd)}
             >
               {isCopied ? "✓ Copied" : "Copy command"}
+            </button>
+            <button
+              className={`cmd-copy-btn ${isSent ? "cmd-copy-btn-copied" : ""}`}
+              onClick={() => onSend(cmd)}
+            >
+              {isSent ? "✓ Sent" : "Send command"}
             </button>
             <button className="cmd-drawer-close" onClick={onClose} aria-label="Close">
               ×
@@ -627,6 +727,8 @@ export default function CommandsTab() {
   const [openBlockDrawerId, setOpenBlockDrawerId] = useState<string | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [copiedBlockId, setCopiedBlockId] = useState<string | null>(null);
+  const [sentId, setSentId] = useState<string | null>(null);
+  const [sentBlockId, setSentBlockId] = useState<string | null>(null);
   const [favorites, setFavorites] = useState<string[]>(() => {
     try {
       const stored = localStorage.getItem("fwds-favorite-commands");
@@ -687,6 +789,22 @@ export default function CommandsTab() {
     setTimeout(() => setCopiedId((prev: string | null) => (prev === id ? null : prev)), 1500);
   }
 
+  async function doSend(text: string, id: string) {
+    try {
+      await invoke("send_input", { text });
+      setSentId(id);
+      setTimeout(() => setSentId((prev: string | null) => (prev === id ? null : prev)), 1500);
+    } catch { /* no active session — silent */ }
+  }
+
+  async function doSendBlock(text: string, key: string) {
+    try {
+      await invoke("send_input", { text });
+      setSentBlockId(key);
+      setTimeout(() => setSentBlockId((prev: string | null) => (prev === key ? null : prev)), 1500);
+    } catch { /* no active session — silent */ }
+  }
+
   // Called by CommandRow for guard:none and guard:hard
   function handleCopyFromRow(cmd: ControllerCommand) {
     if (cmd.guard === "hard") {
@@ -702,6 +820,21 @@ export default function CommandsTab() {
     doCopy(cmd.command, cmd.id);
   }
 
+  // Called by CommandRow Send button
+  function handleSendFromRow(cmd: ControllerCommand) {
+    if (cmd.guard === "hard") {
+      setHardConfirmText("");
+      setHardConfirmCmd(cmd);
+      return;
+    }
+    doSend(cmd.command, cmd.id);
+  }
+
+  // Called by CommandRow after inline confirm banner accepted for send
+  function handleConfirmedRowSend(cmd: ControllerCommand) {
+    doSend(cmd.command, cmd.id);
+  }
+
   // Called by CommandDrawer Copy button — uses modal for both confirm and hard
   function handleCopyFromDrawer(cmd: ControllerCommand) {
     if (cmd.guard === "hard" || cmd.guard === "confirm") {
@@ -712,12 +845,34 @@ export default function CommandsTab() {
     doCopy(cmd.command, cmd.id);
   }
 
+  // Called by CommandDrawer Send button
+  function handleSendFromDrawer(cmd: ControllerCommand) {
+    if (cmd.guard === "hard" || cmd.guard === "confirm") {
+      setHardConfirmText("");
+      setHardConfirmCmd(cmd);
+      return;
+    }
+    doSend(cmd.command, cmd.id);
+  }
+
   function handleHardConfirm() {
     if (hardConfirmCmd) {
       doCopy(hardConfirmCmd.command, hardConfirmCmd.id);
       setHardConfirmCmd(null);
       setHardConfirmText("");
     }
+  }
+
+  function blockSendLight(block: DiagnosticBlock) {
+    doSendBlock(resolveBlockScript(block, "light"), `${block.id}-light`);
+  }
+
+  function blockSendHeavy(block: DiagnosticBlock) {
+    const hasDistinct =
+      block.light_command_ids.length > 0 &&
+      block.heavy_command_ids.length > 0 &&
+      JSON.stringify(block.light_command_ids) !== JSON.stringify(block.heavy_command_ids);
+    doSendBlock(resolveBlockScript(block, "heavy"), hasDistinct ? `${block.id}-heavy` : `${block.id}-single`);
   }
 
   // Opening a command drawer closes any block drawer, and vice versa
@@ -807,8 +962,11 @@ export default function CommandsTab() {
         cmd={cmd}
         onCopy={handleCopyFromRow}
         onConfirmedCopy={handleConfirmedRowCopy}
+        onSend={handleSendFromRow}
+        onConfirmedSend={handleConfirmedRowSend}
         onOpenDrawer={handleOpenCommandDrawer}
         isCopied={copiedId === cmd.id}
+        isSent={sentId === cmd.id}
         isFavorite={favorites.includes(cmd.id)}
         onToggleFavorite={handleToggleFavorite}
         openDrawerId={openDrawerId}
@@ -874,8 +1032,11 @@ export default function CommandsTab() {
                     cmd={cmd}
                     onCopy={handleCopyFromRow}
                     onConfirmedCopy={handleConfirmedRowCopy}
+                    onSend={handleSendFromRow}
+                    onConfirmedSend={handleConfirmedRowSend}
                     onOpenDrawer={handleOpenCommandDrawer}
                     isCopied={copiedId === cmd.id}
+                    isSent={sentId === cmd.id}
                     isFavorite={favorites.includes(cmd.id)}
                     onToggleFavorite={handleToggleFavorite}
                     openDrawerId={openDrawerId}
@@ -942,7 +1103,10 @@ export default function CommandsTab() {
               block={block}
               onCopyLight={blockCopyLight}
               onCopyHeavy={blockCopyHeavy}
+              onSendLight={blockSendLight}
+              onSendHeavy={blockSendHeavy}
               copiedBlockId={copiedBlockId}
+              sentBlockId={sentBlockId}
               onOpenDrawer={handleOpenBlockDrawer}
               isDrawerOpen={openBlockDrawerId === block.id}
             />
@@ -957,7 +1121,9 @@ export default function CommandsTab() {
           allCommands={COMMANDS}
           onClose={() => setOpenDrawerId(null)}
           onCopy={handleCopyFromDrawer}
+          onSend={handleSendFromDrawer}
           isCopied={copiedId === openDrawerCmd.id}
+          isSent={sentId === openDrawerCmd.id}
           onNavigate={(id) => setOpenDrawerId(id)}
         />
       )}
@@ -970,7 +1136,10 @@ export default function CommandsTab() {
           onClose={() => setOpenBlockDrawerId(null)}
           onCopyLight={blockCopyLight}
           onCopyHeavy={blockCopyHeavy}
+          onSendLight={blockSendLight}
+          onSendHeavy={blockSendHeavy}
           copiedBlockId={copiedBlockId}
+          sentBlockId={sentBlockId}
         />
       )}
 
