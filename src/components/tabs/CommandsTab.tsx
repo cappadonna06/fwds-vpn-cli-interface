@@ -289,6 +289,7 @@ function DiagnosticBlockRow({
     send: () => void;
     copied: boolean;
     sent: boolean;
+    estSeconds: number;
   }> = [];
   if (hasDistinctTiers) {
     rows.push({
@@ -297,6 +298,7 @@ function DiagnosticBlockRow({
       send: () => onSendLight(block),
       copied: lightCopied,
       sent: lightSent,
+      estSeconds: sumSeconds(block.light_command_ids),
     });
     rows.push({
       label: "Full",
@@ -304,6 +306,7 @@ function DiagnosticBlockRow({
       send: () => onSendHeavy(block),
       copied: heavyCopied,
       sent: heavySent,
+      estSeconds: sumSeconds(block.heavy_command_ids),
     });
   } else {
     const label = block.id === "networking-all"
@@ -319,6 +322,7 @@ function DiagnosticBlockRow({
       send: () => onSendHeavy(block),
       copied: singleCopied,
       sent: singleSent,
+      estSeconds: sumSeconds(block.heavy_command_ids),
     });
   }
 
@@ -341,7 +345,12 @@ function DiagnosticBlockRow({
         <div className="diag-block-actions-stack">
           {rows.map((row) => (
             <div className="diag-block-actions" key={`${block.id}-${row.label}`}>
-              <div className="diag-block-mode-label">{row.label}</div>
+              <div className="diag-block-mode-label">
+                <span>{row.label}</span>
+                {row.estSeconds > 0 && (
+                  <span className="cmd-time-badge">{formatSeconds(row.estSeconds)}</span>
+                )}
+              </div>
               <button
                 className={`diag-block-btn ${row.copied ? "diag-block-btn-copied" : ""}`}
                 onClick={row.copy}
@@ -357,9 +366,6 @@ function DiagnosticBlockRow({
             </div>
           ))}
         </div>
-        {block.time_warning && (
-          <div className="diag-block-warning">{block.time_warning}</div>
-        )}
       </div>
     </div>
   );
