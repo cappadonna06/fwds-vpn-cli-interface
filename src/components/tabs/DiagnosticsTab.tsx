@@ -715,6 +715,7 @@ function DiagCard({
   onClear,
 }: DiagCardProps) {
   const [menuOpen, setMenuOpen] = useState(false);
+  const hasCommandActions = !!(onCopyCommand || onSendCommand);
 
   return (
     <article className={`diag-card diag-card-${health} ${expanded ? "diag-card-open" : ""} ${compact ? "diag-card-compact" : ""}`}>
@@ -731,7 +732,7 @@ function DiagCard({
             <span className={`diag-status-dot diag-status-${health}`} />
             <span>{statusLabel}</span>
           </span>
-          {(onCopyCommand || onSendCommand || onClear) && (
+          {onClear && (
             <div className="diag-card-menu-wrap">
               <button
                 type="button"
@@ -743,31 +744,6 @@ function DiagCard({
               </button>
               {menuOpen && (
                 <div className="diag-card-menu">
-                  {onCopyCommand && (
-                    <button
-                      type="button"
-                      className="diag-card-menu-item"
-                      onClick={() => {
-                        onCopyCommand();
-                        setMenuOpen(false);
-                      }}
-                    >
-                      {copied ? "Copied" : "Copy diagnostics commands"}
-                    </button>
-                  )}
-                  {onSendCommand && (
-                    <button
-                      type="button"
-                      className="diag-card-menu-item"
-                      onClick={() => {
-                        onSendCommand();
-                        setMenuOpen(false);
-                      }}
-                    >
-                      {sent ? "Sent" : "Send to terminal"}
-                    </button>
-                  )}
-                  {(onCopyCommand || onSendCommand) && onClear && <div className="diag-card-menu-divider" />}
                   {onClear && (
                     <button
                       type="button"
@@ -800,6 +776,23 @@ function DiagCard({
         )}
         {cardSignalLabel && <span>{cardSignalLabel}</span>}
       </div>
+      {hasCommandActions && (
+        <div className="diag-commands-subcard">
+          <div className="diag-commands-subcard-title">Diagnostic commands</div>
+          <div className="diag-commands-subcard-actions">
+            {onCopyCommand && (
+              <button type="button" className="btn btn-secondary" onClick={onCopyCommand}>
+                {copied ? "Copied" : "Copy"}
+              </button>
+            )}
+            {onSendCommand && (
+              <button type="button" className="btn btn-secondary" onClick={onSendCommand}>
+                {sent ? "Sent" : "Send"}
+              </button>
+            )}
+          </div>
+        </div>
+      )}
 
       {expanded && (
         <div className="diag-details-wrap">
@@ -857,6 +850,7 @@ export default function DiagnosticsTab() {
   const [systemUpdatedAt, setSystemUpdatedAt] = useState<string | null>(null);
   const [copiedCommandId, setCopiedCommandId] = useState<string | null>(null);
   const [sentCommandId, setSentCommandId] = useState<string | null>(null);
+  const [globalDiagTier, setGlobalDiagTier] = useState<"quick" | "full" | "no-satellite">("quick");
 
   useEffect(() => {
     invoke("start_log_watcher").catch(() => {});
@@ -968,6 +962,11 @@ export default function DiagnosticsTab() {
     safeVersion ? `v${safeVersion}` : null,
     system?.release_date ? system.release_date : null,
   ].filter(Boolean).join(" · ");
+  const globalDiagBlockId = globalDiagTier === "full"
+    ? "full-diags"
+    : globalDiagTier === "no-satellite"
+      ? "full-diags-no-sat"
+      : "networking-all";
 
   return (
     <section className="tab-content diag-page">
@@ -984,26 +983,28 @@ export default function DiagnosticsTab() {
         </div>
       </div>
 
-      {showNoSessionBanner && (
-        <div className="diag-empty">
-          <div className="diag-empty-title">Run diagnostics</div>
+      <div className="diag-global-actions">
+        <div className="diag-global-actions-head">
+          <div className="diag-empty-title">Diagnostics commands</div>
+          <div className="diag-empty-sub">Whole-system diagnostics</div>
+        </div>
+        <div className="diag-global-actions-row">
+          <div className="diag-global-tier-group" role="group" aria-label="Diagnostics mode">
+            <button type="button" className={`diag-tier-btn ${globalDiagTier === "quick" ? "diag-tier-btn-active" : ""}`} onClick={() => setGlobalDiagTier("quick")}>Quick</button>
+            <button type="button" className={`diag-tier-btn ${globalDiagTier === "full" ? "diag-tier-btn-active" : ""}`} onClick={() => setGlobalDiagTier("full")}>Full</button>
+            <button type="button" className={`diag-tier-btn ${globalDiagTier === "no-satellite" ? "diag-tier-btn-active" : ""}`} onClick={() => setGlobalDiagTier("no-satellite")}>No satellite</button>
+          </div>
           <div className="diag-empty-actions">
-            <button className="btn btn-secondary" onClick={() => copyDiagnosticBlock("full-diags")}>
-              {copiedCommandId === "full-diags" ? "Copied" : "Copy full diagnostics commands"}
+            <button className="btn btn-secondary" onClick={() => copyDiagnosticBlock(globalDiagBlockId)}>
+              {copiedCommandId === globalDiagBlockId ? "Copied" : "Copy"}
             </button>
-            <button className="btn btn-secondary" onClick={() => sendDiagnosticBlock("full-diags")}>
-              {sentCommandId === "full-diags" ? "Sent" : "Send to terminal"}
-            </button>
-            <button className="btn btn-secondary" onClick={() => copyDiagnosticBlock("full-diags-no-sat")}>
-              {copiedCommandId === "full-diags-no-sat" ? "Copied" : "Copy diagnostics (no satellite)"}
-            </button>
-            <button className="btn btn-secondary" onClick={() => sendDiagnosticBlock("full-diags-no-sat")}>
-              {sentCommandId === "full-diags-no-sat" ? "Sent" : "Send (no satellite)"}
+            <button className="btn btn-secondary" onClick={() => sendDiagnosticBlock(globalDiagBlockId)}>
+              {sentCommandId === globalDiagBlockId ? "Sent" : "Send"}
             </button>
           </div>
-          <div className="diag-empty-sub">Use these commands in the terminal to populate system status.</div>
         </div>
-      )}
+        {showNoSessionBanner && <div className="diag-empty-sub">Run these from terminal to populate live diagnostics cards.</div>}
+      </div>
 
       <div className="diag-grid">
         <DiagCard

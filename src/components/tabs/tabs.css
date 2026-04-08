@@ -1195,16 +1195,17 @@
   display: flex;
   align-items: flex-start;
   gap: 10px;
-  padding: 9px 6px;
-  border-radius: 6px;
-  border: 1px solid transparent;
-  margin-bottom: 4px;
+  padding: 11px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  margin-bottom: 0;
+  background: color-mix(in srgb, var(--bg-1) 92%, var(--accent) 3%);
   transition: background 0.1s, border-color 0.1s;
 }
 
 .diag-block-row:hover {
-  background: var(--bg-2);
-  border-color: var(--border);
+  background: color-mix(in srgb, var(--bg-1) 88%, var(--accent) 6%);
+  border-color: color-mix(in srgb, var(--accent) 20%, var(--border));
 }
 
 .diag-block-icon {
@@ -1234,17 +1235,24 @@
 
 .diag-block-actions {
   display: flex;
-  gap: 4px;
-  flex-shrink: 0;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+
+.diag-block-mode-group {
+  display: inline-flex;
+  gap: 6px;
+  margin-right: 2px;
 }
 
 .diag-block-btn {
   font-size: 11px;
-  font-weight: 500;
-  padding: 3px 9px;
-  border-radius: 3px;
+  font-weight: 560;
+  padding: 4px 10px;
+  border-radius: 999px;
   border: 1px solid var(--border);
-  background: var(--bg-3);
+  background: var(--bg-1);
   color: var(--text-secondary);
   cursor: pointer;
   transition: background 0.1s, color 0.1s;
@@ -1261,6 +1269,11 @@
   border-color: color-mix(in srgb, var(--accent) 40%, transparent);
   color: var(--accent);
   background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+.diag-block-btn-active {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
 }
 
 .diag-block-btn-heavy:hover {
@@ -1289,6 +1302,61 @@
   padding: 3px 7px;
   margin-top: 5px;
   line-height: 1.4;
+}
+
+.diag-block-sections {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.diag-block-section {
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--bg-1) 98%, var(--accent) 2%);
+  border-radius: 12px;
+  padding: 12px;
+}
+
+.diag-block-section-head h4 {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-primary);
+}
+
+.diag-block-section-head p {
+  margin: 3px 0 0;
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+
+.diag-block-grid {
+  margin-top: 10px;
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 8px;
+}
+
+.diag-block-grid-network {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+@media (max-width: 1320px) {
+  .diag-block-grid-network {
+    grid-template-columns: 1fr;
+  }
+}
+
+.diag-block-section-disabled {
+  opacity: 0.78;
+}
+
+.diag-block-placeholder {
+  margin-top: 10px;
+  font-size: 12px;
+  color: var(--text-muted);
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  padding: 10px;
 }
 
 /* ─── Command detail drawer ──────────────────────────────────────────────── */
@@ -2035,6 +2103,32 @@
   flex-wrap: wrap;
 }
 
+.diag-commands-subcard {
+  margin-top: 10px;
+  border: 1px solid var(--border-soft);
+  background: color-mix(in srgb, var(--bg-2) 85%, var(--accent) 4%);
+  border-radius: 10px;
+  padding: 9px 10px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.diag-commands-subcard-title {
+  font-size: 11px;
+  font-weight: 620;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.diag-commands-subcard-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .diag-card-compact .diag-card-subline:empty {
   display: none;
 }
@@ -2228,6 +2322,53 @@
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+
+.diag-global-actions {
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.diag-global-actions-head {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.diag-global-actions-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.diag-global-tier-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.diag-tier-btn {
+  border: 1px solid var(--border);
+  background: var(--bg-1);
+  color: var(--text-secondary);
+  border-radius: 999px;
+  padding: 5px 12px;
+  font-size: 12px;
+  font-weight: 560;
+  cursor: pointer;
+}
+
+.diag-tier-btn-active {
+  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
 }
 
 .diag-empty-title {
