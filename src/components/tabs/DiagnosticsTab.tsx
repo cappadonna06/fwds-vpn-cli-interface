@@ -973,6 +973,36 @@ export default function DiagnosticsTab() {
           {systemIdentity && <div className="diag-system-line">{systemIdentity}</div>}
           {systemUpdatedAt && <div className="diag-system-line">System updated {systemUpdatedAt}</div>}
         </div>
+        <div className="diag-global-cmd-card">
+          <div className="diag-global-cmd-title">Diagnostics commands</div>
+          <div className="diag-global-cmd-row">
+            <span className="diag-global-cmd-label">Quick</span>
+            <button className="btn btn-secondary" onClick={() => copyDiagnosticBlock("networking-all")}>
+              {copiedCommandId === "networking-all" ? "Copied" : "Copy"}
+            </button>
+            <button className="btn btn-secondary" onClick={() => sendDiagnosticBlock("networking-all")}>
+              {sentCommandId === "networking-all" ? "Sent" : "Send"}
+            </button>
+          </div>
+          <div className="diag-global-cmd-row">
+            <span className="diag-global-cmd-label">Full</span>
+            <button className="btn btn-secondary" onClick={() => copyDiagnosticBlock("full-diags")}>
+              {copiedCommandId === "full-diags" ? "Copied" : "Copy"}
+            </button>
+            <button className="btn btn-secondary" onClick={() => sendDiagnosticBlock("full-diags")}>
+              {sentCommandId === "full-diags" ? "Sent" : "Send"}
+            </button>
+          </div>
+          <div className="diag-global-cmd-row">
+            <span className="diag-global-cmd-label">No satellite</span>
+            <button className="btn btn-secondary" onClick={() => copyDiagnosticBlock("full-diags-no-sat")}>
+              {copiedCommandId === "full-diags-no-sat" ? "Copied" : "Copy"}
+            </button>
+            <button className="btn btn-secondary" onClick={() => sendDiagnosticBlock("full-diags-no-sat")}>
+              {sentCommandId === "full-diags-no-sat" ? "Sent" : "Send"}
+            </button>
+          </div>
+        </div>
 
         <div className="diag-header-right">
           <div className="diag-updated">Last updated {lastUpdated ?? "—"}</div>
@@ -980,36 +1010,6 @@ export default function DiagnosticsTab() {
         </div>
       </div>
       {showNoSessionBanner && <div className="diag-empty-sub">Run diagnostics from terminal to populate live cards.</div>}
-      <div className="diag-global-cmd-card">
-        <div className="diag-global-cmd-title">Diagnostics commands</div>
-        <div className="diag-global-cmd-row">
-          <span className="diag-global-cmd-label">Quick</span>
-          <button className="btn btn-secondary" onClick={() => copyDiagnosticBlock("networking-all")}>
-            {copiedCommandId === "networking-all" ? "Copied" : "Copy"}
-          </button>
-          <button className="btn btn-secondary" onClick={() => sendDiagnosticBlock("networking-all")}>
-            {sentCommandId === "networking-all" ? "Sent" : "Send"}
-          </button>
-        </div>
-        <div className="diag-global-cmd-row">
-          <span className="diag-global-cmd-label">Full</span>
-          <button className="btn btn-secondary" onClick={() => copyDiagnosticBlock("full-diags")}>
-            {copiedCommandId === "full-diags" ? "Copied" : "Copy"}
-          </button>
-          <button className="btn btn-secondary" onClick={() => sendDiagnosticBlock("full-diags")}>
-            {sentCommandId === "full-diags" ? "Sent" : "Send"}
-          </button>
-        </div>
-        <div className="diag-global-cmd-row">
-          <span className="diag-global-cmd-label">No satellite</span>
-          <button className="btn btn-secondary" onClick={() => copyDiagnosticBlock("full-diags-no-sat")}>
-            {copiedCommandId === "full-diags-no-sat" ? "Copied" : "Copy"}
-          </button>
-          <button className="btn btn-secondary" onClick={() => sendDiagnosticBlock("full-diags-no-sat")}>
-            {sentCommandId === "full-diags-no-sat" ? "Sent" : "Send"}
-          </button>
-        </div>
-      </div>
 
       <div className="diag-grid">
         <DiagCard
