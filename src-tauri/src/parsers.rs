@@ -1065,7 +1065,6 @@ fn parse_wifi(latest: &HashMap<String, String>) -> Option<WifiDiagnostic> {
 
 fn parse_cellular_from_latest(latest: &HashMap<String, String>) -> Option<CellularDiagnostic> {
     let mut diag = default_cellular();
-    let mut has_any = false;
     // Only set true for commands that are exclusively part of cellular diagnostic scripts.
     // Commands shared with WiFi (connmanctl, ip route, proc/net/dev, date/version/sid) must NOT
     // set this flag — the WiFi subshell creates a single block whose key contains those command
@@ -1092,7 +1091,6 @@ fn parse_cellular_from_latest(latest: &HashMap<String, String>) -> Option<Cellul
         &["===== cellular connectivity test ====="],
     ) {
         parse_cellular_block(block, &mut diag);
-        has_any = true;
         has_cellular_specific = true;
         full_section_parsed = true;
     }
@@ -1102,26 +1100,21 @@ fn parse_cellular_from_latest(latest: &HashMap<String, String>) -> Option<Cellul
         // Each command has its own dedicated block with clean single-value output.
         if let Some(block) = find_latest(latest, &["run cellular diagnostics"]) {
             parse_cellular_block(block, &mut diag);
-            has_any = true;
             has_cellular_specific = true;
         }
 
         // date/version/sid appear in many diagnostic runs — NOT cellular-specific
         if let Some(text) = find_latest(latest, &["date"]) {
             diag.controller_date = parse_single_value(Some(text)).or(diag.controller_date);
-            has_any = has_any || !text.trim().is_empty();
         }
         if let Some(text) = find_latest(latest, &["version"]) {
             diag.controller_version = parse_single_value(Some(text)).or(diag.controller_version);
-            has_any = has_any || !text.trim().is_empty();
         }
         if let Some(text) = find_latest(latest, &["sid"]) {
             diag.controller_sid = parse_single_value(Some(text)).or(diag.controller_sid);
-            has_any = has_any || !text.trim().is_empty();
         }
         if let Some(text) = find_latest(latest, &["cellular-check"]) {
             parse_cellular_check_text(text, &mut diag);
-            has_any = true;
             has_cellular_specific = true;
         }
         let basic_cmds = [
@@ -1137,7 +1130,6 @@ fn parse_cellular_from_latest(latest: &HashMap<String, String>) -> Option<Cellul
         let mut basic_lines: Vec<String> = Vec::new();
         for cmd in basic_cmds {
             if let Some(text) = find_latest(latest, &[cmd]) {
-                has_any = true;
                 has_cellular_specific = true;
                 if let Some(v) = parse_single_value(Some(text)) {
                     basic_lines.push(v);
@@ -1150,36 +1142,28 @@ fn parse_cellular_from_latest(latest: &HashMap<String, String>) -> Option<Cellul
         // connmanctl commands appear in the WiFi subshell key as substrings — NOT cellular-specific
         if let Some(text) = find_latest(latest, &["connmanctl technologies"]) {
             parse_connman_cellular(text, &mut diag);
-            has_any = true;
         }
         if let Some(text) = find_latest(latest, &["connmanctl services"]) {
             parse_connman_cellular(text, &mut diag);
-            has_any = true;
         }
         if let Some(text) = find_latest(latest, &["connmanctl state"]) {
             parse_connman_cellular(text, &mut diag);
-            has_any = true;
         }
         // ip/wwan/proc commands also appear in WiFi subshell — NOT cellular-specific
         if let Some(text) = find_latest(latest, &["ip link show wwan0"]) {
             parse_wwan_interface(text, &mut diag);
-            has_any = true;
         }
         if let Some(text) = find_latest(latest, &["ip addr show wwan0"]) {
             parse_wwan_interface(text, &mut diag);
-            has_any = true;
         }
         if let Some(text) = find_latest(latest, &["ip route"]) {
             parse_wwan_interface(text, &mut diag);
-            has_any = true;
         }
         if let Some(text) = find_latest(latest, &["cat /proc/net/dev"]) {
             parse_proc_net_dev(text, &mut diag);
-            has_any = true;
         }
         if let Some(text) = find_latest(latest, &["cell-support --no-ofono --at"]) {
             parse_cell_support_at(text, &mut diag);
-            has_any = true;
             has_cellular_specific = true;
         }
     }

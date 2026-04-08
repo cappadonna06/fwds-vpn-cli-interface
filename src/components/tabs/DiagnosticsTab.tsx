@@ -269,19 +269,6 @@ function speedLabel(speed?: string | null): string {
   return speed;
 }
 
-function resolve_carrier_ts(code: string): string {
-  const verizon = ["311270","311271","311272","311273","311274","311275",
-    "311276","311277","311278","311279","311280","311480","311481","311482",
-    "311483","311484","311485","311486","311487","311488","311489"];
-  const tmobile = ["310260","310026","310490","310660","312250","310230","310240","310250"];
-  const att = ["310410","310380","310980","311180","310030","310560","310680"];
-  if (verizon.includes(code)) return "Verizon";
-  if (tmobile.includes(code)) return "T-Mobile";
-  if (att.includes(code)) return "AT&T";
-  if (code === "313100") return "FirstNet (AT&T)";
-  return `Carrier (${code})`;
-}
-
 const ALL_CARRIERS = [
   { name: "AT&T",     codes: ["310410","310380","310980","311180","310030","310560","310680"] },
   { name: "T-Mobile", codes: ["310260","310026","310490","310660","312250","310230","310240","310250"] },
