@@ -129,6 +129,18 @@ function SlackPreview({ report }: { report: SessionReport }) {
   );
 }
 
+// ── Clipboard helper ──────────────────────────────────────────────────────────
+
+function slackToHtml(text: string): string {
+  const safe = text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+  return '<meta charset="utf-8">' + safe
+    .replace(/\*([^*\n]+)\*/g, "<b>$1</b>")
+    .replace(/\n/g, "<br>\n");
+}
+
 // ── Quick-select action templates ─────────────────────────────────────────────
 
 const QUICK_ACTIONS = (version: string) => [
@@ -368,7 +380,7 @@ export default function ReportTab() {
             detail: ra.detail ?? "",
             dismissed: false,
             checked: false,
-            custom: false,
+            custom: true,
           }];
         }
       }
@@ -604,7 +616,13 @@ export default function ReportTab() {
           <button
             className="btn btn-secondary"
             onClick={() => {
-              navigator.clipboard.writeText(formatSlack(report));
+              const text = formatSlack(report);
+              navigator.clipboard.write([
+                new ClipboardItem({
+                  "text/html":  new Blob([slackToHtml(text)], { type: "text/html" }),
+                  "text/plain": new Blob([text],              { type: "text/plain" }),
+                }),
+              ]).catch(() => navigator.clipboard.writeText(text));
               setCopiedSlack(true);
               setTimeout(() => setCopiedSlack(false), 1500);
             }}

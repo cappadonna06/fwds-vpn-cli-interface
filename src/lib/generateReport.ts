@@ -181,22 +181,22 @@ export function generateNetworkRows(diag: DiagnosticState): NetworkStatusRow[] {
     {
       interface: "Ethernet",
       status: toStatus(diag.ethernet?.status),
-      summary: diag.ethernet?.summary ?? "Run ethernet diagnostics to populate",
+      summary: diag.ethernet?.summary ?? "Diagnostics not collected",
     },
     {
       interface: "Wi-Fi",
       status: toStatus(diag.wifi?.status),
-      summary: diag.wifi ? formatWifiSummary(diag.wifi) : "Run Wi-Fi diagnostics to populate",
+      summary: diag.wifi ? formatWifiSummary(diag.wifi) : "Diagnostics not collected",
     },
     {
       interface: "Cellular",
       status: toStatus(diag.cellular?.status),
-      summary: diag.cellular ? formatCellSummary(diag.cellular) : "Run cellular diagnostics to populate",
+      summary: diag.cellular ? formatCellSummary(diag.cellular) : "Diagnostics not collected",
     },
     {
       interface: "Satellite",
       status: toStatus(diag.satellite?.status),
-      summary: diag.satellite?.summary ?? "Run satellite diagnostics to populate",
+      summary: diag.satellite?.summary ?? "Diagnostics not collected",
     },
   ];
 }
@@ -386,15 +386,9 @@ export function generateRecommendedActions(
 
 export function formatSlack(report: SessionReport): string {
   const lines: string[] = [];
-  const ifaceIcon: Record<string, string> = {
-    Ethernet: "🌐",
-    "Wi-Fi": "🛜",
-    Cellular: "📡",
-    Satellite: "🛰️",
-  };
 
   lines.push(`*Controller Session — ${report.date}*`);
-  lines.push(`*SID:* ${report.sid || "—"} · ${report.version || "—"} · ${report.ip || "—"}`);
+  lines.push(`*SID:* ${report.sid || "—"} · ${report.version || "—"}`);
   lines.push("");
 
   const visibleActions = report.actions.filter(a => !a.dismissed);
@@ -412,8 +406,7 @@ export function formatSlack(report: SessionReport): string {
       : "⚪";
     const note = report.networkNotes[row.interface];
     const noteSuffix = note ? ` — ${note}` : "";
-    const icon = ifaceIcon[row.interface] ? `${ifaceIcon[row.interface]} ` : "";
-    lines.push(`• ${dot} ${icon}${row.interface}: ${row.summary}${noteSuffix}`);
+    lines.push(`${dot} *${row.interface}*: ${row.summary}${noteSuffix}`);
   });
   lines.push("");
 
