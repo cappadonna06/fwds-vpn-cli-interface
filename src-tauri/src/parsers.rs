@@ -1032,13 +1032,17 @@ fn parse_cellular_from_latest(latest: &HashMap<String, String>) -> Option<Cellul
     // write that garbage to IMEI, ICCID, APN, etc.
     let mut full_section_parsed = false;
 
+    // One uniquely-cellular marker is sufficient. The previous 3-marker requirement created a
+    // ~12-second window before "===== modem / radio diagnostics =====" appeared in the body,
+    // during which individual command lookups ran and all returned the same full block body
+    // via substring key matching. parse_single_value on that body returned the last non-empty
+    // line (e.g. a /proc/net/dev "lo: 184779..." line), which parse_basic_cell_info then
+    // positionally assigned to basic_provider (→ card title) and basic_apn.
+    // With a single early marker, full_section_parsed triggers within ~0.5s and
+    // parse_cellular_block safely handles missing later sections via extract_between.
     if let Some(block) = find_latest_body_contains(
         latest,
-        &[
-            "===== cellular connectivity test =====",
-            "===== basic cell info =====",
-            "===== modem / radio diagnostics =====",
-        ],
+        &["===== cellular connectivity test ====="],
     ) {
         parse_cellular_block(block, &mut diag);
         has_any = true;
@@ -2157,6 +2161,11 @@ fn clean_cell_display_value(value: String) -> Option<String> {
         .trim()
         .to_string();
     if trimmed.is_empty() {
+        return None;
+    }
+    // Reject multi-token garbage: /proc/net/dev lines have 17 tokens, ICMP lines have 10+.
+    // Valid cell values (APN, carrier name, IMEI, ICCID, status) are all 1–3 tokens.
+    if trimmed.split_whitespace().count() > 3 {
         return None;
     }
     let upper = trimmed.to_ascii_uppercase();

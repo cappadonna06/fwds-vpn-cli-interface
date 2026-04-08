@@ -394,6 +394,9 @@ function cleanCellValue(value?: string | null): string | null {
   if (!value) return null;
   const v = value.trim().replace(/^"+|"+$/g, "").replace(/,+$/, "");
   if (!v) return null;
+  // Reject multi-token garbage (/proc/net/dev lines, ICMP output, etc.).
+  // Valid cell values (APN, carrier, IMEI, status) are all 1–3 whitespace-separated tokens.
+  if (v.split(/\s+/).length > 3) return null;
   const upper = v.toUpperCase();
   if (v === "0.0.0.0" || v === "—" || v === "-") return null;
   if (upper.startsWith("+")) return null;
