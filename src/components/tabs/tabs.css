@@ -1236,14 +1236,23 @@
 .diag-block-actions {
   display: flex;
   gap: 6px;
-  flex-wrap: wrap;
-  margin-top: 8px;
+  align-items: center;
+  justify-content: flex-start;
+  margin-top: 6px;
 }
 
-.diag-block-mode-group {
-  display: inline-flex;
+.diag-block-actions-stack {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
   gap: 6px;
-  margin-right: 2px;
+}
+
+.diag-block-mode-label {
+  min-width: 78px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-weight: 560;
 }
 
 .diag-block-btn {
@@ -1270,12 +1279,6 @@
   color: var(--accent);
   background: color-mix(in srgb, var(--accent) 8%, transparent);
 }
-.diag-block-btn-active {
-  background: color-mix(in srgb, var(--accent) 14%, transparent);
-  color: var(--accent);
-  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
-}
-
 .diag-block-btn-heavy:hover {
   background: color-mix(in srgb, var(--accent) 15%, transparent);
   color: var(--accent);
@@ -1969,6 +1972,8 @@
   display: flex;
   align-items: center;
   gap: 10px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
 .diag-system-line {
@@ -2101,32 +2106,6 @@
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
-}
-
-.diag-commands-subcard {
-  margin-top: 10px;
-  border: 1px solid var(--border-soft);
-  background: color-mix(in srgb, var(--bg-2) 85%, var(--accent) 4%);
-  border-radius: 10px;
-  padding: 9px 10px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-}
-
-.diag-commands-subcard-title {
-  font-size: 11px;
-  font-weight: 620;
-  color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-}
-
-.diag-commands-subcard-actions {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
 }
 
 .diag-card-compact .diag-card-subline:empty {
@@ -2303,6 +2282,38 @@
   background: var(--bg-2);
 }
 
+.diag-card-menu-inline {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 4px 6px 6px;
+}
+
+.diag-card-menu-inline-label {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.diag-card-menu-inline-actions {
+  display: inline-flex;
+  gap: 6px;
+}
+
+.diag-card-menu-chip {
+  border: 1px solid var(--border);
+  background: var(--bg-1);
+  color: var(--text-primary);
+  border-radius: 999px;
+  padding: 3px 9px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.diag-card-menu-chip:hover {
+  background: var(--bg-2);
+}
+
 .diag-card-menu-divider {
   height: 1px;
   background: var(--border-soft);
@@ -2324,26 +2335,9 @@
   gap: 8px;
 }
 
-.diag-global-actions {
-  background: var(--bg-1);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 14px;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.diag-global-actions-head {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-}
-
-.diag-global-actions-row {
+.diag-header-toolbar {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 10px;
   flex-wrap: wrap;
 }

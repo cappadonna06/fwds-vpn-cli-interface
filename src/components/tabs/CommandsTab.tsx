@@ -271,7 +271,6 @@ function DiagnosticBlockRow({
   onOpenDrawer,
   isDrawerOpen,
 }: DiagnosticBlockRowProps) {
-  const [selectedTier, setSelectedTier] = useState<"light" | "heavy">("light");
   const lightCopied = copiedBlockId === `${block.id}-light`;
   const heavyCopied = copiedBlockId === `${block.id}-heavy`;
   const singleCopied = copiedBlockId === `${block.id}-single`;
@@ -284,29 +283,43 @@ function DiagnosticBlockRow({
     block.heavy_command_ids.length > 0 &&
     JSON.stringify(block.light_command_ids) !== JSON.stringify(block.heavy_command_ids);
 
-  const lightTooltip = resolveBlockScript(block, "light");
-  const heavyTooltip = resolveBlockScript(block, "heavy");
-  const canUseLight = block.light_command_ids.length > 0;
-  const canUseFull = block.heavy_command_ids.length > 0;
-  const activeTier: "light" | "heavy" =
-    selectedTier === "light" && canUseLight ? "light" : "heavy";
-  const activeCopied = activeTier === "light" ? lightCopied : (hasDistinctTiers ? heavyCopied : singleCopied);
-  const activeSent = activeTier === "light" ? lightSent : (hasDistinctTiers ? heavySent : singleSent);
-
-  function handleCopy() {
-    if (activeTier === "light" && canUseLight) {
-      onCopyLight(block);
-      return;
-    }
-    onCopyHeavy(block);
-  }
-
-  function handleSend() {
-    if (activeTier === "light" && canUseLight) {
-      onSendLight(block);
-      return;
-    }
-    onSendHeavy(block);
+  const rows: Array<{
+    label: string;
+    copy: () => void;
+    send: () => void;
+    copied: boolean;
+    sent: boolean;
+  }> = [];
+  if (hasDistinctTiers) {
+    rows.push({
+      label: "Light",
+      copy: () => onCopyLight(block),
+      send: () => onSendLight(block),
+      copied: lightCopied,
+      sent: lightSent,
+    });
+    rows.push({
+      label: "Full",
+      copy: () => onCopyHeavy(block),
+      send: () => onSendHeavy(block),
+      copied: heavyCopied,
+      sent: heavySent,
+    });
+  } else {
+    const label = block.id === "networking-all"
+      ? "Quick"
+      : block.id === "full-diags"
+        ? "Full"
+        : block.id === "full-diags-no-sat"
+          ? "No satellite"
+          : "Full";
+    rows.push({
+      label,
+      copy: () => onCopyHeavy(block),
+      send: () => onSendHeavy(block),
+      copied: singleCopied,
+      sent: singleSent,
+    });
   }
 
   return (
@@ -325,41 +338,24 @@ function DiagnosticBlockRow({
           </button>
         </div>
         <div className="diag-block-desc">{block.description.split(".")[0]}.</div>
-        <div className="diag-block-actions">
-          <div className="diag-block-mode-group" role="group" aria-label={`${block.label} command tier`}>
-            {canUseLight && (
+        <div className="diag-block-actions-stack">
+          {rows.map((row) => (
+            <div className="diag-block-actions" key={`${block.id}-${row.label}`}>
+              <div className="diag-block-mode-label">{row.label}</div>
               <button
-                className={`diag-block-btn ${activeTier === "light" ? "diag-block-btn-active" : ""}`}
-                onClick={() => setSelectedTier("light")}
-                title={lightTooltip}
+                className={`diag-block-btn ${row.copied ? "diag-block-btn-copied" : ""}`}
+                onClick={row.copy}
               >
-                Light
+                {row.copied ? "✓ Copied" : "Copy"}
               </button>
-            )}
-            {canUseFull && (
               <button
-                className={`diag-block-btn diag-block-btn-heavy ${activeTier === "heavy" ? "diag-block-btn-active" : ""}`}
-                onClick={() => setSelectedTier("heavy")}
-                title={heavyTooltip}
+                className={`diag-block-btn ${row.sent ? "diag-block-btn-copied" : ""}`}
+                onClick={row.send}
               >
-                Full
+                {row.sent ? "✓ Sent" : "Send"}
               </button>
-            )}
-          </div>
-          <button
-            className={`diag-block-btn ${activeCopied ? "diag-block-btn-copied" : ""}`}
-            onClick={handleCopy}
-            title={activeTier === "light" ? "Copy light script" : "Copy full script"}
-          >
-            {activeCopied ? "✓ Copied" : "Copy"}
-          </button>
-          <button
-            className={`diag-block-btn ${activeSent ? "diag-block-btn-copied" : ""}`}
-            onClick={handleSend}
-            title={activeTier === "light" ? "Send light script to terminal" : "Send full script to terminal"}
-          >
-            {activeSent ? "✓ Sent" : "Send"}
-          </button>
+            </div>
+          ))}
         </div>
         {block.time_warning && (
           <div className="diag-block-warning">{block.time_warning}</div>
