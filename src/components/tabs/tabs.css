@@ -2582,6 +2582,19 @@
   flex-shrink: 0;
 }
 
+.report-status-dot-btn {
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  background: inherit;
+  transition: transform 0.1s, box-shadow 0.1s;
+}
+
+.report-status-dot-btn:hover {
+  transform: scale(1.5);
+  box-shadow: 0 0 0 2px var(--border-soft);
+}
+
 .report-status-dot-green { background: var(--success); }
 .report-status-dot-orange { background: var(--warning); }
 .report-status-dot-red { background: var(--danger); }
@@ -2599,6 +2612,41 @@
   font-size: 12px;
   color: var(--text-secondary);
   flex: 1;
+}
+
+.report-network-summary-input {
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid transparent;
+  outline: none;
+  padding: 0;
+  font-family: inherit;
+}
+
+.report-network-summary-input:hover {
+  border-bottom-color: var(--border-soft);
+}
+
+.report-network-summary-input:focus {
+  border-bottom-color: var(--accent);
+  color: var(--text-primary);
+}
+
+.report-network-reset {
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: 13px;
+  padding: 0 2px;
+  line-height: 1;
+  flex-shrink: 0;
+  opacity: 0.6;
+}
+
+.report-network-reset:hover {
+  opacity: 1;
+  color: var(--text-secondary);
 }
 
 .report-network-note {
