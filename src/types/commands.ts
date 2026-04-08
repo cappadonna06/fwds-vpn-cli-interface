@@ -1189,7 +1189,7 @@ satellite-check -t
   },
   {
     id: "networking-all",
-    label: "Networking — All Light",
+    label: "All Networking",
     icon: "⚡",
     description: "Runs the light-tier check on all four network interfaces in sequence: Ethernet, Wi-Fi, cellular, and signal readings. Good first-pass sweep after install or when multiple interfaces need a quick status check.",
     when_to_run: "First-pass network check after install or when multiple interfaces need a quick status sweep (~45 seconds total).",

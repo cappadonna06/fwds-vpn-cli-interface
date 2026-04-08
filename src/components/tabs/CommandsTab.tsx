@@ -317,7 +317,7 @@ function DiagnosticBlockRow({
     });
   } else {
     const label = block.id === "networking-all"
-      ? "Quick"
+      ? "Light"
       : block.id === "full-diags"
         ? "Full"
         : block.id === "full-diags-no-sat"
@@ -340,7 +340,7 @@ function DiagnosticBlockRow({
           <span className="diag-block-label">
             {block.label}
             {(DIAG_BLOCK_TIME_TAGS[block.id] ?? []).map((tag) => (
-              <span key={`${block.id}-${tag}`} className="diag-block-time-tag">[{tag}]</span>
+              <span key={`${block.id}-${tag}`} className="cmd-time-badge">~{tag}</span>
             ))}
           </span>
           <button

@@ -1237,16 +1237,6 @@
   flex-wrap: wrap;
 }
 
-.diag-block-time-tag {
-  font-size: 10px;
-  font-weight: 650;
-  color: var(--text-secondary);
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  padding: 1px 6px;
-  background: var(--bg-1);
-}
-
 .diag-block-actions {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto auto;
@@ -1371,7 +1361,7 @@
   }
 }
 
-@media (max-width: 1480px) {
+@media (max-width: 900px) {
   .diag-block-actions {
     grid-template-columns: minmax(0, 1fr);
     row-gap: 6px;
