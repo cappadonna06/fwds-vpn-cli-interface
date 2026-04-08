@@ -521,7 +521,12 @@ function buildSatelliteSections(sat?: SatelliteDiagnostic | null): DiagSection[]
         : "Not run";
 
   const actions: DiagRow[] = [];
-  if (!sat.loopback_test_ran && sat.modem_present === true) actions.push({ label: "Recommended action", value: "Run full satellite loopback test" });
+  if (!sat.loopback_test_ran && sat.modem_present === true) {
+    actions.push({
+      label: "Recommended action",
+      value: sat.light_test_success === true ? "Run loopback for full verification" : "Run full satellite loopback test",
+    });
+  }
   else if (sat.loopback_test_blocked_in_use) actions.push({ label: "Recommended action", value: "Retry test when interface is idle" });
   else if (sat.loopback_test_success === false) actions.push({ label: "Recommended action", value: "Check antenna placement and connection" });
   else if (sat.recommended_action) actions.push({ label: "Recommended action", value: sat.recommended_action });
@@ -532,6 +537,14 @@ function buildSatelliteSections(sat?: SatelliteDiagnostic | null): DiagSection[]
       rows: [
         { label: "Modem", value: sat.modem_present === true ? "Detected" : sat.modem_present === false ? "Not detected" : "Unknown" },
         { label: "Loopback", value: loopback },
+        ...(sat.light_test_ran ? [{
+          label: "Quick check",
+          value: sat.light_test_success === true
+            ? "Passed"
+            : sat.light_test_blocked_in_use
+              ? "Blocked"
+              : "Failed",
+        }] : []),
         { label: "Visibility", value: sat.satellites_seen !== null && sat.satellites_seen !== undefined ? `${sat.satellites_seen} satellites` : "Not available" },
         { label: "Last test time", value: sat.loopback_test_success === true ? formatLoopback(sat.total_time_seconds) : "—" },
         { label: "Network state", value: sat.connman_state || "—" },
@@ -604,7 +617,9 @@ function resolveRole(network: "wifi" | "cellular" | "ethernet", primary: "wifi" 
 
 function summarizeWifi(wifi?: WifiDiagnostic | null): CardSummary {
   if (!wifi) return { health: "neutral", badgeLabel: "No data", primaryLine: "No data yet" };
-  const connected = wifi.connected === true || wifi.connman_wifi_connected === true;
+  const connected = wifi.connected === true
+    || wifi.connman_wifi_connected === true
+    || wifi.internet_reachable === true;
   const ssid = wifi.ssid || wifi.access_point || "Wi-Fi";
   if (!connected) return { health: "neutral", badgeLabel: "Inactive", primaryLine: "Not connected", secondaryLine: ssid };
   const sig = signalLabel(wifi.strength_score);
@@ -661,6 +676,8 @@ function summarizeSatellite(sat?: SatelliteDiagnostic | null): CardSummary {
   if (sat.loopback_test_success === true) return { health: "healthy", badgeLabel: "Verified", primaryLine: "Link verified" };
   if (sat.loopback_test_blocked_in_use) return { health: "warning", badgeLabel: "Warning", primaryLine: "Test blocked" };
   if (sat.loopback_test_ran && sat.loopback_test_success === false) return { health: "error", badgeLabel: "Issue", primaryLine: "Loopback failed" };
+  if (sat.light_test_success === true) return { health: "healthy", badgeLabel: "Healthy", primaryLine: "Satellite check passed" };
+  if (sat.light_test_ran && sat.light_test_success === false) return { health: "error", badgeLabel: "Issue", primaryLine: "Quick check failed" };
   if (sat.satellites_seen === 0) return { health: "error", badgeLabel: "Issue", primaryLine: "No satellites visible" };
   return { health: "neutral", badgeLabel: "Not validated", primaryLine: "Modem present", secondaryLine: "Full test not run" };
 }

@@ -1509,6 +1509,25 @@ fn determine_satellite_status(diag: &mut SatelliteDiagnostic) {
         return;
     }
 
+    if diag.light_test_ran && diag.light_test_success == Some(true) {
+        diag.status = DiagStatus::Green;
+        diag.summary = "Satellite check passed".into();
+        diag.recommended_action = None;
+        diag.other_actions = vec![];
+        return;
+    }
+
+    if diag.light_test_ran
+        && diag.light_test_success == Some(false)
+        && !diag.light_test_blocked_in_use.unwrap_or(false)
+    {
+        diag.status = DiagStatus::Red;
+        diag.summary = "Satellite quick check failed".into();
+        diag.recommended_action = Some("Run full loopback test for details".into());
+        diag.other_actions = vec![];
+        return;
+    }
+
     if diag.modem_present == Some(true) {
         diag.status = DiagStatus::Grey;
         diag.summary = "Satellite not validated".into();
