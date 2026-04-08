@@ -792,10 +792,10 @@ fn parse_wifi_section(text: &str, w: &mut WifiDiagnostic) {
 
     // iw dev / iw dev wlan0 info
     w.interface_exists = w.interface_exists || text.contains("Interface wlan0");
-    w.interface_name = w.interface_name.or_else(|| capture_after(text, "Interface"));
-    w.mac_address = w.mac_address.or_else(|| capture_after(text, "addr"));
-    w.ssid = w.ssid.or_else(|| capture_after(text, "ssid").filter(|s| !s.starts_with('=')));
-    w.interface_type = w.interface_type.or_else(|| capture_after(text, "type"));
+    w.interface_name = w.interface_name.clone().or_else(|| capture_after(text, "Interface"));
+    w.mac_address = w.mac_address.clone().or_else(|| capture_after(text, "addr"));
+    w.ssid = w.ssid.clone().or_else(|| capture_after(text, "ssid").filter(|s| !s.starts_with('=')));
+    w.interface_type = w.interface_type.clone().or_else(|| capture_after(text, "type"));
     w.tx_power_dbm = w.tx_power_dbm.or_else(|| {
         capture_after(text, "txpower").and_then(|v| {
             v.split_whitespace()
@@ -810,7 +810,7 @@ fn parse_wifi_section(text: &str, w: &mut WifiDiagnostic) {
     } else if text.contains("Connected to ") {
         w.connected = Some(true);
         w.ap_bssid = extract_regex(text, r"Connected to ([0-9a-f:]{17})");
-        w.ssid = w.ssid.or_else(|| capture_after(text, "SSID:"));
+        w.ssid = w.ssid.clone().or_else(|| capture_after(text, "SSID:"));
         w.frequency_mhz = extract_regex(text, r"freq:\s*([0-9.]+)")
             .and_then(|v| v.parse::<f64>().ok())
             .map(|f| f.round() as u32);
