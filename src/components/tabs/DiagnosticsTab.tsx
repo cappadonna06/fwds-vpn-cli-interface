@@ -853,6 +853,7 @@ export default function DiagnosticsTab() {
   const [systemUpdatedAt, setSystemUpdatedAt] = useState<string | null>(null);
   const [copiedCommandId, setCopiedCommandId] = useState<string | null>(null);
   const [sentCommandId, setSentCommandId] = useState<string | null>(null);
+  const [globalDiagTier, setGlobalDiagTier] = useState<"quick" | "full" | "no-satellite">("quick");
 
   useEffect(() => {
     invoke("start_log_watcher").catch(() => {});
@@ -964,6 +965,11 @@ export default function DiagnosticsTab() {
     safeVersion ? `v${safeVersion}` : null,
     system?.release_date ? system.release_date : null,
   ].filter(Boolean).join(" · ");
+  const globalDiagBlockId = globalDiagTier === "full"
+    ? "full-diags"
+    : globalDiagTier === "no-satellite"
+      ? "full-diags-no-sat"
+      : "networking-all";
 
   return (
     <section className="tab-content diag-page">
@@ -972,34 +978,17 @@ export default function DiagnosticsTab() {
           <h2>System Diagnostics</h2>
           {systemIdentity && <div className="diag-system-line">{systemIdentity}</div>}
           {systemUpdatedAt && <div className="diag-system-line">System updated {systemUpdatedAt}</div>}
-        </div>
-        <div className="diag-global-cmd-card">
-          <div className="diag-global-cmd-title">Diagnostics commands</div>
-          <div className="diag-global-cmd-row">
-            <span className="diag-global-cmd-label">Quick</span>
-            <button className="btn btn-secondary" onClick={() => copyDiagnosticBlock("networking-all")}>
-              {copiedCommandId === "networking-all" ? "Copied" : "Copy"}
+          <div className="diag-header-toolbar">
+            <div className="diag-global-tier-group" role="group" aria-label="Diagnostics mode">
+              <button type="button" className={`diag-tier-btn ${globalDiagTier === "quick" ? "diag-tier-btn-active" : ""}`} onClick={() => setGlobalDiagTier("quick")}>Quick</button>
+              <button type="button" className={`diag-tier-btn ${globalDiagTier === "full" ? "diag-tier-btn-active" : ""}`} onClick={() => setGlobalDiagTier("full")}>Full</button>
+              <button type="button" className={`diag-tier-btn ${globalDiagTier === "no-satellite" ? "diag-tier-btn-active" : ""}`} onClick={() => setGlobalDiagTier("no-satellite")}>No satellite</button>
+            </div>
+            <button className="btn btn-secondary" onClick={() => copyDiagnosticBlock(globalDiagBlockId)}>
+              {copiedCommandId === globalDiagBlockId ? "Copied" : "Copy"}
             </button>
-            <button className="btn btn-secondary" onClick={() => sendDiagnosticBlock("networking-all")}>
-              {sentCommandId === "networking-all" ? "Sent" : "Send"}
-            </button>
-          </div>
-          <div className="diag-global-cmd-row">
-            <span className="diag-global-cmd-label">Full</span>
-            <button className="btn btn-secondary" onClick={() => copyDiagnosticBlock("full-diags")}>
-              {copiedCommandId === "full-diags" ? "Copied" : "Copy"}
-            </button>
-            <button className="btn btn-secondary" onClick={() => sendDiagnosticBlock("full-diags")}>
-              {sentCommandId === "full-diags" ? "Sent" : "Send"}
-            </button>
-          </div>
-          <div className="diag-global-cmd-row">
-            <span className="diag-global-cmd-label">No satellite</span>
-            <button className="btn btn-secondary" onClick={() => copyDiagnosticBlock("full-diags-no-sat")}>
-              {copiedCommandId === "full-diags-no-sat" ? "Copied" : "Copy"}
-            </button>
-            <button className="btn btn-secondary" onClick={() => sendDiagnosticBlock("full-diags-no-sat")}>
-              {sentCommandId === "full-diags-no-sat" ? "Sent" : "Send"}
+            <button className="btn btn-secondary" onClick={() => sendDiagnosticBlock(globalDiagBlockId)}>
+              {sentCommandId === globalDiagBlockId ? "Sent" : "Send"}
             </button>
           </div>
         </div>

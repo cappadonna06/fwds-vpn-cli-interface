@@ -1985,7 +1985,7 @@
 .diag-header-left {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 6px;
 }
 
 .diag-header-left h2 {
@@ -2364,31 +2364,40 @@
 .diag-header-toolbar {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   flex-wrap: wrap;
 }
 
 .diag-global-tier-group {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
+  gap: 0;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-2);
+  padding: 2px;
 }
 
 .diag-tier-btn {
-  border: 1px solid var(--border);
-  background: var(--bg-1);
+  border: none;
+  background: transparent;
   color: var(--text-secondary);
   border-radius: 999px;
-  padding: 5px 12px;
+  padding: 5px 11px;
   font-size: 12px;
   font-weight: 560;
   cursor: pointer;
+  transition: background 120ms ease, color 120ms ease;
+}
+
+.diag-tier-btn:hover {
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  color: var(--text-primary);
 }
 
 .diag-tier-btn-active {
-  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
-  color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  color: #fff;
+  background: var(--accent);
 }
 
 .diag-empty-title {
@@ -2406,38 +2415,6 @@
 .diag-empty-sub {
   font-size: 12px;
   color: var(--text-muted);
-}
-
-.diag-global-cmd-card {
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--bg-1);
-  padding: 6px 8px;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  min-width: 340px;
-}
-
-.diag-global-cmd-title {
-  font-size: 10px;
-  font-weight: 640;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--text-muted);
-}
-
-.diag-global-cmd-row {
-  display: inline-flex;
-  gap: 6px;
-  align-items: center;
-}
-
-.diag-global-cmd-label {
-  font-size: 11px;
-  color: var(--text-primary);
-  font-weight: 560;
-  min-width: 82px;
 }
 
 .diag-copy-link {
