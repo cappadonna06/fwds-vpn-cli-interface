@@ -1817,11 +1817,11 @@ fn extract_last_non_empty_line(text: &str) -> String {
 }
 
 fn parse_ethernet(
-    ethernet_check: Option<&String>,
-    ethtool: Option<&String>,
-    interface_info: Option<&String>,
-    proc_net_dev: Option<&String>,
-    operstate: Option<&String>,
+    ethernet_check: Option<&str>,
+    ethtool: Option<&str>,
+    interface_info: Option<&str>,
+    proc_net_dev: Option<&str>,
+    operstate: Option<&str>,
     full_block_run: bool,
     ethernet_diag_attempted: bool,
 ) -> Option<EthernetDiagnostic> {
