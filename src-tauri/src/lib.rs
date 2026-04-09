@@ -69,6 +69,7 @@ pub struct DiagnosticState {
     pub cellular: Option<CellularDiagnostic>,
     pub satellite: Option<SatelliteDiagnostic>,
     pub ethernet: Option<EthernetDiagnostic>,
+    pub pressure: Option<PressureDiagnostic>,
     pub system: Option<SystemDiagnostic>,
     pub sim_picker: Option<SimPickerDiagnostic>,
     pub last_updated: Option<String>,
@@ -367,6 +368,72 @@ pub struct EthernetDiagnostic {
     pub flap_count: u32,
     pub full_block_run: bool,
     pub ethernet_diag_attempted: bool,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone, Default)]
+#[serde(default)]
+pub struct PressureDiagnostic {
+    pub status: DiagStatus,
+    pub summary: String,
+    pub via_sensor: Option<String>,
+    pub display_psi: Option<f64>,
+    pub controller_id: Option<String>,
+    pub fw_version: Option<String>,
+    pub system_type: Option<String>,
+    pub is_active: bool,
+    pub sensors: PressureSensors,
+    pub sensor_errors: Vec<PressureSensorError>,
+    pub asserts: Vec<PressureAssertRecord>,
+    pub issues: Vec<PressureIssue>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone, Default)]
+#[serde(default)]
+pub struct PressureSensors {
+    pub source: Option<PressureSensorReading>,
+    pub distribution: Option<PressureSensorReading>,
+    pub supply: Option<PressureSensorReading>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone, Default)]
+#[serde(default)]
+pub struct PressureSensorReading {
+    pub name: String,
+    pub index: u8,
+    pub readings: Vec<f64>,
+    pub snapshot: f64,
+    pub latest: f64,
+    pub mean: f64,
+    pub min: f64,
+    pub max: f64,
+    pub stdev: f64,
+    pub count: usize,
+    pub voltage: Option<f64>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone, Default)]
+#[serde(default)]
+pub struct PressureSensorError {
+    pub sensor_index: u8,
+    pub message: String,
+    pub errno: i32,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone, Default)]
+#[serde(default)]
+pub struct PressureAssertRecord {
+    pub file: String,
+    pub line: u32,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone, Default)]
+#[serde(default)]
+pub struct PressureIssue {
+    pub id: String,
+    pub severity: DiagStatus,
+    pub title: String,
+    pub description: String,
+    pub action: String,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Default)]
@@ -1138,6 +1205,7 @@ fn has_any_diag_data(diag: &DiagnosticState) -> bool {
         || diag.cellular.is_some()
         || diag.satellite.is_some()
         || diag.ethernet.is_some()
+        || diag.pressure.is_some()
         || diag.system.is_some()
 }
 
@@ -1153,6 +1221,9 @@ fn merge_non_empty_cards(base: &mut DiagnosticState, incoming: &DiagnosticState)
     }
     if incoming.ethernet.is_some() {
         base.ethernet = incoming.ethernet.clone();
+    }
+    if incoming.pressure.is_some() {
+        base.pressure = incoming.pressure.clone();
     }
     if incoming.system.is_some() {
         base.system = incoming.system.clone();
@@ -1347,6 +1418,7 @@ fn clear_diagnostic_interface(state: State<'_, AppState>, interface: String) -> 
         "cellular" => diag.cellular = None,
         "satellite" => diag.satellite = None,
         "ethernet" => diag.ethernet = None,
+        "pressure" => diag.pressure = None,
         "sim_picker" => diag.sim_picker = None,
         _ => {}
     }

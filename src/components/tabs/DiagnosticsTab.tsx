@@ -175,6 +175,46 @@ interface EthernetDiagnostic {
   ethernet_diag_attempted?: boolean;
 }
 
+interface PressureSensorReading {
+  name: string;
+  index: number;
+  snapshot: number;
+  latest: number;
+  mean: number;
+  min: number;
+  max: number;
+  stdev: number;
+  count: number;
+  voltage?: number | null;
+}
+
+interface PressureIssue {
+  id: string;
+  severity: DiagStatus;
+  title: string;
+  description: string;
+  action: string;
+}
+
+interface PressureDiagnostic {
+  status: DiagStatus;
+  summary: string;
+  via_sensor?: string | null;
+  display_psi?: number | null;
+  controller_id?: string | null;
+  fw_version?: string | null;
+  system_type?: string | null;
+  is_active?: boolean;
+  sensors: {
+    source?: PressureSensorReading | null;
+    distribution?: PressureSensorReading | null;
+    supply?: PressureSensorReading | null;
+  };
+  sensor_errors: Array<{ sensor_index: number; message: string; errno: number }>;
+  asserts: Array<{ file: string; line: number }>;
+  issues: PressureIssue[];
+}
+
 interface SystemDiagnostic {
   sid?: string | null;
   version?: string | null;
@@ -216,6 +256,7 @@ interface DiagnosticState {
   cellular?: CellularDiagnostic | null;
   satellite?: SatelliteDiagnostic | null;
   ethernet?: EthernetDiagnostic | null;
+  pressure?: PressureDiagnostic | null;
   system?: SystemDiagnostic | null;
   sim_picker?: SimPickerDiagnostic | null;
   last_updated?: string | null;
@@ -230,8 +271,10 @@ interface DiagCardProps {
   icon: string;
   health: HealthTone;
   statusLabel: string;
+  primaryTags?: string[];
   primaryLine: string;
   secondaryLine?: string | null;
+  secondaryTags?: string[];
   role?: string | null;
   signalLabel?: string | null;
   signalScore?: number | null;
@@ -244,6 +287,7 @@ interface DiagCardProps {
   onSendCommand?: () => void;
   sent?: boolean;
   compact?: boolean;
+  emphasizeSecondaryLine?: boolean;
   onClear?: () => void;
 }
 
@@ -279,18 +323,24 @@ const ALL_CARRIERS = [
 
 function simPickerHealth(sp?: SimPickerDiagnostic | null): HealthTone {
   if (!sp) return "neutral";
+  if (!sp.scan_attempted) return "neutral";
+  if (sp.scan_empty || sp.recommendation === "DeadZone") return "error";
   const rec = sp.recommendation;
   if (typeof rec === "string") {
-    if (rec === "NotRun" || rec === "DeadZone") return "neutral";
+    if (rec === "NotRun") return "neutral";
     if (rec === "ScanFailed" || rec === "WeakButBest") return "warning";
     if (rec === "KeepCurrent") return "healthy";
   }
-  // SwapTo
-  return sp.installed_carrier_detected ? "warning" : "error";
+  // SwapTo => installed SIM is not best fit here
+  return "warning";
 }
 
-function simPickerBadge(_sp?: SimPickerDiagnostic | null): string {
-  return "";
+function simPickerBadge(sp?: SimPickerDiagnostic | null): string {
+  const tone = simPickerHealth(sp);
+  if (tone === "healthy") return "Healthy";
+  if (tone === "warning") return "Warning";
+  if (tone === "error") return "Error";
+  return "Not run";
 }
 
 function simPickerPrimary(sp?: SimPickerDiagnostic | null): string {
@@ -442,7 +492,7 @@ function formatLoopback(seconds?: number | null): string {
 }
 
 function buildWifiSections(wifi?: WifiDiagnostic | null): DiagSection[] {
-  if (!wifi) return [{ title: "Status", rows: [{ label: "Details", value: "No recent data" }] }];
+  if (!wifi) return [{ title: "Details", rows: [{ label: "Details", value: "No recent data" }] }];
   const wifiSig = wifiSignalLabel(wifi);
   const weakByController = (wifi.strength_label || "").toLowerCase() === "weak";
   const internetTest = wifi.check_result === "Success"
@@ -467,13 +517,13 @@ function buildWifiSections(wifi?: WifiDiagnostic | null): DiagSection[] {
   }
 
   return [
-    { title: "Network", rows: network },
-    ...(action.length ? [{ title: "Next action", rows: action }] : []),
+    { title: "Details", rows: network },
+    ...(action.length ? [{ title: "Recommended Actions", rows: action }] : []),
   ];
 }
 
 function buildCellularSections(cell?: CellularDiagnostic | null): DiagSection[] {
-  if (!cell) return [{ title: "Status", rows: [{ label: "Details", value: "No recent data" }] }];
+  if (!cell) return [{ title: "Details", rows: [{ label: "Details", value: "No recent data" }] }];
 
   const primaryAction = cell.recommended_action
     || (cell.sim_inserted === false ? "Insert SIM card" : null)
@@ -491,7 +541,7 @@ function buildCellularSections(cell?: CellularDiagnostic | null): DiagSection[] 
 
   return [
     {
-      title: "Cellular",
+      title: "Details",
       rows: [
         { label: "Carrier", value: cleanCellValue(cell.operator_name) || resolveCarrierCode(cell.provider_code) || resolveCarrierCode(cell.basic_provider) || "—" },
         { label: "Signal", value: signalLabel(cell.strength_score) + (cell.strength_score !== null && cell.strength_score !== undefined ? ` (${cell.strength_score}/100)` : "") },
@@ -504,7 +554,7 @@ function buildCellularSections(cell?: CellularDiagnostic | null): DiagSection[] 
       ],
     },
     {
-      title: "Connectivity",
+      title: "Details",
       rows: [
         { label: "Internet test", value: cell.internet_reachable ? "Passed" : "Failed" },
         { label: "Packet loss", value: `${cell.check_packet_loss_pct}%` },
@@ -512,7 +562,7 @@ function buildCellularSections(cell?: CellularDiagnostic | null): DiagSection[] 
       ],
     },
     ...((primaryAction || otherOptions.length > 0) ? [{
-      title: "Next action",
+      title: "Recommended Actions",
       rows: [
         ...(primaryAction ? [{ label: "Recommended action", value: primaryAction }] : []),
         ...(otherOptions.length > 0 ? [{ label: "Other options", value: otherOptions.join(" • ") }] : []),
@@ -522,7 +572,7 @@ function buildCellularSections(cell?: CellularDiagnostic | null): DiagSection[] 
 }
 
 function buildSatelliteSections(sat?: SatelliteDiagnostic | null): DiagSection[] {
-  if (!sat) return [{ title: "Status", rows: [{ label: "Status", value: "No diagnostics run" }, { label: "Last test", value: "—" }] }];
+  if (!sat) return [{ title: "Details", rows: [{ label: "Details", value: "No diagnostics run" }, { label: "Last test", value: "—" }] }];
 
   const loopback =
     sat.loopback_test_success === true
@@ -546,7 +596,7 @@ function buildSatelliteSections(sat?: SatelliteDiagnostic | null): DiagSection[]
 
   return [
     {
-      title: "Satellite",
+      title: "Details",
       rows: [
         { label: "Modem", value: sat.modem_present === true ? "Detected" : sat.modem_present === false ? "Not detected" : "Unknown" },
         { label: "Loopback", value: loopback },
@@ -565,7 +615,7 @@ function buildSatelliteSections(sat?: SatelliteDiagnostic | null): DiagSection[]
       ],
     },
     ...(actions.length || sat.loopback_test_error || sat.light_test_error ? [{
-      title: "Next action",
+      title: "Recommended Actions",
       rows: [
         ...actions,
         ...(sat.loopback_test_error ? [{ label: "Last error", value: sat.loopback_test_error }] : sat.light_test_error ? [{ label: "Last error", value: sat.light_test_error }] : []),
@@ -575,7 +625,7 @@ function buildSatelliteSections(sat?: SatelliteDiagnostic | null): DiagSection[]
 }
 
 function buildEthernetSections(ethernet?: EthernetDiagnostic | null): DiagSection[] {
-  if (!ethernet) return [{ title: "Status", rows: [{ label: "Status", value: "No data yet" }, { label: "Last test", value: "—" }] }];
+  if (!ethernet) return [{ title: "Details", rows: [{ label: "Details", value: "No data yet" }, { label: "Last test", value: "—" }] }];
 
   const internetPassed = ethernet.check_result === "Success" && ethernet.internet_reachable === true;
   const connected = internetPassed || ethernet.link_detected === true;
@@ -586,7 +636,7 @@ function buildEthernetSections(ethernet?: EthernetDiagnostic | null): DiagSectio
 
   return [
     {
-      title: "Ethernet",
+      title: "Details",
       rows: [
         { label: "Connection", value: connected ? "Connected" : "No link" },
         { label: "Speed", value: speedLabel(ethernet.speed) + (ethernet.duplex ? ` (${ethernet.duplex})` : "") },
@@ -595,8 +645,80 @@ function buildEthernetSections(ethernet?: EthernetDiagnostic | null): DiagSectio
         { label: "Stability", value: ethernet.flap_count > 0 ? "Recent link flaps" : "Stable" },
       ],
     },
-    ...(actions.length ? [{ title: "Next action", rows: actions }] : []),
+    ...(actions.length ? [{ title: "Recommended Actions", rows: actions }] : []),
   ];
+}
+
+function formatPsi(value?: number | null): string {
+  if (value === null || value === undefined || Number.isNaN(value)) return "—";
+  return `${value.toFixed(2)} PSI`;
+}
+
+function buildPressureSections(pressure?: PressureDiagnostic | null): DiagSection[] {
+  if (!pressure) return [{ title: "Details", rows: [{ label: "Details", value: "No recent data" }] }];
+  const source = pressure.sensors?.source;
+  const distribution = pressure.sensors?.distribution;
+  const supply = pressure.sensors?.supply;
+  const readings: DiagRow[] = [];
+
+  if (distribution) {
+    const inactiveExpected = pressure.is_active === false && distribution.latest < 1.0;
+    readings.push({
+      label: "Distribution (P2)",
+      value: inactiveExpected
+        ? `${formatPsi(distribution.latest)} (inactive — expected)`
+        : `${formatPsi(distribution.latest)}${distribution.voltage !== null && distribution.voltage !== undefined ? ` · ${distribution.voltage.toFixed(2)}V` : ""}`,
+    });
+  }
+  if (source) readings.push({ label: "Source (P3)", value: `${formatPsi(source.latest)}${source.voltage !== null && source.voltage !== undefined ? ` · ${source.voltage.toFixed(2)}V` : ""}` });
+  if (supply) readings.push({ label: "Supply (P1)", value: `${formatPsi(supply.latest)}${supply.voltage !== null && supply.voltage !== undefined ? ` · ${supply.voltage.toFixed(2)}V` : ""}` });
+
+  if (!supply) {
+    const missingP1 = (pressure.sensor_errors ?? []).find((e) => e.sensor_index === 0 && e.errno === -2);
+    if (missingP1 && /mp3|lv2|cds/i.test(pressure.system_type ?? "")) {
+      readings.push({ label: "Supply (P1)", value: "not installed (expected)" });
+    }
+  }
+  for (const err of pressure.sensor_errors ?? []) {
+    if (err.sensor_index === 0 && err.errno === -2 && /mp3|lv2|cds/i.test(pressure.system_type ?? "")) continue;
+    readings.push({ label: `Sensor ${err.sensor_index}`, value: `missing — ${err.message}` });
+  }
+
+  const stats: DiagRow[] = [];
+  for (const sensor of [source, distribution, supply].filter(Boolean) as PressureSensorReading[]) {
+    if (sensor.count > 1) {
+      stats.push({ label: sensor.name, value: `μ ${sensor.mean.toFixed(2)} · ${sensor.min.toFixed(2)}–${sensor.max.toFixed(2)} · σ ${sensor.stdev.toFixed(3)}` });
+    }
+  }
+
+  const issues = (pressure.issues ?? []).map((issue) => ({
+    label: issue.title,
+    value: `${issue.description} · ${issue.action}`,
+  }));
+  if (issues.length === 0) issues.push({ label: "✓ Healthy", value: "All sensors healthy — no anomalies detected" });
+
+  return [
+    { title: "Details", rows: readings.length ? readings : [{ label: "Readings", value: "No pressure readings captured" }] },
+    ...(stats.length ? [{ title: "Live stats", rows: stats }] : []),
+    { title: "Recommended Actions", rows: issues },
+  ];
+}
+
+function buildPressurePrimaryTags(pressure?: PressureDiagnostic | null): string[] {
+  if (!pressure) return [];
+  const via = (pressure.via_sensor ?? "").toLowerCase();
+  if (via === "distribution") return ["Distribution (P2)"];
+  if (via === "source") return ["Source (P3)"];
+  if (via === "supply") return ["Supply (P1)"];
+  return [];
+}
+
+function buildPressureSecondaryTags(pressure?: PressureDiagnostic | null): string[] {
+  if (!pressure) return [];
+  const source = pressure.sensors?.source?.latest;
+  const isValidSource = source !== null && source !== undefined && source >= 0 && source <= 218;
+  const showSourceTag = isValidSource && (pressure.via_sensor ?? "").toLowerCase() !== "source";
+  return showSourceTag ? ["Source (P3)"] : [];
 }
 
 type CardSummary = {
@@ -689,6 +811,21 @@ function summarizeEthernet(ethernet?: EthernetDiagnostic | null): CardSummary {
   return { health: "warning", badgeLabel: "Warning", primaryLine: "Connected", secondaryLine: "Limited internet" };
 }
 
+function summarizePressure(pressure?: PressureDiagnostic | null): CardSummary {
+  if (!pressure) return { health: "neutral", badgeLabel: "No data", primaryLine: "No data yet" };
+  const health = pressure.status === "red" ? "error" : pressure.status === "orange" ? "warning" : "healthy";
+  const badgeLabel = pressure.status === "red" ? "Error" : pressure.status === "orange" ? "Warning" : "Healthy";
+  const source = pressure.sensors?.source?.latest;
+  const isValidSource = source !== null && source !== undefined && source >= 0 && source <= 218;
+  const showSourceLine = isValidSource && (pressure.via_sensor ?? "").toLowerCase() !== "source";
+  return {
+    health,
+    badgeLabel,
+    primaryLine: pressure.display_psi !== null && pressure.display_psi !== undefined ? `${pressure.display_psi.toFixed(1)} PSI` : "—",
+    secondaryLine: showSourceLine ? `${source!.toFixed(1)} PSI` : null,
+  };
+}
+
 function summarizeSatellite(sat?: SatelliteDiagnostic | null): CardSummary {
   if (!sat) return { health: "neutral", badgeLabel: "No data", primaryLine: "No data yet" };
   if (sat.modem_present === false) return { health: "error", badgeLabel: "Issue", primaryLine: "No satellite modem detected" };
@@ -715,8 +852,10 @@ function DiagCard({
   icon,
   health,
   statusLabel,
+  primaryTags,
   primaryLine,
   secondaryLine,
+  secondaryTags,
   role,
   signalLabel: cardSignalLabel,
   signalScore,
@@ -729,12 +868,35 @@ function DiagCard({
   onSendCommand,
   sent,
   compact,
+  emphasizeSecondaryLine = false,
   onClear,
 }: DiagCardProps) {
   const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!menuOpen) return;
+    const onDocClick = (event: MouseEvent) => {
+      if (!menuRef.current) return;
+      if (!menuRef.current.contains(event.target as Node)) {
+        setMenuOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", onDocClick);
+    return () => document.removeEventListener("mousedown", onDocClick);
+  }, [menuOpen]);
+  const hasSignalInfo =
+    (signalScore !== null && signalScore !== undefined) || !!cardSignalLabel;
+  const collapsedRecommendation = !expanded && (health === "warning" || health === "error")
+    ? (
+      sections.find((s) => s.title.toLowerCase() === "recommended actions")?.rows[0]?.value
+      ?? sections.find((s) => ["diagnostics", "next action"].includes(s.title.toLowerCase()))?.rows[0]?.value
+      ?? sections.flatMap((s) => s.rows).find((row) => row.label.toLowerCase().includes("recommended action"))?.value
+    )
+    : null;
 
   return (
-    <article className={`diag-card diag-card-${health} ${expanded ? "diag-card-open" : ""} ${compact ? "diag-card-compact" : ""}`}>
+    <article className={`diag-card diag-card-${health} ${expanded ? "diag-card-open" : "diag-card-collapsed"} ${compact ? "diag-card-compact" : ""} ${emphasizeSecondaryLine ? "diag-card-equal-lines" : ""}`}>
       <div className="diag-card-head">
         <div className="diag-card-title-wrap">
           <span className="diag-card-icon" aria-hidden>{icon}</span>
@@ -749,7 +911,7 @@ function DiagCard({
             <span>{statusLabel}</span>
           </span>
           {onClear && (
-            <div className="diag-card-menu-wrap">
+            <div className="diag-card-menu-wrap" ref={menuRef}>
               <button
                 type="button"
                 className="diag-card-menu-btn"
@@ -813,19 +975,42 @@ function DiagCard({
         </div>
       </div>
 
-      <div className="diag-card-status-line">{primaryLine}</div>
-      {secondaryLine && <div className="diag-card-secondary-line">{secondaryLine}</div>}
-      <div className="diag-card-subline">
-        {signalScore !== null && signalScore !== undefined && (
-          <span className={`diag-signal-bars tone-${signalBars(signalScore) >= 3 ? "good" : signalBars(signalScore) >= 2 ? "warn" : "bad"}`} aria-hidden>
-            <i className={signalBars(signalScore) >= 1 ? "on" : ""} />
-            <i className={signalBars(signalScore) >= 2 ? "on" : ""} />
-            <i className={signalBars(signalScore) >= 3 ? "on" : ""} />
-            <i className={signalBars(signalScore) >= 4 ? "on" : ""} />
-          </span>
+      <div className="diag-card-status-row">
+        <div className="diag-card-status-line">{primaryLine}</div>
+        {primaryTags && primaryTags.length > 0 && (
+          <div className="diag-card-primary-tags">
+            {primaryTags.map((tag) => (
+              <span key={`${title}-${tag}`} className="diag-role-pill-inline">{tag}</span>
+            ))}
+          </div>
         )}
-        {cardSignalLabel && <span>{cardSignalLabel}</span>}
       </div>
+      {(secondaryLine || (secondaryTags && secondaryTags.length > 0)) && (
+        <div className="diag-card-secondary-row">
+          {secondaryLine && <div className="diag-card-secondary-line">{secondaryLine}</div>}
+          {secondaryTags && secondaryTags.length > 0 && (
+            <div className="diag-card-secondary-tags">
+              {secondaryTags.map((tag) => (
+                <span key={`${title}-${tag}`} className="diag-role-pill-inline">{tag}</span>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+      {hasSignalInfo && (
+        <div className="diag-card-subline">
+          {signalScore !== null && signalScore !== undefined && (
+            <span className={`diag-signal-bars tone-${signalBars(signalScore) >= 3 ? "good" : signalBars(signalScore) >= 2 ? "warn" : "bad"}`} aria-hidden>
+              <i className={signalBars(signalScore) >= 1 ? "on" : ""} />
+              <i className={signalBars(signalScore) >= 2 ? "on" : ""} />
+              <i className={signalBars(signalScore) >= 3 ? "on" : ""} />
+              <i className={signalBars(signalScore) >= 4 ? "on" : ""} />
+            </span>
+          )}
+          {cardSignalLabel && <span>{cardSignalLabel}</span>}
+        </div>
+      )}
+      {collapsedRecommendation && <div className="diag-card-collapsed-reco">⚠ {collapsedRecommendation}</div>}
 
       {expanded && (
         <div className="diag-details-wrap">
@@ -863,6 +1048,7 @@ export default function DiagnosticsTab() {
     cellular: false,
     satellite: false,
     ethernet: false,
+    pressure: false,
     sim_picker: false,
   });
   const [cardUpdatedAt, setCardUpdatedAt] = useState<Record<string, string | null>>({
@@ -870,6 +1056,7 @@ export default function DiagnosticsTab() {
     cellular: null,
     satellite: null,
     ethernet: null,
+    pressure: null,
     sim_picker: null,
   });
   const prevCardsRef = useRef<Record<string, string>>({
@@ -877,6 +1064,7 @@ export default function DiagnosticsTab() {
     cellular: "",
     satellite: "",
     ethernet: "",
+    pressure: "",
   });
   const prevSystemRef = useRef<string>("");
   const postClearUntilRef = useRef<number>(0);
@@ -898,6 +1086,7 @@ export default function DiagnosticsTab() {
           cellular: JSON.stringify(state.cellular ?? null),
           satellite: JSON.stringify(state.satellite ?? null),
           ethernet: JSON.stringify(state.ethernet ?? null),
+          pressure: JSON.stringify(state.pressure ?? null),
           sim_picker: JSON.stringify(state.sim_picker ?? null),
         };
         const nextSystem = JSON.stringify(state.system ?? null);
@@ -932,12 +1121,14 @@ export default function DiagnosticsTab() {
   const cellular = diag?.cellular;
   const satellite = diag?.satellite;
   const ethernet = diag?.ethernet;
+  const pressure = diag?.pressure;
   const system = diag?.system;
   const simPicker = diag?.sim_picker;
   const wifiSummary = summarizeWifi(wifi);
   const cellularSummary = summarizeCellular(cellular);
   const satelliteSummary = summarizeSatellite(satellite);
   const ethernetSummary = summarizeEthernet(ethernet);
+  const pressureSummary = summarizePressure(pressure);
   const primaryNetwork = resolvePrimaryNetwork({ wifi, cellular, satellite, ethernet });
   const wifiRole = resolveRole("wifi", primaryNetwork, !!(wifi?.connected || wifi?.connman_wifi_connected));
   const cellularRole = resolveRole("cellular", primaryNetwork, cellular?.connman_cell_connected === true);
@@ -951,14 +1142,15 @@ export default function DiagnosticsTab() {
       cellular: null,
       satellite: null,
       ethernet: null,
+      pressure: null,
       system: null,
       last_updated: null,
       session_has_data: false,
     });
     setLastUpdated(null);
     setSystemUpdatedAt(null);
-    setCardUpdatedAt({ wifi: null, cellular: null, satellite: null, ethernet: null, sim_picker: null });
-    prevCardsRef.current = { wifi: "", cellular: "", satellite: "", ethernet: "", sim_picker: "" };
+    setCardUpdatedAt({ wifi: null, cellular: null, satellite: null, ethernet: null, pressure: null, sim_picker: null });
+    prevCardsRef.current = { wifi: "", cellular: "", satellite: "", ethernet: "", pressure: "", sim_picker: "" };
     prevSystemRef.current = "";
     setCopiedCommandId(null);
     setSentCommandId(null);
@@ -1134,6 +1326,32 @@ export default function DiagnosticsTab() {
             setCardUpdatedAt(prev => ({ ...prev, ethernet: null }));
           }}
         />
+
+        <DiagCard
+          title="System Pressure"
+          icon="💧"
+          health={pressureSummary.health || toneFromStatus(pressure?.status)}
+          statusLabel={pressureSummary.badgeLabel}
+          primaryTags={buildPressurePrimaryTags(pressure)}
+          secondaryTags={buildPressureSecondaryTags(pressure)}
+          primaryLine={pressureSummary.primaryLine}
+          secondaryLine={pressureSummary.secondaryLine}
+          sections={buildPressureSections(pressure)}
+          expanded={expanded.pressure}
+          onToggle={() => setExpanded((p) => ({ ...p, pressure: !p.pressure }))}
+          updatedAt={cardUpdatedAt.pressure}
+          onCopyCommand={() => copyDiagnosticBlock("pressure")}
+          copied={copiedCommandId === "pressure"}
+          onSendCommand={() => sendDiagnosticBlock("pressure")}
+          sent={sentCommandId === "pressure"}
+          compact={pressureSummary.health === "neutral"}
+          emphasizeSecondaryLine
+          onClear={async () => {
+            await invoke("clear_diagnostic_interface", { interface: "pressure" }).catch(() => {});
+            setDiag(prev => prev ? { ...prev, pressure: null } : prev);
+            setCardUpdatedAt(prev => ({ ...prev, pressure: null }));
+          }}
+        />
       </div>
 
       <div className="diag-sim-picker-section">
@@ -1156,11 +1374,11 @@ export default function DiagnosticsTab() {
           onSendCommand={() => sendDiagnosticBlock("sim-picker")}
           sent={sentCommandId === "sim-picker"}
           compact={!simPicker?.scan_attempted}
-          onClear={simPicker ? async () => {
+          onClear={async () => {
             await invoke("clear_diagnostic_interface", { interface: "sim_picker" }).catch(() => {});
             setDiag(prev => prev ? { ...prev, sim_picker: null } : prev);
             setCardUpdatedAt(prev => ({ ...prev, sim_picker: null }));
-          } : undefined}
+          }}
         />
       </div>
     </section>

@@ -350,6 +350,26 @@ export const COMMANDS: ControllerCommand[] = [
     tags: ["network", "ethernet", "ip", "dhcp"],
   },
   {
+    id: "cat-station-info",
+    label: "cat /var/etc/fwds/station_info",
+    command: "cat /var/etc/fwds/station_info",
+    category: "diagnostic",
+    description: "Raw station configuration XML (name, preferred network, install metadata).",
+    reboot_required: false,
+    guard: "none",
+    est_seconds: 1,
+  },
+  {
+    id: "cat-system-info",
+    label: "cat /var/etc/fwds/system_info",
+    command: "cat /var/etc/fwds/system_info",
+    category: "diagnostic",
+    description: "Raw system configuration XML (HHC type, zones, foam/drain configuration).",
+    reboot_required: false,
+    guard: "none",
+    est_seconds: 1,
+  },
+  {
     id: "sid",
     label: "sid",
     command: "sid",
@@ -677,6 +697,18 @@ export const COMMANDS: ControllerCommand[] = [
     est_seconds: 1,
   },
   {
+    id: "pressure-monitor",
+    label: "pressure-monitor",
+    command: "pressure-monitor -v --hhc=mp3 --pressure-sensor=source -u us",
+    category: "diagnostic",
+    description: "Pressure sensor diagnostics (source, supply, distribution) with snapshot and live samples.",
+    reboot_required: false,
+    guard: "none",
+    est_seconds: 35,
+    when_to_run: "When pressure behavior is suspect or during full install sign-off.",
+    tags: ["pressure", "sensors", "hydraulics"],
+  },
+  {
     id: "help",
     label: "help",
     command: "help",
@@ -833,6 +865,8 @@ export const DIAGNOSTIC_BLOCKS: DiagnosticBlock[] = [
       // Satellite
       "sat-imei",
       // System
+      "cat-station-info",
+      "cat-system-info",
       "version",
       "sid",
       "release",
@@ -958,6 +992,8 @@ sat-imei
 
 echo ""
 echo "===== SYSTEM ====="
+cat /var/etc/fwds/station_info
+cat /var/etc/fwds/system_info
 version
 sid
 release
@@ -1204,6 +1240,33 @@ echo "===== SIM PICKER END ====="
 )`,
   },
   {
+    id: "pressure",
+    label: "Pressure",
+    icon: "💧",
+    description: "Pressure diagnostics — snapshot and live readings for source, supply, and distribution sensors.",
+    when_to_run: "When validating hydraulic pressure sensor behavior or troubleshooting readings.",
+    light_command_ids: ["pressure-monitor"],
+    heavy_command_ids: ["date", "version", "sid", "pressure-monitor"],
+    heavy_script: `(
+echo "===== CONTROLLER INFO ====="
+date
+version
+sid
+
+echo ""
+echo "===== PRESSURE SNAPSHOT ====="
+pressure-monitor -v --hhc=mp3 --pressure-sensor=source -u us
+pressure-monitor -v --hhc=mp3 --pressure-sensor=supply -u us
+pressure-monitor -v --hhc=mp3 --pressure-sensor=distribution -u us
+
+echo ""
+echo "===== PRESSURE LIVE ====="
+pressure-monitor -v --hhc=mp3 --pressure-sensor=source -u us --period=500 --wait=10
+pressure-monitor -v --hhc=mp3 --pressure-sensor=supply -u us --period=500 --wait=10
+pressure-monitor -v --hhc=mp3 --pressure-sensor=distribution -u us --period=500 --wait=10
+)`,
+  },
+  {
     id: "satellite",
     label: "Satellite",
     icon: "🛰️",
@@ -1271,8 +1334,8 @@ satellite-check -t
     icon: "🖥",
     description: "Firmware version, controller serial number, and release metadata. Use at the start of any session to confirm which controller you are connected to and whether the firmware is current.",
     when_to_run: "At the start of any session to confirm controller identity and firmware version.",
-    light_command_ids: ["version", "sid", "release"],
-    heavy_command_ids: ["version", "sid", "release"],
+    light_command_ids: ["version", "sid", "release", "cat-station-info", "cat-system-info"],
+    heavy_command_ids: ["version", "sid", "release", "cat-station-info", "cat-system-info"],
   },
   {
     id: "networking-all",
@@ -1280,8 +1343,8 @@ satellite-check -t
     icon: "⚡",
     description: "Runs the light-tier check on all four network interfaces in sequence: Ethernet, Wi-Fi, cellular, and signal readings. Good first-pass sweep after install or when multiple interfaces need a quick status check.",
     when_to_run: "First-pass network check after install or when multiple interfaces need a quick status sweep (~45 seconds total).",
-    light_command_ids: ["ethernet-check", "wifi-check", "wifi-signal", "cellular-check", "cell-signal"],
-    heavy_command_ids: ["ethernet-check", "wifi-check", "wifi-signal", "cellular-check", "cell-signal"],
+    light_command_ids: ["ethernet-check", "wifi-check", "wifi-signal", "cellular-check", "cell-signal", "cat-station-info", "cat-system-info"],
+    heavy_command_ids: ["ethernet-check", "wifi-check", "wifi-signal", "cellular-check", "cell-signal", "cat-station-info", "cat-system-info"],
   },
   {
     id: "full-diags",
@@ -1295,6 +1358,8 @@ satellite-check -t
       "wifi-check", "wifi-signal",
       "cellular-check", "cell-signal", "cell-provider", "cell-ccid", "cell-imei", "cell-apn", "cell-status",
       "satellite-check-loopback-full", "sat-imei",
+      "pressure-monitor",
+      "cat-station-info", "cat-system-info",
       "version", "sid", "release",
     ],
     heavy_script: `(
@@ -1421,7 +1486,21 @@ echo "===== SATELLITE LOOPBACK TEST ====="
 satellite-check -t
 
 echo ""
+echo "===== PRESSURE SNAPSHOT ====="
+pressure-monitor -v --hhc=mp3 --pressure-sensor=source -u us
+pressure-monitor -v --hhc=mp3 --pressure-sensor=supply -u us
+pressure-monitor -v --hhc=mp3 --pressure-sensor=distribution -u us
+
+echo ""
+echo "===== PRESSURE LIVE ====="
+pressure-monitor -v --hhc=mp3 --pressure-sensor=source -u us --period=500 --wait=10
+pressure-monitor -v --hhc=mp3 --pressure-sensor=supply -u us --period=500 --wait=10
+pressure-monitor -v --hhc=mp3 --pressure-sensor=distribution -u us --period=500 --wait=10
+
+echo ""
 echo "===== SYSTEM ====="
+cat /var/etc/fwds/station_info
+cat /var/etc/fwds/system_info
 version
 sid
 release
@@ -1440,6 +1519,8 @@ release
       "wifi-check", "wifi-signal",
       "cellular-check", "cell-signal", "cell-provider", "cell-ccid", "cell-imei", "cell-apn", "cell-status",
       "sat-imei",
+      "pressure-monitor",
+      "cat-station-info", "cat-system-info",
       "version", "sid", "release",
     ],
     heavy_script: `(
@@ -1562,7 +1643,21 @@ echo "===== SATELLITE BASIC ====="
 sat-imei
 
 echo ""
+echo "===== PRESSURE SNAPSHOT ====="
+pressure-monitor -v --hhc=mp3 --pressure-sensor=source -u us
+pressure-monitor -v --hhc=mp3 --pressure-sensor=supply -u us
+pressure-monitor -v --hhc=mp3 --pressure-sensor=distribution -u us
+
+echo ""
+echo "===== PRESSURE LIVE ====="
+pressure-monitor -v --hhc=mp3 --pressure-sensor=source -u us --period=500 --wait=10
+pressure-monitor -v --hhc=mp3 --pressure-sensor=supply -u us --period=500 --wait=10
+pressure-monitor -v --hhc=mp3 --pressure-sensor=distribution -u us --period=500 --wait=10
+
+echo ""
 echo "===== SYSTEM ====="
+cat /var/etc/fwds/station_info
+cat /var/etc/fwds/system_info
 version
 sid
 release
