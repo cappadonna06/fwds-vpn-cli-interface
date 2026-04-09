@@ -149,6 +149,8 @@ interface SatelliteDiagnostic {
   server_sent_epoch?: number | null;
   current_epoch?: number | null;
   total_time_seconds?: number | null;
+  loopback_duration_seconds?: number | null;
+  loopback_packet_loss_pct?: number | null;
   recommended_action?: string | null;
   other_actions?: string[] | null;
 }
@@ -486,13 +488,15 @@ function resolveCarrierCode(code?: string | null): string | null {
 
 function formatLoopback(seconds?: number | null): string {
   if (seconds === null || seconds === undefined) return "—";
-  const m = Math.floor(seconds / 60);
-  const s = Math.round(seconds % 60);
+  const rounded = Math.round(seconds);
+  const m = Math.floor(rounded / 60);
+  const s = rounded % 60;
   return m > 0 ? `${m}m ${s}s` : `${s}s`;
 }
 
 function buildWifiSections(wifi?: WifiDiagnostic | null): DiagSection[] {
   if (!wifi) return [{ title: "Details", rows: [{ label: "Details", value: "No recent data" }] }];
+  const speedMbps = wifi.tx_bitrate_mbps ?? wifi.station_tx_bitrate_mbps;
   const wifiSig = wifiSignalLabel(wifi);
   const weakByController = (wifi.strength_label || "").toLowerCase() === "weak";
   const internetTest = wifi.check_result === "Success"
@@ -506,7 +510,7 @@ function buildWifiSections(wifi?: WifiDiagnostic | null): DiagSection[] {
     { label: "Connection", value: wifi.connected === true ? "Connected" : "Not connected" },
     { label: "Signal", value: `${wifiSig}${wifi.signal_dbm !== null && wifi.signal_dbm !== undefined ? ` (${wifi.signal_dbm} dBm)` : ""}` },
     { label: "Role", value: wifi.default_via_wlan0 === true ? "Active" : wifi.connected === true ? "Backup" : "Inactive" },
-    { label: "Speed", value: wifi.tx_bitrate_mbps !== null && wifi.tx_bitrate_mbps !== undefined ? `${wifi.tx_bitrate_mbps.toFixed(0)} Mbps` : "—" },
+    { label: "Speed", value: speedMbps !== null && speedMbps !== undefined ? `${speedMbps.toFixed(1)} Mbps` : "—" },
     { label: "Internet test", value: internetTest },
   ];
 
@@ -578,9 +582,11 @@ function buildSatelliteSections(sat?: SatelliteDiagnostic | null): DiagSection[]
     sat.loopback_test_success === true
       ? "Passed"
       : sat.loopback_test_ran
-        ? sat.loopback_test_blocked_in_use
-          ? "Blocked"
-          : "Failed"
+        ? sat.loopback_test_success === false
+          ? sat.loopback_test_blocked_in_use
+            ? "Blocked"
+            : "Failed"
+          : "In progress"
         : "Not run";
 
   const actions: DiagRow[] = [];
@@ -599,6 +605,7 @@ function buildSatelliteSections(sat?: SatelliteDiagnostic | null): DiagSection[]
       title: "Details",
       rows: [
         { label: "Modem", value: sat.modem_present === true ? "Detected" : sat.modem_present === false ? "Not detected" : "Unknown" },
+        { label: "IMEI", value: sat.sat_imei || "—" },
         { label: "Loopback", value: loopback },
         ...(sat.light_test_ran ? [{
           label: "Quick check",
@@ -609,9 +616,13 @@ function buildSatelliteSections(sat?: SatelliteDiagnostic | null): DiagSection[]
               : "Failed",
         }] : []),
         { label: "Visibility", value: sat.satellites_seen !== null && sat.satellites_seen !== undefined ? `${sat.satellites_seen} satellites` : "Not available" },
-        { label: "Last test time", value: sat.loopback_test_success === true ? formatLoopback(sat.total_time_seconds) : "—" },
-        { label: "Network state", value: sat.connman_state || "—" },
-        { label: "Primary network", value: sat.connman_active_service || "—" },
+        { label: "Packet loss", value: sat.loopback_packet_loss_pct !== null && sat.loopback_packet_loss_pct !== undefined ? `${sat.loopback_packet_loss_pct}%` : "—" },
+        {
+          label: "Loopback duration",
+          value: sat.loopback_test_success === true
+            ? formatLoopback(sat.loopback_duration_seconds ?? sat.total_time_seconds)
+            : "—",
+        },
       ],
     },
     ...(actions.length || sat.loopback_test_error || sat.light_test_error ? [{
@@ -832,6 +843,7 @@ function summarizeSatellite(sat?: SatelliteDiagnostic | null): CardSummary {
   if (sat.loopback_test_success === true) return { health: "healthy", badgeLabel: "Verified", primaryLine: "Link verified" };
   if (sat.loopback_test_blocked_in_use) return { health: "warning", badgeLabel: "Warning", primaryLine: "Test blocked" };
   if (sat.loopback_test_ran && sat.loopback_test_success === false) return { health: "error", badgeLabel: "Issue", primaryLine: "Loopback failed" };
+  if (sat.loopback_test_ran) return { health: "warning", badgeLabel: "Running", primaryLine: "Loopback in progress" };
   if (sat.light_test_success === true) return { health: "healthy", badgeLabel: "Healthy", primaryLine: "Satellite check passed" };
   if (sat.light_test_ran && sat.light_test_success === false) return { health: "error", badgeLabel: "Issue", primaryLine: "Quick check failed" };
   if (sat.satellites_seen === 0) return { health: "error", badgeLabel: "Issue", primaryLine: "No satellites visible" };

@@ -1478,12 +1478,12 @@ echo "===== MODEM / RADIO DIAGNOSTICS ====="
 cell-support --no-ofono --at
 
 echo ""
-echo "===== SATELLITE BASIC ====="
-sat-imei
-
-echo ""
-echo "===== SATELLITE LOOPBACK TEST ====="
-satellite-check -t
+echo "===== SYSTEM ====="
+cat /var/etc/fwds/station_info
+cat /var/etc/fwds/system_info
+version
+sid
+release
 
 echo ""
 echo "===== PRESSURE SNAPSHOT ====="
@@ -1498,12 +1498,12 @@ pressure-monitor -v --hhc=mp3 --pressure-sensor=supply -u us --period=500 --wait
 pressure-monitor -v --hhc=mp3 --pressure-sensor=distribution -u us --period=500 --wait=10
 
 echo ""
-echo "===== SYSTEM ====="
-cat /var/etc/fwds/station_info
-cat /var/etc/fwds/system_info
-version
-sid
-release
+echo "===== SATELLITE BASIC ====="
+sat-imei
+
+echo ""
+echo "===== SATELLITE LOOPBACK TEST ====="
+satellite-check -t
 )`,
     time_warning: "Includes satellite loopback diagnostics. Use 'Full Diags (no satellite)' to skip.",
   },
@@ -1639,8 +1639,12 @@ echo "===== MODEM / RADIO DIAGNOSTICS ====="
 cell-support --no-ofono --at
 
 echo ""
-echo "===== SATELLITE BASIC ====="
-sat-imei
+echo "===== SYSTEM ====="
+cat /var/etc/fwds/station_info
+cat /var/etc/fwds/system_info
+version
+sid
+release
 
 echo ""
 echo "===== PRESSURE SNAPSHOT ====="
@@ -1655,12 +1659,8 @@ pressure-monitor -v --hhc=mp3 --pressure-sensor=supply -u us --period=500 --wait
 pressure-monitor -v --hhc=mp3 --pressure-sensor=distribution -u us --period=500 --wait=10
 
 echo ""
-echo "===== SYSTEM ====="
-cat /var/etc/fwds/station_info
-cat /var/etc/fwds/system_info
-version
-sid
-release
+echo "===== SATELLITE BASIC ====="
+sat-imei
 )`,
   },
 ];

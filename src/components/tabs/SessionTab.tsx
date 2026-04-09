@@ -58,6 +58,7 @@ export default function SessionTab({ onControllerConnected }: SessionTabProps) {
   const [vpnIp, setVpnIp] = useState("");
   const [lastOctet, setLastOctet] = useState("");
   const [savedOctet, setSavedOctet] = useState("");
+  const [showVpnHelp, setShowVpnHelp] = useState(false);
   const [ctrlStatus, setCtrlStatus] = useState<ControllerStatus>("disconnected");
   const [ctrlDetail, setCtrlDetail] = useState("");
 
@@ -370,7 +371,6 @@ export default function SessionTab({ onControllerConnected }: SessionTabProps) {
               )}
               <div className="flow-row">
                 <div className="row-context">1) VPN</div>
-                <span className={`status-chip ${statusTone(vpnStatus)}`}>{VPN_LABELS[vpnStatus]}</span>
                 <div className="btn-group">
                   <button
                     className="btn btn-primary"
@@ -381,7 +381,6 @@ export default function SessionTab({ onControllerConnected }: SessionTabProps) {
                   </button>
                   <button
                     className="btn btn-secondary"
-                    disabled={vpnStatus === "disconnected" || vpnStatus === "failed"}
                     onClick={stopVpn}
                   >
                     Stop
@@ -420,10 +419,10 @@ export default function SessionTab({ onControllerConnected }: SessionTabProps) {
                     <span className={`preflight-dot ${preflightDotClass(preflight?.ping_ok)}`}>Ping</span>
                     <span className={`preflight-dot ${preflightDotClass(preflight?.port_ok)}`}>Port 22</span>
                     {preflight && <span className="preflight-detail">{preflight.detail}</span>}
+                    <button className="btn-link preflight-action" onClick={() => runPreflight(vpnIp)} disabled={preflightRunning}>
+                      {preflightRunning ? "Checking…" : preflight ? "Re-check" : "Check"}
+                    </button>
                   </div>
-                  <button className="btn-link" onClick={() => runPreflight(vpnIp)} disabled={preflightRunning}>
-                    {preflightRunning ? "Checking…" : preflight ? "Re-check" : "Check"}
-                  </button>
                 </div>
               )}
             </div>
@@ -444,6 +443,27 @@ export default function SessionTab({ onControllerConnected }: SessionTabProps) {
             {!canConnect && (ctrlStatus === "disconnected" || ctrlStatus === "failed") && Boolean(lastOctet) && vpnStatus !== "connected" && (
               <div className="hint session-hint">Start VPN first.</div>
             )}
+            <div className="vpn-help">
+              <button
+                className="btn-link vpn-help-toggle"
+                type="button"
+                onClick={() => setShowVpnHelp((prev) => !prev)}
+                aria-expanded={showVpnHelp}
+              >
+                Having VPN issues?
+              </button>
+              {showVpnHelp && (
+                <ol className="vpn-help-list">
+                  <li>Disconnect controller in app.</li>
+                  <li>Stop VPN in API.</li>
+                  <li>Refresh API page.</li>
+                  <li>Start VPN in API.</li>
+                  <li>Stop OpenVPN in app.</li>
+                  <li>Start OpenVPN in app.</li>
+                  <li>Reconnect + Launch.</li>
+                </ol>
+              )}
+            </div>
           </section>
         ) : (
           <section className="connect-card connect-card-single">
