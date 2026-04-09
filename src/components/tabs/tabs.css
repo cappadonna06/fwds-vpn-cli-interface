@@ -2343,6 +2343,14 @@
   margin-bottom: 3px;
 }
 
+.diag-card-collapsed .diag-card-secondary-row {
+  margin-bottom: 8px;
+}
+
+.diag-card-collapsed .diag-card-subline {
+  margin-bottom: 8px;
+}
+
 .diag-card-toggle {
   border: none;
   background: none;
