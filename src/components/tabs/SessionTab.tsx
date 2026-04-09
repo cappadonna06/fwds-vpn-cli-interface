@@ -371,7 +371,6 @@ export default function SessionTab({ onControllerConnected }: SessionTabProps) {
               )}
               <div className="flow-row">
                 <div className="row-context">1) VPN</div>
-                <span className={`status-chip ${statusTone(vpnStatus)}`}>{VPN_LABELS[vpnStatus]}</span>
                 <div className="btn-group">
                   <button
                     className="btn btn-primary"
@@ -441,10 +440,10 @@ export default function SessionTab({ onControllerConnected }: SessionTabProps) {
                     <span className={`preflight-dot ${preflightDotClass(preflight?.ping_ok)}`}>Ping</span>
                     <span className={`preflight-dot ${preflightDotClass(preflight?.port_ok)}`}>Port 22</span>
                     {preflight && <span className="preflight-detail">{preflight.detail}</span>}
+                    <button className="btn-link preflight-action" onClick={() => runPreflight(vpnIp)} disabled={preflightRunning}>
+                      {preflightRunning ? "Checking…" : preflight ? "Re-check" : "Check"}
+                    </button>
                   </div>
-                  <button className="btn-link" onClick={() => runPreflight(vpnIp)} disabled={preflightRunning}>
-                    {preflightRunning ? "Checking…" : preflight ? "Re-check" : "Check"}
-                  </button>
                 </div>
               )}
             </div>
