@@ -27,6 +27,7 @@ interface SystemDiagnostic {
 
 interface DiagnosticState {
   system?: SystemDiagnostic | null;
+  last_updated?: string | null;
 }
 
 function titleCase(input?: string | null): string {
@@ -52,10 +53,24 @@ export default function SystemConfigurationTab() {
   const [diagState, setDiagState] = useState<DiagnosticState | null>(null);
 
   useEffect(() => {
-    invoke<DiagnosticState>("get_diagnostic_state")
-      .then((state) => setDiagState(state))
-      .catch(() => setDiagState(null));
-  }, [sent]);
+    let alive = true;
+
+    async function refresh() {
+      try {
+        const state = await invoke<DiagnosticState>("get_diagnostic_state");
+        if (alive) setDiagState(state);
+      } catch {
+        if (alive) setDiagState(null);
+      }
+    }
+
+    refresh();
+    const id = setInterval(refresh, 2000);
+    return () => {
+      alive = false;
+      clearInterval(id);
+    };
+  }, []);
 
   const data = diagState?.system ?? null;
   const zones = data?.zones ?? [];
@@ -96,19 +111,30 @@ export default function SystemConfigurationTab() {
       </div>
 
       <div className="card system-config-command-card">
-        <div className="card-title">Command Block</div>
-        <p className="hint">
-          Run this block to collect station + system configuration details.
-        </p>
-        <pre className="system-config-command-payload">{COMMAND_PAYLOAD}</pre>
-        <div className="btn-group" style={{ marginTop: 12 }}>
-          <button className="btn btn-secondary" onClick={copyPayload}>
-            {copied ? "✓ Copied" : "Copy commands"}
-          </button>
-          <button className="btn btn-primary" onClick={sendPayload}>
-            {sent ? "✓ Sent" : "Send commands"}
-          </button>
+        <div className="system-config-request-row">
+          <div>
+            <div className="card-title" style={{ marginBottom: 4 }}>System Configuration Request</div>
+            <p className="hint" style={{ margin: 0 }}>
+              Pull station and system metadata from the controller.
+            </p>
+          </div>
+          <div className="btn-group">
+            <button className="btn btn-secondary" onClick={copyPayload}>
+              {copied ? "✓ Copied" : "Copy"}
+            </button>
+            <button className="btn btn-primary" onClick={sendPayload}>
+              {sent ? "✓ Sent" : "Send"}
+            </button>
+          </div>
         </div>
+        <div className="system-config-command-summary">
+          Sends: <code>cat /var/etc/fwds/station_info</code> + <code>cat /var/etc/fwds/system_info</code>
+        </div>
+        {diagState?.last_updated && (
+          <div className="hint" style={{ marginTop: 8 }}>
+            Listening for updates… Last diagnostics update: {new Date(diagState.last_updated).toLocaleString()}
+          </div>
+        )}
         {error && <div className="warning-item" style={{ marginTop: 10 }}>⚠ {error}</div>}
       </div>
 
@@ -123,8 +149,8 @@ export default function SystemConfigurationTab() {
           <div className="system-config-empty-icon">🧭</div>
           <h2>No system details yet</h2>
           <p>
-            Run the diagnostics block to populate system information, then return here for a
-            structured configuration snapshot.
+            Run <strong>System Configuration Request</strong> to populate system information, then
+            return here for a structured configuration snapshot.
           </p>
         </div>
       ) : (
