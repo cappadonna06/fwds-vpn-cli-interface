@@ -665,6 +665,14 @@ function formatPsi(value?: number | null): string {
   return `${value.toFixed(2)} PSI`;
 }
 
+const PRESSURE_NEAR_ZERO_DISPLAY_THRESHOLD = 0.5;
+
+function formatPressureSummaryPsi(value?: number | null): string {
+  if (value === null || value === undefined || Number.isNaN(value)) return "—";
+  if (Math.abs(value) < PRESSURE_NEAR_ZERO_DISPLAY_THRESHOLD) return "~0.0 PSI";
+  return `${value.toFixed(1)} PSI`;
+}
+
 function buildPressureSections(pressure?: PressureDiagnostic | null): DiagSection[] {
   if (!pressure) return [{ title: "Details", rows: [{ label: "Details", value: "No recent data" }] }];
   const source = pressure.sensors?.source;
@@ -726,10 +734,9 @@ function buildPressurePrimaryTags(pressure?: PressureDiagnostic | null): string[
 
 function buildPressureSecondaryTags(pressure?: PressureDiagnostic | null): string[] {
   if (!pressure) return [];
-  const source = pressure.sensors?.source?.latest;
-  const isValidSource = source !== null && source !== undefined && source >= 0 && source <= 218;
-  const showSourceTag = isValidSource && (pressure.via_sensor ?? "").toLowerCase() !== "source";
-  return showSourceTag ? ["Source (P3)"] : [];
+  const distribution = pressure.sensors?.distribution?.latest;
+  const hasDistribution = distribution !== null && distribution !== undefined && !Number.isNaN(distribution);
+  return hasDistribution ? ["Distribution (P2)"] : [];
 }
 
 type CardSummary = {
@@ -826,14 +833,13 @@ function summarizePressure(pressure?: PressureDiagnostic | null): CardSummary {
   if (!pressure) return { health: "neutral", badgeLabel: "No data", primaryLine: "No data yet" };
   const health = pressure.status === "red" ? "error" : pressure.status === "orange" ? "warning" : "healthy";
   const badgeLabel = pressure.status === "red" ? "Error" : pressure.status === "orange" ? "Warning" : "Healthy";
-  const source = pressure.sensors?.source?.latest;
-  const isValidSource = source !== null && source !== undefined && source >= 0 && source <= 218;
-  const showSourceLine = isValidSource && (pressure.via_sensor ?? "").toLowerCase() !== "source";
+  const distribution = pressure.sensors?.distribution?.latest;
+  const hasDistribution = distribution !== null && distribution !== undefined && !Number.isNaN(distribution);
   return {
     health,
     badgeLabel,
     primaryLine: pressure.display_psi !== null && pressure.display_psi !== undefined ? `${pressure.display_psi.toFixed(1)} PSI` : "—",
-    secondaryLine: showSourceLine ? `${source!.toFixed(1)} PSI` : null,
+    secondaryLine: hasDistribution ? formatPressureSummaryPsi(distribution) : null,
   };
 }
 
