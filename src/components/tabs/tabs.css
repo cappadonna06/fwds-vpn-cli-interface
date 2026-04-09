@@ -370,7 +370,7 @@
 }
 
 .vpn-help-list {
-  margin: 6px 0 0 16px;
+  margin: 6px 0 0;
   padding: 8px 10px;
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -378,6 +378,8 @@
   color: var(--text-secondary);
   font-size: 12px;
   line-height: 1.4;
+  list-style-position: inside;
+  padding-left: 10px;
 }
 
 .serial-picker-row {

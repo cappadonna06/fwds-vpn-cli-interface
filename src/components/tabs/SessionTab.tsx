@@ -387,27 +387,6 @@ export default function SessionTab({ onControllerConnected }: SessionTabProps) {
                   </button>
                 </div>
               </div>
-              <div className="vpn-help">
-                <button
-                  className="btn-link vpn-help-toggle"
-                  type="button"
-                  onClick={() => setShowVpnHelp((prev) => !prev)}
-                  aria-expanded={showVpnHelp}
-                >
-                  Having VPN issues?
-                </button>
-                {showVpnHelp && (
-                  <ol className="vpn-help-list">
-                    <li>Disconnect controller in app.</li>
-                    <li>Stop VPN in API.</li>
-                    <li>Refresh API page.</li>
-                    <li>Start VPN in API.</li>
-                    <li>Stop OpenVPN in app.</li>
-                    <li>Start OpenVPN in app.</li>
-                    <li>Reconnect + Launch.</li>
-                  </ol>
-                )}
-              </div>
               {vpnDetail && <div className="hint session-hint">{vpnDetail}</div>}
             </div>
 
@@ -464,6 +443,27 @@ export default function SessionTab({ onControllerConnected }: SessionTabProps) {
             {!canConnect && (ctrlStatus === "disconnected" || ctrlStatus === "failed") && Boolean(lastOctet) && vpnStatus !== "connected" && (
               <div className="hint session-hint">Start VPN first.</div>
             )}
+            <div className="vpn-help">
+              <button
+                className="btn-link vpn-help-toggle"
+                type="button"
+                onClick={() => setShowVpnHelp((prev) => !prev)}
+                aria-expanded={showVpnHelp}
+              >
+                Having VPN issues?
+              </button>
+              {showVpnHelp && (
+                <ol className="vpn-help-list">
+                  <li>Disconnect controller in app.</li>
+                  <li>Stop VPN in API.</li>
+                  <li>Refresh API page.</li>
+                  <li>Start VPN in API.</li>
+                  <li>Stop OpenVPN in app.</li>
+                  <li>Start OpenVPN in app.</li>
+                  <li>Reconnect + Launch.</li>
+                </ol>
+              )}
+            </div>
           </section>
         ) : (
           <section className="connect-card connect-card-single">
