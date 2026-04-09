@@ -520,8 +520,16 @@ function buildWifiSections(wifi?: WifiDiagnostic | null): DiagSection[] {
   ];
 
   const action: DiagRow[] = [];
-  if (wifi.check_error) action.push({ label: "Recommended action", value: "Check passphrase or AP selection" });
-  else if (weakByController || ((wifi.strength_score ?? 0) > 0 && (wifi.strength_score ?? 0) < 25)) {
+  const checkErrorLower = (wifi.check_error || "").toLowerCase();
+  if (wifi.check_error) {
+    if (checkErrorLower.includes("-65553") || checkErrorLower.includes("not enabled")) {
+      action.push({ label: "Recommended action", value: "Enable Wi-Fi via setup-wifi" });
+    } else if (checkErrorLower.includes("-65554") || checkErrorLower.includes("not connected")) {
+      action.push({ label: "Recommended action", value: "Run setup-wifi and verify AP/credentials" });
+    } else {
+      action.push({ label: "Recommended action", value: "Check passphrase or AP selection" });
+    }
+  } else if (weakByController || ((wifi.strength_score ?? 0) > 0 && (wifi.strength_score ?? 0) < 25)) {
     action.push({ label: "Recommended action", value: "Improve Wi-Fi coverage (move AP closer or add a repeater)" });
   }
 
@@ -934,7 +942,7 @@ function DiagCard({
   }, [menuOpen]);
   const hasSignalInfo =
     (signalScore !== null && signalScore !== undefined) || !!cardSignalLabel;
-  const collapsedRecommendation = !expanded && (health === "warning" || health === "error")
+  const collapsedRecommendation = !expanded
     ? (
       sections.find((s) => s.title.toLowerCase() === "recommended actions")?.rows[0]?.value
       ?? sections.find((s) => ["diagnostics", "next action"].includes(s.title.toLowerCase()))?.rows[0]?.value
