@@ -9,6 +9,7 @@ import {
 import {
   generateActions,
   generateNetworkRows,
+  generatePressureRows,
   generateRecommendedActions,
   formatSlack,
   formatJira,
@@ -87,6 +88,20 @@ function SlackPreview({ report }: { report: SessionReport }) {
           );
         })}
       </div>
+
+      {report.pressureRows.length > 0 && (
+        <div className="report-preview-section">
+          <div className="report-preview-heading">Pressure Readings</div>
+          {report.pressureRows.map(row => (
+            <div key={row.label} className="report-preview-network-row">
+              <span>{STATUS_EMOJI[row.status] ?? "⚫"}</span>
+              <span>
+                <strong>💧 {row.label}:</strong> {row.summary}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* Recommended actions */}
       {visibleRecs.length > 0 && (
@@ -237,6 +252,7 @@ export default function ReportTab() {
 
       const actions = generateActions(diagState, appState);
       const networkRows = generateNetworkRows(diagState);
+      const pressureRows = generatePressureRows(diagState);
       const recommendedActions = generateRecommendedActions(diagState);
 
       setReport(prev => {
@@ -283,6 +299,7 @@ export default function ReportTab() {
           generated: true,
           actions: mergedActions,
           networkRows: mergedNetworkRows,
+          pressureRows,
           // networkNotes, networkOverrides, notes, outcome preserved from prev via spread
           recommendedActions: mergedRecs,
         };
@@ -520,6 +537,21 @@ export default function ReportTab() {
                   </div>
                 );
               })}
+            </div>
+
+            <div className="report-card">
+              <div className="report-section-header">
+                <span className="report-section-label">💧 PRESSURE READINGS</span>
+              </div>
+              {report.pressureRows.map(row => (
+                <div key={row.label} className={`report-network-block report-network-block-${row.status}`}>
+                  <div className="report-network-row">
+                    <span className={`report-status-dot report-status-dot-${row.status}`} />
+                    <span className="report-network-iface">💧 {row.label}</span>
+                    <span className="report-network-summary">{row.summary}</span>
+                  </div>
+                </div>
+              ))}
             </div>
 
             {/* RECOMMENDED ACTIONS */}

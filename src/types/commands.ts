@@ -677,6 +677,18 @@ export const COMMANDS: ControllerCommand[] = [
     est_seconds: 1,
   },
   {
+    id: "pressure-monitor",
+    label: "pressure-monitor",
+    command: "pressure-monitor -v --hhc=mp3 --pressure-sensor=source -u us",
+    category: "diagnostic",
+    description: "Pressure sensor diagnostics (source, supply, distribution) with snapshot and live samples.",
+    reboot_required: false,
+    guard: "none",
+    est_seconds: 35,
+    when_to_run: "When pressure behavior is suspect or during full install sign-off.",
+    tags: ["pressure", "sensors", "hydraulics"],
+  },
+  {
     id: "help",
     label: "help",
     command: "help",
@@ -1204,6 +1216,33 @@ echo "===== SIM PICKER END ====="
 )`,
   },
   {
+    id: "pressure",
+    label: "Pressure",
+    icon: "💧",
+    description: "Pressure diagnostics — snapshot and live readings for source, supply, and distribution sensors.",
+    when_to_run: "When validating hydraulic pressure sensor behavior or troubleshooting readings.",
+    light_command_ids: ["pressure-monitor"],
+    heavy_command_ids: ["date", "version", "sid", "pressure-monitor"],
+    heavy_script: `(
+echo "===== CONTROLLER INFO ====="
+date
+version
+sid
+
+echo ""
+echo "===== PRESSURE SNAPSHOT ====="
+pressure-monitor -v --hhc=mp3 --pressure-sensor=source -u us
+pressure-monitor -v --hhc=mp3 --pressure-sensor=supply -u us
+pressure-monitor -v --hhc=mp3 --pressure-sensor=distribution -u us
+
+echo ""
+echo "===== PRESSURE LIVE ====="
+pressure-monitor -v --hhc=mp3 --pressure-sensor=source -u us --period=500 --wait=10
+pressure-monitor -v --hhc=mp3 --pressure-sensor=supply -u us --period=500 --wait=10
+pressure-monitor -v --hhc=mp3 --pressure-sensor=distribution -u us --period=500 --wait=10
+)`,
+  },
+  {
     id: "satellite",
     label: "Satellite",
     icon: "🛰️",
@@ -1295,6 +1334,7 @@ satellite-check -t
       "wifi-check", "wifi-signal",
       "cellular-check", "cell-signal", "cell-provider", "cell-ccid", "cell-imei", "cell-apn", "cell-status",
       "satellite-check-loopback-full", "sat-imei",
+      "pressure-monitor",
       "version", "sid", "release",
     ],
     heavy_script: `(
@@ -1421,6 +1461,18 @@ echo "===== SATELLITE LOOPBACK TEST ====="
 satellite-check -t
 
 echo ""
+echo "===== PRESSURE SNAPSHOT ====="
+pressure-monitor -v --hhc=mp3 --pressure-sensor=source -u us
+pressure-monitor -v --hhc=mp3 --pressure-sensor=supply -u us
+pressure-monitor -v --hhc=mp3 --pressure-sensor=distribution -u us
+
+echo ""
+echo "===== PRESSURE LIVE ====="
+pressure-monitor -v --hhc=mp3 --pressure-sensor=source -u us --period=500 --wait=10
+pressure-monitor -v --hhc=mp3 --pressure-sensor=supply -u us --period=500 --wait=10
+pressure-monitor -v --hhc=mp3 --pressure-sensor=distribution -u us --period=500 --wait=10
+
+echo ""
 echo "===== SYSTEM ====="
 version
 sid
@@ -1440,6 +1492,7 @@ release
       "wifi-check", "wifi-signal",
       "cellular-check", "cell-signal", "cell-provider", "cell-ccid", "cell-imei", "cell-apn", "cell-status",
       "sat-imei",
+      "pressure-monitor",
       "version", "sid", "release",
     ],
     heavy_script: `(
@@ -1560,6 +1613,18 @@ cell-support --no-ofono --at
 echo ""
 echo "===== SATELLITE BASIC ====="
 sat-imei
+
+echo ""
+echo "===== PRESSURE SNAPSHOT ====="
+pressure-monitor -v --hhc=mp3 --pressure-sensor=source -u us
+pressure-monitor -v --hhc=mp3 --pressure-sensor=supply -u us
+pressure-monitor -v --hhc=mp3 --pressure-sensor=distribution -u us
+
+echo ""
+echo "===== PRESSURE LIVE ====="
+pressure-monitor -v --hhc=mp3 --pressure-sensor=source -u us --period=500 --wait=10
+pressure-monitor -v --hhc=mp3 --pressure-sensor=supply -u us --period=500 --wait=10
+pressure-monitor -v --hhc=mp3 --pressure-sensor=distribution -u us --period=500 --wait=10
 
 echo ""
 echo "===== SYSTEM ====="

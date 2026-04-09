@@ -175,6 +175,46 @@ interface EthernetDiagnostic {
   ethernet_diag_attempted?: boolean;
 }
 
+interface PressureSensorReading {
+  name: string;
+  index: number;
+  snapshot: number;
+  latest: number;
+  mean: number;
+  min: number;
+  max: number;
+  stdev: number;
+  count: number;
+  voltage?: number | null;
+}
+
+interface PressureIssue {
+  id: string;
+  severity: DiagStatus;
+  title: string;
+  description: string;
+  action: string;
+}
+
+interface PressureDiagnostic {
+  status: DiagStatus;
+  summary: string;
+  via_sensor?: string | null;
+  display_psi?: number | null;
+  controller_id?: string | null;
+  fw_version?: string | null;
+  system_type?: string | null;
+  is_active?: boolean;
+  sensors: {
+    source?: PressureSensorReading | null;
+    distribution?: PressureSensorReading | null;
+    supply?: PressureSensorReading | null;
+  };
+  sensor_errors: Array<{ sensor_index: number; message: string; errno: number }>;
+  asserts: Array<{ file: string; line: number }>;
+  issues: PressureIssue[];
+}
+
 interface SystemDiagnostic {
   sid?: string | null;
   version?: string | null;
@@ -216,6 +256,7 @@ interface DiagnosticState {
   cellular?: CellularDiagnostic | null;
   satellite?: SatelliteDiagnostic | null;
   ethernet?: EthernetDiagnostic | null;
+  pressure?: PressureDiagnostic | null;
   system?: SystemDiagnostic | null;
   sim_picker?: SimPickerDiagnostic | null;
   last_updated?: string | null;
@@ -599,6 +640,70 @@ function buildEthernetSections(ethernet?: EthernetDiagnostic | null): DiagSectio
   ];
 }
 
+function formatPsi(value?: number | null): string {
+  if (value === null || value === undefined || Number.isNaN(value)) return "—";
+  return `${value.toFixed(2)} PSI`;
+}
+
+function buildPressureSections(pressure?: PressureDiagnostic | null): DiagSection[] {
+  if (!pressure) return [{ title: "Status", rows: [{ label: "Details", value: "No recent data" }] }];
+  const source = pressure.sensors?.source;
+  const distribution = pressure.sensors?.distribution;
+  const supply = pressure.sensors?.supply;
+  const readings: DiagRow[] = [];
+
+  if (source) readings.push({ label: "Source (P3)", value: `${formatPsi(source.latest)}${source.voltage !== null && source.voltage !== undefined ? ` · ${source.voltage.toFixed(2)}V` : ""}` });
+  if (distribution) {
+    const inactiveExpected = pressure.is_active === false && distribution.latest < 1.0;
+    readings.push({
+      label: "Distribution (P2)",
+      value: inactiveExpected
+        ? `${formatPsi(distribution.latest)} (inactive — expected)`
+        : `${formatPsi(distribution.latest)}${distribution.voltage !== null && distribution.voltage !== undefined ? ` · ${distribution.voltage.toFixed(2)}V` : ""}`,
+    });
+  }
+  if (supply) readings.push({ label: "Supply (P1)", value: `${formatPsi(supply.latest)}${supply.voltage !== null && supply.voltage !== undefined ? ` · ${supply.voltage.toFixed(2)}V` : ""}` });
+
+  if (!supply) {
+    const missingP1 = (pressure.sensor_errors ?? []).find((e) => e.sensor_index === 0 && e.errno === -2);
+    if (missingP1 && /mp3|lv2|cds/i.test(pressure.system_type ?? "")) {
+      readings.push({ label: "Supply (P1)", value: "not installed (expected)" });
+    }
+  }
+  for (const err of pressure.sensor_errors ?? []) {
+    if (err.sensor_index === 0 && err.errno === -2 && /mp3|lv2|cds/i.test(pressure.system_type ?? "")) continue;
+    readings.push({ label: `Sensor ${err.sensor_index}`, value: `missing — ${err.message}` });
+  }
+
+  const stats: DiagRow[] = [];
+  for (const sensor of [source, distribution, supply].filter(Boolean) as PressureSensorReading[]) {
+    if (sensor.count > 1) {
+      stats.push({ label: sensor.name, value: `μ ${sensor.mean.toFixed(2)} · ${sensor.min.toFixed(2)}–${sensor.max.toFixed(2)} · σ ${sensor.stdev.toFixed(3)}` });
+    }
+  }
+
+  const issues = (pressure.issues ?? []).map((issue) => ({
+    label: issue.title,
+    value: `${issue.description} · ${issue.action}`,
+  }));
+  if (issues.length === 0) issues.push({ label: "✓ Healthy", value: "All sensors healthy — no anomalies detected" });
+
+  return [
+    {
+      title: "Controller",
+      rows: [
+        { label: "Controller ID", value: pressure.controller_id ?? "—" },
+        { label: "FW", value: pressure.fw_version ?? "—" },
+        { label: "System type", value: pressure.system_type ?? "—" },
+        { label: "Active", value: pressure.is_active ? "Yes" : "No" },
+      ],
+    },
+    { title: "Raw readings", rows: readings.length ? readings : [{ label: "Readings", value: "No pressure readings captured" }] },
+    ...(stats.length ? [{ title: "Live stats", rows: stats }] : []),
+    { title: "Diagnostics", rows: issues },
+  ];
+}
+
 type CardSummary = {
   health: HealthTone;
   badgeLabel: string;
@@ -687,6 +792,18 @@ function summarizeEthernet(ethernet?: EthernetDiagnostic | null): CardSummary {
   if (ethernet.flap_count > 0) return { health: "warning", badgeLabel: "Warning", primaryLine: "Connected", secondaryLine: "Unstable link" };
   if (!ethernet.ip_address) return { health: "error", badgeLabel: "Issue", primaryLine: "Connected", secondaryLine: "No IP assigned" };
   return { health: "warning", badgeLabel: "Warning", primaryLine: "Connected", secondaryLine: "Limited internet" };
+}
+
+function summarizePressure(pressure?: PressureDiagnostic | null): CardSummary {
+  if (!pressure) return { health: "neutral", badgeLabel: "No data", primaryLine: "No data yet" };
+  const health = pressure.status === "red" ? "error" : pressure.status === "orange" ? "warning" : "healthy";
+  const badgeLabel = pressure.status === "red" ? "Error" : pressure.status === "orange" ? "Warning" : "OK";
+  return {
+    health,
+    badgeLabel,
+    primaryLine: pressure.display_psi !== null && pressure.display_psi !== undefined ? `${pressure.display_psi.toFixed(1)} PSI` : "—",
+    secondaryLine: pressure.via_sensor ? `via ${pressure.via_sensor}` : null,
+  };
 }
 
 function summarizeSatellite(sat?: SatelliteDiagnostic | null): CardSummary {
@@ -863,6 +980,7 @@ export default function DiagnosticsTab() {
     cellular: false,
     satellite: false,
     ethernet: false,
+    pressure: false,
     sim_picker: false,
   });
   const [cardUpdatedAt, setCardUpdatedAt] = useState<Record<string, string | null>>({
@@ -870,6 +988,7 @@ export default function DiagnosticsTab() {
     cellular: null,
     satellite: null,
     ethernet: null,
+    pressure: null,
     sim_picker: null,
   });
   const prevCardsRef = useRef<Record<string, string>>({
@@ -877,6 +996,7 @@ export default function DiagnosticsTab() {
     cellular: "",
     satellite: "",
     ethernet: "",
+    pressure: "",
   });
   const prevSystemRef = useRef<string>("");
   const postClearUntilRef = useRef<number>(0);
@@ -898,6 +1018,7 @@ export default function DiagnosticsTab() {
           cellular: JSON.stringify(state.cellular ?? null),
           satellite: JSON.stringify(state.satellite ?? null),
           ethernet: JSON.stringify(state.ethernet ?? null),
+          pressure: JSON.stringify(state.pressure ?? null),
           sim_picker: JSON.stringify(state.sim_picker ?? null),
         };
         const nextSystem = JSON.stringify(state.system ?? null);
@@ -932,12 +1053,14 @@ export default function DiagnosticsTab() {
   const cellular = diag?.cellular;
   const satellite = diag?.satellite;
   const ethernet = diag?.ethernet;
+  const pressure = diag?.pressure;
   const system = diag?.system;
   const simPicker = diag?.sim_picker;
   const wifiSummary = summarizeWifi(wifi);
   const cellularSummary = summarizeCellular(cellular);
   const satelliteSummary = summarizeSatellite(satellite);
   const ethernetSummary = summarizeEthernet(ethernet);
+  const pressureSummary = summarizePressure(pressure);
   const primaryNetwork = resolvePrimaryNetwork({ wifi, cellular, satellite, ethernet });
   const wifiRole = resolveRole("wifi", primaryNetwork, !!(wifi?.connected || wifi?.connman_wifi_connected));
   const cellularRole = resolveRole("cellular", primaryNetwork, cellular?.connman_cell_connected === true);
@@ -951,14 +1074,15 @@ export default function DiagnosticsTab() {
       cellular: null,
       satellite: null,
       ethernet: null,
+      pressure: null,
       system: null,
       last_updated: null,
       session_has_data: false,
     });
     setLastUpdated(null);
     setSystemUpdatedAt(null);
-    setCardUpdatedAt({ wifi: null, cellular: null, satellite: null, ethernet: null, sim_picker: null });
-    prevCardsRef.current = { wifi: "", cellular: "", satellite: "", ethernet: "", sim_picker: "" };
+    setCardUpdatedAt({ wifi: null, cellular: null, satellite: null, ethernet: null, pressure: null, sim_picker: null });
+    prevCardsRef.current = { wifi: "", cellular: "", satellite: "", ethernet: "", pressure: "", sim_picker: "" };
     prevSystemRef.current = "";
     setCopiedCommandId(null);
     setSentCommandId(null);
@@ -1132,6 +1256,29 @@ export default function DiagnosticsTab() {
             await invoke("clear_diagnostic_interface", { interface: "ethernet" }).catch(() => {});
             setDiag(prev => prev ? { ...prev, ethernet: null } : prev);
             setCardUpdatedAt(prev => ({ ...prev, ethernet: null }));
+          }}
+        />
+
+        <DiagCard
+          title="System Pressure"
+          icon="💧"
+          health={pressureSummary.health || toneFromStatus(pressure?.status)}
+          statusLabel={pressureSummary.badgeLabel}
+          primaryLine={pressureSummary.primaryLine}
+          secondaryLine={pressureSummary.secondaryLine}
+          sections={buildPressureSections(pressure)}
+          expanded={expanded.pressure}
+          onToggle={() => setExpanded((p) => ({ ...p, pressure: !p.pressure }))}
+          updatedAt={cardUpdatedAt.pressure}
+          onCopyCommand={() => copyDiagnosticBlock("pressure")}
+          copied={copiedCommandId === "pressure"}
+          onSendCommand={() => sendDiagnosticBlock("pressure")}
+          sent={sentCommandId === "pressure"}
+          compact={pressureSummary.health === "neutral"}
+          onClear={async () => {
+            await invoke("clear_diagnostic_interface", { interface: "pressure" }).catch(() => {});
+            setDiag(prev => prev ? { ...prev, pressure: null } : prev);
+            setCardUpdatedAt(prev => ({ ...prev, pressure: null }));
           }}
         />
       </div>

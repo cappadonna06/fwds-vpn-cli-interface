@@ -25,6 +25,12 @@ export interface NetworkStatusRow {
   summary: string;
 }
 
+export interface PressureStatusRow {
+  label: "System Pressure";
+  status: "green" | "orange" | "red" | "unknown";
+  summary: string;
+}
+
 export interface NetworkOverride {
   status?: "green" | "orange" | "red" | "unknown";
   summary?: string;
@@ -38,6 +44,7 @@ export interface SessionReport {
   generated: boolean;
   actions: ReportAction[];
   networkRows: NetworkStatusRow[];
+  pressureRows: PressureStatusRow[];
   networkNotes: Record<string, string>;
   /** User-edited overrides for network status rows — suppresses auto-population for edited fields. */
   networkOverrides: Record<string, NetworkOverride>;
@@ -54,6 +61,7 @@ export const emptyReport = (): SessionReport => ({
   generated: false,
   actions: [],
   networkRows: [],
+  pressureRows: [],
   networkNotes: { Ethernet: "", "Wi-Fi": "", Cellular: "", Satellite: "" },
   networkOverrides: {},
   recommendedActions: [],

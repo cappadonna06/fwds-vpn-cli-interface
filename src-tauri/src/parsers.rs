@@ -2,9 +2,9 @@ use regex::Regex;
 
 use crate::{
     CellularDiagnostic, CopsNetwork, DiagStatus, DiagnosticState, EthernetDiagnostic,
-    SatelliteDiagnostic, SimPickerDiagnostic, SimPickerRecommendation, SystemDiagnostic,
-    SystemZone,
-    WifiDiagnostic,
+    PressureAssertRecord, PressureDiagnostic, PressureIssue, PressureSensorError,
+    PressureSensorReading, PressureSensors, SatelliteDiagnostic, SimPickerDiagnostic,
+    SimPickerRecommendation, SystemDiagnostic, SystemZone, WifiDiagnostic,
 };
 
 #[derive(Clone, Debug)]
@@ -105,6 +105,7 @@ pub fn parse_log_into_state(log: &str, state: &mut DiagnosticState) {
     if system.sid.is_none() {
         system.sid = parse_sid_from_prompt(log);
     }
+    let pressure = parse_pressure(&blocks, &system);
 
     if wifi.is_some() {
         if let Some(next) = wifi {
@@ -124,6 +125,9 @@ pub fn parse_log_into_state(log: &str, state: &mut DiagnosticState) {
     }
     if let Some(next) = satellite {
         state.satellite = Some(next);
+    }
+    if let Some(next) = pressure {
+        state.pressure = Some(next);
     }
 
     // SIM Picker: look for the block sentinel or any cell-support --scan output
@@ -2169,6 +2173,387 @@ fn extract_eth_diagnostics_section(text: &str) -> &str {
     &text[start_idx..end_idx]
 }
 
+const PRESSURE_VALID_MIN: f64 = 1.0;
+const PRESSURE_VALID_MAX: f64 = 218.0;
+const PRESSURE_LOW_SOURCE_MIN: f64 = 30.0;
+const PRESSURE_STDEV_WARN: f64 = 5.0;
+
+fn parse_pressure(
+    blocks: &[CommandBlock],
+    system: &SystemDiagnostic,
+) -> Option<PressureDiagnostic> {
+    let block = find_latest_body_contains_any(
+        blocks,
+        &[
+            "pressure-monitor",
+            "===== pressure snapshot =====",
+            "===== pressure live =====",
+        ],
+    )?;
+    build_pressure_from_text(block, system)
+}
+
+fn build_pressure_from_text(text: &str, system: &SystemDiagnostic) -> Option<PressureDiagnostic> {
+    let controller_re = Regex::new(r":\s*(\d{8}):\s*pressure-monitor").ok()?;
+    let info_re = Regex::new(r"INFO:\s+(\d+)\s+(\w+)\s+([\d.]+)\s+PSI").ok()?;
+    let voltage_re = Regex::new(r"DEBUG:\[GetPressure\]\s+([\d.]+)V").ok()?;
+    let error_re =
+        Regex::new(r"could not get\s+(\d+)\s+pressure sensor:\s+(.+?)\s+\((-?\d+)\)$").ok()?;
+    let assert_re = Regex::new(r"CRITICAL:ASSERT:.*?/([^/\s]+\.cpp),\s+line:\s+(\d+)").ok()?;
+    let fw_re = Regex::new(r"^r[\d.]+$").ok()?;
+
+    let mut controller_id: Option<String> = None;
+    let mut fw_version: Option<String> = None;
+    let mut source: Vec<f64> = Vec::new();
+    let mut distribution: Vec<f64> = Vec::new();
+    let mut supply: Vec<f64> = Vec::new();
+    let mut source_voltage: Option<f64> = None;
+    let mut distribution_voltage: Option<f64> = None;
+    let mut supply_voltage: Option<f64> = None;
+    let mut pending_voltage: Option<f64> = None;
+    let mut sensor_errors: Vec<PressureSensorError> = Vec::new();
+    let mut asserts: Vec<PressureAssertRecord> = Vec::new();
+
+    for raw in text.lines() {
+        let line = raw.trim();
+        if controller_id.is_none() {
+            if let Some(caps) = controller_re.captures(line) {
+                controller_id = caps.get(1).map(|m| m.as_str().to_string());
+            }
+        }
+        if fw_version.is_none() && fw_re.is_match(line) {
+            fw_version = Some(line.to_string());
+        }
+        if let Some(caps) = voltage_re.captures(line) {
+            pending_voltage = caps.get(1).and_then(|m| m.as_str().parse::<f64>().ok());
+            continue;
+        }
+        if let Some(caps) = info_re.captures(line) {
+            let idx = caps.get(1).and_then(|m| m.as_str().parse::<u8>().ok());
+            let psi = caps.get(3).and_then(|m| m.as_str().parse::<f64>().ok());
+            if let (Some(index), Some(value)) = (idx, psi) {
+                match index {
+                    2 => {
+                        if source_voltage.is_none() {
+                            source_voltage = pending_voltage;
+                        }
+                        source.push((value * 100.0).round() / 100.0)
+                    }
+                    1 => {
+                        if distribution_voltage.is_none() {
+                            distribution_voltage = pending_voltage;
+                        }
+                        distribution.push((value * 100.0).round() / 100.0)
+                    }
+                    0 => {
+                        if supply_voltage.is_none() {
+                            supply_voltage = pending_voltage;
+                        }
+                        supply.push((value * 100.0).round() / 100.0)
+                    }
+                    _ => {}
+                }
+            }
+            pending_voltage = None;
+            continue;
+        }
+        if let Some(caps) = error_re.captures(line) {
+            if let (Some(sensor_index), Some(message), Some(errno)) = (
+                caps.get(1).and_then(|m| m.as_str().parse::<u8>().ok()),
+                caps.get(2).map(|m| m.as_str().trim().to_string()),
+                caps.get(3).and_then(|m| m.as_str().parse::<i32>().ok()),
+            ) {
+                sensor_errors.push(PressureSensorError {
+                    sensor_index,
+                    message,
+                    errno,
+                });
+            }
+            continue;
+        }
+        if let Some(caps) = assert_re.captures(line) {
+            if let (Some(file), Some(line_no)) = (
+                caps.get(1).map(|m| m.as_str().to_string()),
+                caps.get(2).and_then(|m| m.as_str().parse::<u32>().ok()),
+            ) {
+                asserts.push(PressureAssertRecord {
+                    file,
+                    line: line_no,
+                });
+            }
+        }
+    }
+
+    let system_type = system.system_type.clone().unwrap_or_else(|| "MP3".into());
+    let is_mp3_or_lv2 = matches!(
+        system_type.to_ascii_lowercase().as_str(),
+        "mp3" | "lv2" | "cds"
+    );
+    let is_active = false;
+    let source_sensor = build_pressure_sensor("Source", 2, source, source_voltage);
+    let distribution_sensor =
+        build_pressure_sensor("Distribution", 1, distribution, distribution_voltage);
+    let supply_sensor = build_pressure_sensor("Supply", 0, supply, supply_voltage);
+
+    if source_sensor.is_none()
+        && distribution_sensor.is_none()
+        && supply_sensor.is_none()
+        && sensor_errors.is_empty()
+        && asserts.is_empty()
+    {
+        return None;
+    }
+
+    let mut issues: Vec<PressureIssue> = Vec::new();
+    for err in &sensor_errors {
+        if err.sensor_index == 0 && err.errno == -2 && is_mp3_or_lv2 {
+            continue;
+        }
+        issues.push(PressureIssue {
+            id: "ERR_SENSOR_MISSING".into(),
+            severity: DiagStatus::Red,
+            title: format!("Sensor {} missing", err.sensor_index),
+            description: format!(
+                "Pressure sensor {} is unavailable: {}",
+                err.sensor_index, err.message
+            ),
+            action: "Check sensor wiring · replace sensor if fault persists".into(),
+        });
+    }
+
+    if let Some(src) = &source_sensor {
+        if src.latest < PRESSURE_VALID_MIN || src.latest >= 219.0 {
+            issues.push(PressureIssue {
+                id: "ERR_SOURCE_OUT_OF_BAND".into(),
+                severity: DiagStatus::Red,
+                title: "Source pressure invalid".into(),
+                description: format!(
+                    "Source reading {:.2} PSI is outside valid 1–218 PSI range.",
+                    src.latest
+                ),
+                action: "Check sensor wiring · replace sensor".into(),
+            });
+        } else if src.latest < PRESSURE_LOW_SOURCE_MIN {
+            issues.push(PressureIssue {
+                id: "ERR_SOURCE_LOW".into(),
+                severity: DiagStatus::Red,
+                title: "Source pressure low".into(),
+                description: format!(
+                    "Source pressure {:.2} PSI is below {} PSI minimum.",
+                    src.latest, PRESSURE_LOW_SOURCE_MIN
+                ),
+                action: "Check supply shutoff valve · check booster pump · verify water main"
+                    .into(),
+            });
+        }
+    }
+
+    if let Some(dist) = &distribution_sensor {
+        if is_active && dist.latest < PRESSURE_VALID_MIN {
+            issues.push(PressureIssue {
+                id: "ERR_DIST_ACTIVE_INVALID".into(),
+                severity: DiagStatus::Red,
+                title: "Distribution pressure invalid while active".into(),
+                description: format!(
+                    "Distribution reading {:.2} PSI is invalid during active flow.",
+                    dist.latest
+                ),
+                action: "Check P2 sensor wiring · check manifold connection".into(),
+            });
+        }
+    }
+
+    let all_sensors_invalid = [
+        source_sensor.as_ref(),
+        distribution_sensor.as_ref(),
+        supply_sensor.as_ref(),
+    ]
+    .iter()
+    .filter_map(|s| *s)
+    .all(|s| s.latest < PRESSURE_VALID_MIN || s.latest > PRESSURE_VALID_MAX);
+    if all_sensors_invalid
+        && (source_sensor.is_some() || distribution_sensor.is_some() || supply_sensor.is_some())
+        && sensor_errors.is_empty()
+    {
+        issues.push(PressureIssue {
+            id: "ERR_ALL_SENSORS_INVALID".into(),
+            severity: DiagStatus::Red,
+            title: "All pressure sensors invalid".into(),
+            description: "No valid reading was detected from source, distribution, or supply sensors.".into(),
+            action: "Check controller power · check all sensor wiring · restart controller".into(),
+        });
+    }
+
+    if !is_active {
+        if let (Some(dist), Some(src)) = (&distribution_sensor, &source_sensor) {
+            if dist.latest > PRESSURE_VALID_MIN && dist.latest > src.latest {
+                issues.push(PressureIssue {
+                    id: "WARN_MISWIRED".into(),
+                    severity: DiagStatus::Orange,
+                    title: "Possible P2/P3 miswire".into(),
+                    description: format!(
+                        "Distribution {:.2} PSI is above source {:.2} PSI while inactive.",
+                        dist.latest, src.latest
+                    ),
+                    action: "Swap P2 ↔ P3 sensor leads and re-test".into(),
+                });
+            }
+        }
+    }
+
+    for sensor in [
+        source_sensor.as_ref(),
+        distribution_sensor.as_ref(),
+        supply_sensor.as_ref(),
+    ]
+    .iter()
+    .filter_map(|s| *s)
+    {
+        if sensor.stdev > PRESSURE_STDEV_WARN {
+            issues.push(PressureIssue {
+                id: "WARN_HIGH_VARIATION".into(),
+                severity: DiagStatus::Orange,
+                title: format!("{} pressure variation high", sensor.name),
+                description: format!(
+                    "{} variation is high (σ {:.2} PSI).",
+                    sensor.name, sensor.stdev
+                ),
+                action: "Check for water hammer · inspect PRV · verify supply stability".into(),
+            });
+        }
+    }
+
+    let (via_sensor, display_psi) = select_pressure_display(
+        is_active,
+        &source_sensor,
+        &distribution_sensor,
+        &supply_sensor,
+    );
+    let has_red = issues.iter().any(|i| matches!(i.severity, DiagStatus::Red));
+    let has_orange = issues
+        .iter()
+        .any(|i| matches!(i.severity, DiagStatus::Orange));
+    let status = if has_red {
+        DiagStatus::Red
+    } else if has_orange {
+        DiagStatus::Orange
+    } else {
+        DiagStatus::Green
+    };
+
+    let summary = if matches!(status, DiagStatus::Green) {
+        if let (Some(psi), Some(via)) = (display_psi, via_sensor.as_ref()) {
+            format!("{:.1} PSI via {}", psi, via)
+        } else {
+            "All sensors healthy".into()
+        }
+    } else {
+        issues
+            .first()
+            .map(|i| i.title.clone())
+            .unwrap_or_else(|| "Pressure issue detected".into())
+    };
+
+    Some(PressureDiagnostic {
+        status,
+        summary,
+        via_sensor,
+        display_psi,
+        controller_id,
+        fw_version,
+        system_type: Some(system_type),
+        is_active,
+        sensors: PressureSensors {
+            source: source_sensor,
+            distribution: distribution_sensor,
+            supply: supply_sensor,
+        },
+        sensor_errors,
+        asserts,
+        issues,
+    })
+}
+
+fn build_pressure_sensor(
+    name: &str,
+    index: u8,
+    readings: Vec<f64>,
+    voltage: Option<f64>,
+) -> Option<PressureSensorReading> {
+    if readings.is_empty() {
+        return None;
+    }
+    let snapshot = readings.first().copied().unwrap_or(0.0);
+    let latest = readings.last().copied().unwrap_or(snapshot);
+    let count = readings.len();
+    let mean = readings.iter().sum::<f64>() / count as f64;
+    let min = readings
+        .iter()
+        .copied()
+        .fold(f64::INFINITY, |acc, v| if v < acc { v } else { acc });
+    let max = readings
+        .iter()
+        .copied()
+        .fold(f64::NEG_INFINITY, |acc, v| if v > acc { v } else { acc });
+    let stdev = if count > 1 {
+        let variance = readings
+            .iter()
+            .map(|v| (v - mean) * (v - mean))
+            .sum::<f64>()
+            / (count as f64 - 1.0);
+        variance.sqrt()
+    } else {
+        0.0
+    };
+    Some(PressureSensorReading {
+        name: name.into(),
+        index,
+        readings,
+        snapshot,
+        latest,
+        mean,
+        min,
+        max,
+        stdev,
+        count,
+        voltage,
+    })
+}
+
+fn select_pressure_display(
+    is_active: bool,
+    source: &Option<PressureSensorReading>,
+    distribution: &Option<PressureSensorReading>,
+    supply: &Option<PressureSensorReading>,
+) -> (Option<String>, Option<f64>) {
+    let is_valid = |psi: f64| psi >= PRESSURE_VALID_MIN && psi <= PRESSURE_VALID_MAX;
+    if is_active {
+        if let Some(dist) = distribution {
+            if is_valid(dist.latest) {
+                return (Some("Distribution".into()), Some(dist.latest));
+            }
+        }
+    }
+    let mut candidates: Vec<(&str, f64)> = Vec::new();
+    for (name, sensor) in [
+        ("Source", source),
+        ("Distribution", distribution),
+        ("Supply", supply),
+    ] {
+        if let Some(s) = sensor {
+            if is_valid(s.latest) {
+                candidates.push((name, s.latest));
+            }
+        }
+    }
+    candidates.sort_by(|a, b| b.1.total_cmp(&a.1));
+    if let Some((name, value)) = candidates.first() {
+        (Some((*name).to_string()), Some(*value))
+    } else {
+        (None, None)
+    }
+}
+
 fn parse_system(
     sid_block: Option<&str>,
     version_block: Option<&str>,
@@ -2234,7 +2619,10 @@ fn extract_xml_value(text: &str, tag: &str) -> Option<String> {
 }
 
 fn parse_boolish(input: &str) -> bool {
-    matches!(input.trim().to_ascii_lowercase().as_str(), "true" | "1" | "yes" | "y")
+    matches!(
+        input.trim().to_ascii_lowercase().as_str(),
+        "true" | "1" | "yes" | "y"
+    )
 }
 
 fn normalize_system_type(raw: &str) -> String {

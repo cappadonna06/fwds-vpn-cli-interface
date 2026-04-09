@@ -1,5 +1,6 @@
 import {
   ReportAction,
+  PressureStatusRow,
   ReportRecommendedAction,
   NetworkStatusRow,
   SessionReport,
@@ -73,11 +74,18 @@ interface SystemDiag {
   version?: string | null;
 }
 
+interface PressureDiag {
+  status: DiagStatus;
+  summary: string;
+  issues?: Array<{ id: string; severity: DiagStatus; title: string; description: string; action: string }>;
+}
+
 interface DiagnosticState {
   ethernet?: EthernetDiag | null;
   wifi?: WifiDiag | null;
   cellular?: CellularDiag | null;
   satellite?: SatelliteDiag | null;
+  pressure?: PressureDiag | null;
   system?: SystemDiag | null;
   sim_picker?: SimPickerDiag | null;
 }
@@ -153,6 +161,7 @@ export function generateActions(
   if (diag.wifi) diagRun.push(`Wi-Fi ${statusEmoji(diag.wifi.status)}`);
   if (diag.cellular) diagRun.push(`Cellular ${statusEmoji(diag.cellular.status)}`);
   if (diag.satellite) diagRun.push(`Satellite ${statusEmoji(diag.satellite.status)}`);
+  if (diag.pressure) diagRun.push(`Pressure ${statusEmoji(diag.pressure.status)}`);
 
   if (diagRun.length > 0) {
     actions.push({
@@ -199,6 +208,20 @@ export function generateNetworkRows(diag: DiagnosticState): NetworkStatusRow[] {
       summary: diag.satellite?.summary ?? "Diagnostics not collected",
     },
   ];
+}
+
+export function generatePressureRows(diag: DiagnosticState): PressureStatusRow[] {
+  const toStatus = (s?: DiagStatus | null): "green" | "orange" | "red" | "unknown" => {
+    if (s === "green") return "green";
+    if (s === "orange") return "orange";
+    if (s === "red") return "red";
+    return "unknown";
+  };
+  return [{
+    label: "System Pressure",
+    status: toStatus(diag.pressure?.status),
+    summary: diag.pressure?.summary ?? "Diagnostics not collected",
+  }];
 }
 
 // ── generateRecommendedActions ────────────────────────────────────────────────
@@ -368,6 +391,18 @@ export function generateRecommendedActions(
     }
   }
 
+  // ── PRESSURE ──────────────────────────────────────────────────────────────
+  if (diag.pressure?.issues?.length) {
+    for (const issue of diag.pressure.issues) {
+      actions.push({
+        id: mkId(), interface: "Custom",
+        text: issue.title,
+        detail: `${issue.description} ${issue.action}`.trim(),
+        dismissed: false, checked: false, custom: false,
+      });
+    }
+  }
+
   // Sort: red issues first, then orange
   return actions.sort((a, b) => {
     const priority = (action: ReportRecommendedAction): number => {
@@ -412,6 +447,18 @@ export function formatSlack(report: SessionReport): string {
     lines.push(`${dot} *${row.interface}*: ${row.summary}${noteSuffix}`);
   });
   lines.push("");
+
+  if (report.pressureRows.length > 0) {
+    lines.push("*Pressure Readings*");
+    report.pressureRows.forEach(row => {
+      const dot = row.status === "green" ? "🟢"
+        : row.status === "orange" ? "🟠"
+        : row.status === "red" ? "🔴"
+        : "⚪";
+      lines.push(`${dot} *${row.label}*: ${row.summary}`);
+    });
+    lines.push("");
+  }
 
   const visibleRecs = report.recommendedActions.filter(a => !a.dismissed);
   if (visibleRecs.length > 0) {
@@ -466,6 +513,19 @@ export function formatJira(report: SessionReport): string {
     lines.push(`| ${row.interface} | ${statusLabel} | ${detail} |`);
   });
   lines.push("");
+
+  if (report.pressureRows.length > 0) {
+    lines.push("h3. Pressure Readings");
+    lines.push("|| Sensor || Status || Detail ||");
+    report.pressureRows.forEach(row => {
+      const statusLabel = row.status === "green" ? "OK"
+        : row.status === "orange" ? "Warning"
+        : row.status === "red" ? "Error"
+        : "No data";
+      lines.push(`| ${row.label} | ${statusLabel} | ${row.summary} |`);
+    });
+    lines.push("");
+  }
 
   const visibleRecs = report.recommendedActions.filter(a => !a.dismissed);
   if (visibleRecs.length > 0) {
