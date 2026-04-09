@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::fs;
+use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
@@ -1254,25 +1254,40 @@ fn send_external_input(text: String, state: State<'_, AppState>) -> Result<(), S
     };
 
     let script = format!(
-        "tell application \"Terminal\"\nif not (exists window id {window_id}) then error \"Open session first\"\ndo script {} in selected tab of window id {window_id}\nactivate\nend tell",
-        applescript_string_literal(&text)
+        "tell application \"Terminal\"\nif not (exists window id {window_id}) then error \"Open session first\"\nreturn tty of selected tab of window id {window_id}\nend tell"
     );
     let out = Command::new("osascript")
         .arg("-e")
         .arg(&script)
         .output()
-        .map_err(|e| format!("Failed to send command: {e}"))?;
+        .map_err(|e| format!("Failed to resolve Terminal session: {e}"))?;
 
-    if out.status.success() {
-        Ok(())
-    } else {
+    if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
-        Err(if stderr.is_empty() {
+        return Err(if stderr.is_empty() {
             "Open session first".into()
         } else {
             "Open session first".into()
-        })
+        });
     }
+
+    let tty_path = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if tty_path.is_empty() || !tty_path.starts_with("/dev/") {
+        return Err("Open session first".into());
+    }
+
+    let mut tty = OpenOptions::new()
+        .write(true)
+        .open(&tty_path)
+        .map_err(|e| format!("Failed to open terminal session: {e}"))?;
+    tty.write_all(text.as_bytes())
+        .map_err(|e| format!("Failed to send command: {e}"))?;
+    tty.write_all(b"\n")
+        .map_err(|e| format!("Failed to send command: {e}"))?;
+    tty.flush()
+        .map_err(|e| format!("Failed to flush terminal session: {e}"))?;
+
+    Ok(())
 }
 
 fn has_any_diag_data(diag: &DiagnosticState) -> bool {
