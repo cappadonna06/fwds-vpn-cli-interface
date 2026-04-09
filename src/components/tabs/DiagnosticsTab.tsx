@@ -805,11 +805,14 @@ function summarizePressure(pressure?: PressureDiagnostic | null): CardSummary {
   if (!pressure) return { health: "neutral", badgeLabel: "No data", primaryLine: "No data yet" };
   const health = pressure.status === "red" ? "error" : pressure.status === "orange" ? "warning" : "healthy";
   const badgeLabel = pressure.status === "red" ? "Error" : pressure.status === "orange" ? "Warning" : "Healthy";
+  const source = pressure.sensors?.source?.latest;
+  const isValidSource = source !== null && source !== undefined && source >= 0 && source <= 218;
+  const showSourceLine = isValidSource && (pressure.via_sensor ?? "").toLowerCase() !== "source";
   return {
     health,
     badgeLabel,
     primaryLine: pressure.display_psi !== null && pressure.display_psi !== undefined ? `${pressure.display_psi.toFixed(1)} PSI` : "—",
-    secondaryLine: null,
+    secondaryLine: showSourceLine ? `${source!.toFixed(1)} PSI (Source (P3))` : null,
   };
 }
 
