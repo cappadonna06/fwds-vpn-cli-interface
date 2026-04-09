@@ -6,6 +6,7 @@ import CommandsTab from "./components/tabs/CommandsTab";
 import WizardTab from "./components/tabs/WizardTab";
 import ReportTab from "./components/tabs/ReportTab";
 import DiagnosticsTab from "./components/tabs/DiagnosticsTab";
+import SystemConfigurationTab from "./components/tabs/SystemConfigurationTab";
 import Sidebar from "./components/shell/Sidebar";
 import SidebarHeader from "./components/shell/SidebarHeader";
 import SidebarNavItem from "./components/shell/SidebarNavItem";
@@ -13,12 +14,13 @@ import { StatusPillState } from "./components/shell/StatusPill";
 import "./App.css";
 import "./components/tabs/tabs.css";
 
-type Tab = "session" | "commands" | "wizard" | "report" | "diagnostics";
+type Tab = "session" | "commands" | "wizard" | "system-configuration" | "report" | "diagnostics";
 
 const TABS: { id: Tab; label: string }[] = [
   { id: "session", label: "Connect" },
   { id: "commands", label: "Commands" },
   { id: "wizard", label: "Setup Wizard" },
+  { id: "system-configuration", label: "System Configuration" },
   { id: "diagnostics", label: "Diagnostics" },
   { id: "report", label: "Report" },
 ];
@@ -162,6 +164,9 @@ export default function App() {
           </div>
           <div style={{ display: activeTab === "wizard" ? "contents" : "none" }}>
             <WizardTab />
+          </div>
+          <div style={{ display: activeTab === "system-configuration" ? "contents" : "none" }}>
+            <SystemConfigurationTab />
           </div>
           <div style={{ display: activeTab === "diagnostics" ? "contents" : "none" }}>
             <DiagnosticsTab />

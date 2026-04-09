@@ -3,6 +3,7 @@ use regex::Regex;
 use crate::{
     CellularDiagnostic, CopsNetwork, DiagStatus, DiagnosticState, EthernetDiagnostic,
     SatelliteDiagnostic, SimPickerDiagnostic, SimPickerRecommendation, SystemDiagnostic,
+    SystemZone,
     WifiDiagnostic,
 };
 
@@ -98,6 +99,8 @@ pub fn parse_log_into_state(log: &str, state: &mut DiagnosticState) {
         find_latest(&blocks, &["sid"]),
         find_latest(&blocks, &["version"]),
         find_latest(&blocks, &["release"]),
+        find_latest(&blocks, &["cat /var/etc/fwds/station_info"]),
+        find_latest(&blocks, &["cat /var/etc/fwds/system_info"]),
     );
     if system.sid.is_none() {
         system.sid = parse_sid_from_prompt(log);
@@ -157,7 +160,14 @@ pub fn parse_log_into_state(log: &str, state: &mut DiagnosticState) {
             });
         }
     }
-    if system.sid.is_some() || system.version.is_some() || system.release_date.is_some() {
+    if system.sid.is_some()
+        || system.version.is_some()
+        || system.release_date.is_some()
+        || system.system_name.is_some()
+        || system.system_type.is_some()
+        || system.preferred_network.is_some()
+        || !system.zones.is_empty()
+    {
         state.system = Some(system);
     }
 }
@@ -533,6 +543,51 @@ mod tests {
         parse_log_into_state(log, &mut state);
         let sid = state.system.as_ref().and_then(|s| s.sid.as_deref());
         assert_eq!(sid, Some("22611067"));
+    }
+
+    #[test]
+    fn parse_log_extracts_system_configuration_from_xml_commands() {
+        let mut state = DiagnosticState::default();
+        let log = r#"2026-04-08T21:06:44-0600 [18230967]# cat /var/etc/fwds/station_info
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<station>
+  <sid>18230967</sid>
+  <displayname>Aguilar ADU</displayname>
+  <preferred_network_service_type>wifi</preferred_network_service_type>
+  <mfgdate>1756188000</mfgdate>
+</station>
+2026-04-08T21:07:44-0600 [18230967]# cat /var/etc/fwds/system_info
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<system>
+    <hydraulic_hardware_configuration>mp3</hydraulic_hardware_configuration>
+    <drain_during_deactivation>true</drain_during_deactivation>
+    <no_foam_system>false</no_foam_system>
+    <zone_count>2</zone_count>
+    <zone>
+        <number>1</number>
+        <type>roof</type>
+        <name>Roof Zone 1</name>
+    </zone>
+    <zone>
+        <number>2</number>
+        <type>perimeter</type>
+        <name>Perimeter Zone 2</name>
+    </zone>
+    <initiationcycles>4</initiationcycles>
+    <waterusemode>standard</waterusemode>
+</system>
+"#;
+
+        parse_log_into_state(log, &mut state);
+        let system = state.system.expect("expected system diagnostics");
+        assert_eq!(system.system_name.as_deref(), Some("Aguilar ADU"));
+        assert_eq!(system.preferred_network.as_deref(), Some("wifi"));
+        assert_eq!(system.system_type.as_deref(), Some("MP3"));
+        assert_eq!(system.foam_module, Some(true));
+        assert_eq!(system.zone_count, Some(2));
+        assert_eq!(system.zones.len(), 2);
+        assert_eq!(system.zones[0].number, Some(1));
+        assert_eq!(system.zones[0].zone_type.as_deref(), Some("roof"));
     }
 
     #[test]
@@ -2118,16 +2173,100 @@ fn parse_system(
     sid_block: Option<&str>,
     version_block: Option<&str>,
     release_block: Option<&str>,
+    station_info_block: Option<&str>,
+    system_info_block: Option<&str>,
 ) -> SystemDiagnostic {
     let sid = parse_single_value(sid_block).and_then(|v| sanitize_sid(&v));
     let version = parse_single_value(version_block).and_then(|v| sanitize_version(&v));
     let release_date = release_block.and_then(|b| capture_after(b, "Date:"));
+    let system_name = station_info_block
+        .and_then(|b| extract_xml_value(b, "displayname"))
+        .filter(|v| !v.is_empty());
+    let preferred_network = station_info_block
+        .and_then(|b| extract_xml_value(b, "preferred_network_service_type"))
+        .filter(|v| !v.is_empty());
+    let install_date = station_info_block
+        .and_then(|b| extract_xml_value(b, "mfgdate"))
+        .and_then(|v| parse_unix_date(&v));
+    let system_type = system_info_block
+        .and_then(|b| extract_xml_value(b, "hydraulic_hardware_configuration"))
+        .map(|v| normalize_system_type(&v));
+    let foam_module = system_info_block
+        .and_then(|b| extract_xml_value(b, "no_foam_system"))
+        .map(|v| !parse_boolish(&v));
+    let drain_cycle = system_info_block
+        .and_then(|b| extract_xml_value(b, "drain_during_deactivation"))
+        .map(|v| parse_boolish(&v));
+    let initiation_cycles = system_info_block
+        .and_then(|b| extract_xml_value(b, "initiationcycles"))
+        .and_then(|v| v.parse::<u32>().ok());
+    let water_use_mode = system_info_block
+        .and_then(|b| extract_xml_value(b, "waterusemode"))
+        .filter(|v| !v.is_empty());
+    let zone_count = system_info_block
+        .and_then(|b| extract_xml_value(b, "zone_count"))
+        .and_then(|v| v.parse::<u32>().ok());
+    let zones = system_info_block.map(parse_zones).unwrap_or_default();
 
     SystemDiagnostic {
         sid,
         version,
         release_date,
+        system_name,
+        preferred_network,
+        install_date,
+        system_type,
+        foam_module,
+        drain_cycle,
+        initiation_cycles,
+        water_use_mode,
+        zone_count,
+        zones,
     }
+}
+
+fn extract_xml_value(text: &str, tag: &str) -> Option<String> {
+    let pattern = format!(r"(?s)<{tag}>\s*(.*?)\s*</{tag}>");
+    let re = Regex::new(&pattern).ok()?;
+    re.captures(text)
+        .and_then(|caps| caps.get(1))
+        .map(|m| m.as_str().trim().to_string())
+}
+
+fn parse_boolish(input: &str) -> bool {
+    matches!(input.trim().to_ascii_lowercase().as_str(), "true" | "1" | "yes" | "y")
+}
+
+fn normalize_system_type(raw: &str) -> String {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "lv2" | "cds" | "custom" => "CDS".to_string(),
+        "mp3" => "MP3".to_string(),
+        "hp6" => "HP6".to_string(),
+        other => other.to_ascii_uppercase(),
+    }
+}
+
+fn parse_unix_date(raw: &str) -> Option<String> {
+    let ts = raw.trim().parse::<i64>().ok()?;
+    let dt = chrono::DateTime::from_timestamp(ts, 0)?;
+    Some(dt.date_naive().to_string())
+}
+
+fn parse_zones(xml: &str) -> Vec<SystemZone> {
+    let zone_re = Regex::new(r"(?s)<zone>\s*(.*?)\s*</zone>").ok();
+    let Some(zone_re) = zone_re else {
+        return Vec::new();
+    };
+
+    zone_re
+        .captures_iter(xml)
+        .filter_map(|caps| caps.get(1).map(|m| m.as_str()))
+        .map(|zone_block| SystemZone {
+            number: extract_xml_value(zone_block, "number").and_then(|v| v.parse::<u32>().ok()),
+            zone_type: extract_xml_value(zone_block, "type"),
+            name: extract_xml_value(zone_block, "name"),
+        })
+        .collect()
 }
 
 fn sanitize_sid(input: &str) -> Option<String> {

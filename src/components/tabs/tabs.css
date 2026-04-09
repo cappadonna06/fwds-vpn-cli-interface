@@ -3257,3 +3257,148 @@
   color: var(--text-muted);
   white-space: nowrap;
 }
+
+/* System Configuration */
+.system-config-tab {
+  overflow-y: auto;
+  align-items: stretch;
+}
+
+.system-config-header h1 {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 680;
+  color: var(--text-primary);
+}
+
+.system-config-header p {
+  margin: 6px 0 0;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.system-config-command-card {
+  border-radius: 10px;
+}
+
+.system-config-command-payload {
+  margin: 8px 0 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  color: var(--text-primary);
+  font-family: var(--mono);
+  font-size: 12px;
+  white-space: pre-wrap;
+}
+
+.system-config-warning {
+  border: 1px solid color-mix(in srgb, var(--warning) 45%, white);
+  background: color-mix(in srgb, var(--warning) 12%, white);
+  color: color-mix(in srgb, var(--warning) 80%, black);
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 12px;
+}
+
+.system-config-empty-state {
+  border-radius: 12px;
+  min-height: 220px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  text-align: center;
+  gap: 8px;
+}
+
+.system-config-empty-icon {
+  font-size: 28px;
+}
+
+.system-config-empty-state h2 {
+  margin: 0;
+  font-size: 18px;
+  color: var(--text-primary);
+}
+
+.system-config-empty-state p {
+  margin: 0;
+  max-width: 520px;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.system-config-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.system-config-zone-card {
+  grid-column: 1 / -1;
+}
+
+.system-config-kv {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 10px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.system-config-kv:last-child {
+  border-bottom: none;
+}
+
+.system-config-kv span {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.system-config-kv strong {
+  color: var(--text-primary);
+  font-size: 13px;
+  text-align: right;
+}
+
+.system-config-zone-count {
+  font-size: 13px;
+  color: var(--text-secondary);
+  margin-bottom: 8px;
+}
+
+.system-zone-table {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.system-zone-row {
+  display: grid;
+  grid-template-columns: 80px 1fr 2fr;
+  gap: 8px;
+  padding: 8px 10px;
+  font-size: 12px;
+  border-top: 1px solid var(--border-soft);
+}
+
+.system-zone-row:first-child {
+  border-top: none;
+}
+
+.system-zone-head {
+  background: var(--bg-2);
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+
+@media (max-width: 980px) {
+  .system-config-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
