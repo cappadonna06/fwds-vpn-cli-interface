@@ -2132,6 +2132,26 @@
   font-size: 13px;
 }
 
+.diag-card-equal-lines .diag-card-status-row,
+.diag-card-equal-lines .diag-card-secondary-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: 8px;
+}
+
+.diag-card-equal-lines .diag-card-secondary-line {
+  color: var(--text-primary);
+  font-size: 16px;
+  font-weight: 630;
+  line-height: 1.2;
+}
+
+.diag-card-equal-lines .diag-card-primary-tags,
+.diag-card-equal-lines .diag-card-secondary-tags {
+  justify-self: end;
+}
+
 .diag-card-secondary-tags {
   display: inline-flex;
   align-items: center;
@@ -2169,7 +2189,7 @@
 
 .diag-card-collapsed-reco {
   margin-top: 8px;
-  margin-bottom: 8px;
+  margin-bottom: 12px;
   align-self: center;
   width: 100%;
   border: 1px solid color-mix(in srgb, var(--warning) 55%, var(--border));
@@ -2291,12 +2311,16 @@
 
 .diag-card-footer {
   margin-top: auto;
-  padding-top: 10px;
+  padding-top: 12px;
   border-top: 1px solid var(--border-soft);
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 10px;
+}
+
+.diag-card-collapsed .diag-card-status-row {
+  margin-bottom: 3px;
 }
 
 .diag-card-toggle {

@@ -287,6 +287,7 @@ interface DiagCardProps {
   onSendCommand?: () => void;
   sent?: boolean;
   compact?: boolean;
+  emphasizeSecondaryLine?: boolean;
   onClear?: () => void;
 }
 
@@ -867,6 +868,7 @@ function DiagCard({
   onSendCommand,
   sent,
   compact,
+  emphasizeSecondaryLine = false,
   onClear,
 }: DiagCardProps) {
   const [menuOpen, setMenuOpen] = useState(false);
@@ -888,12 +890,13 @@ function DiagCard({
   const collapsedRecommendation = !expanded && (health === "warning" || health === "error")
     ? (
       sections.find((s) => s.title.toLowerCase() === "recommended actions")?.rows[0]?.value
+      ?? sections.find((s) => ["diagnostics", "next action"].includes(s.title.toLowerCase()))?.rows[0]?.value
       ?? sections.flatMap((s) => s.rows).find((row) => row.label.toLowerCase().includes("recommended action"))?.value
     )
     : null;
 
   return (
-    <article className={`diag-card diag-card-${health} ${expanded ? "diag-card-open" : "diag-card-collapsed"} ${compact ? "diag-card-compact" : ""}`}>
+    <article className={`diag-card diag-card-${health} ${expanded ? "diag-card-open" : "diag-card-collapsed"} ${compact ? "diag-card-compact" : ""} ${emphasizeSecondaryLine ? "diag-card-equal-lines" : ""}`}>
       <div className="diag-card-head">
         <div className="diag-card-title-wrap">
           <span className="diag-card-icon" aria-hidden>{icon}</span>
@@ -1342,6 +1345,7 @@ export default function DiagnosticsTab() {
           onSendCommand={() => sendDiagnosticBlock("pressure")}
           sent={sentCommandId === "pressure"}
           compact={pressureSummary.health === "neutral"}
+          emphasizeSecondaryLine
           onClear={async () => {
             await invoke("clear_diagnostic_interface", { interface: "pressure" }).catch(() => {});
             setDiag(prev => prev ? { ...prev, pressure: null } : prev);
