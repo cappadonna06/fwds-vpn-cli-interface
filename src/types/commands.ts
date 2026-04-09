@@ -350,6 +350,26 @@ export const COMMANDS: ControllerCommand[] = [
     tags: ["network", "ethernet", "ip", "dhcp"],
   },
   {
+    id: "cat-station-info",
+    label: "cat /var/etc/fwds/station_info",
+    command: "cat /var/etc/fwds/station_info",
+    category: "diagnostic",
+    description: "Raw station configuration XML (name, preferred network, install metadata).",
+    reboot_required: false,
+    guard: "none",
+    est_seconds: 1,
+  },
+  {
+    id: "cat-system-info",
+    label: "cat /var/etc/fwds/system_info",
+    command: "cat /var/etc/fwds/system_info",
+    category: "diagnostic",
+    description: "Raw system configuration XML (HHC type, zones, foam/drain configuration).",
+    reboot_required: false,
+    guard: "none",
+    est_seconds: 1,
+  },
+  {
     id: "sid",
     label: "sid",
     command: "sid",
@@ -845,6 +865,8 @@ export const DIAGNOSTIC_BLOCKS: DiagnosticBlock[] = [
       // Satellite
       "sat-imei",
       // System
+      "cat-station-info",
+      "cat-system-info",
       "version",
       "sid",
       "release",
@@ -970,6 +992,8 @@ sat-imei
 
 echo ""
 echo "===== SYSTEM ====="
+cat /var/etc/fwds/station_info
+cat /var/etc/fwds/system_info
 version
 sid
 release
@@ -1310,8 +1334,8 @@ satellite-check -t
     icon: "🖥",
     description: "Firmware version, controller serial number, and release metadata. Use at the start of any session to confirm which controller you are connected to and whether the firmware is current.",
     when_to_run: "At the start of any session to confirm controller identity and firmware version.",
-    light_command_ids: ["version", "sid", "release"],
-    heavy_command_ids: ["version", "sid", "release"],
+    light_command_ids: ["version", "sid", "release", "cat-station-info", "cat-system-info"],
+    heavy_command_ids: ["version", "sid", "release", "cat-station-info", "cat-system-info"],
   },
   {
     id: "networking-all",
@@ -1319,8 +1343,8 @@ satellite-check -t
     icon: "⚡",
     description: "Runs the light-tier check on all four network interfaces in sequence: Ethernet, Wi-Fi, cellular, and signal readings. Good first-pass sweep after install or when multiple interfaces need a quick status check.",
     when_to_run: "First-pass network check after install or when multiple interfaces need a quick status sweep (~45 seconds total).",
-    light_command_ids: ["ethernet-check", "wifi-check", "wifi-signal", "cellular-check", "cell-signal"],
-    heavy_command_ids: ["ethernet-check", "wifi-check", "wifi-signal", "cellular-check", "cell-signal"],
+    light_command_ids: ["ethernet-check", "wifi-check", "wifi-signal", "cellular-check", "cell-signal", "cat-station-info", "cat-system-info"],
+    heavy_command_ids: ["ethernet-check", "wifi-check", "wifi-signal", "cellular-check", "cell-signal", "cat-station-info", "cat-system-info"],
   },
   {
     id: "full-diags",
@@ -1335,6 +1359,7 @@ satellite-check -t
       "cellular-check", "cell-signal", "cell-provider", "cell-ccid", "cell-imei", "cell-apn", "cell-status",
       "satellite-check-loopback-full", "sat-imei",
       "pressure-monitor",
+      "cat-station-info", "cat-system-info",
       "version", "sid", "release",
     ],
     heavy_script: `(
@@ -1474,6 +1499,8 @@ pressure-monitor -v --hhc=mp3 --pressure-sensor=distribution -u us --period=500 
 
 echo ""
 echo "===== SYSTEM ====="
+cat /var/etc/fwds/station_info
+cat /var/etc/fwds/system_info
 version
 sid
 release
@@ -1493,6 +1520,7 @@ release
       "cellular-check", "cell-signal", "cell-provider", "cell-ccid", "cell-imei", "cell-apn", "cell-status",
       "sat-imei",
       "pressure-monitor",
+      "cat-station-info", "cat-system-info",
       "version", "sid", "release",
     ],
     heavy_script: `(
@@ -1628,6 +1656,8 @@ pressure-monitor -v --hhc=mp3 --pressure-sensor=distribution -u us --period=500 
 
 echo ""
 echo "===== SYSTEM ====="
+cat /var/etc/fwds/station_info
+cat /var/etc/fwds/system_info
 version
 sid
 release

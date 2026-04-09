@@ -321,18 +321,24 @@ const ALL_CARRIERS = [
 
 function simPickerHealth(sp?: SimPickerDiagnostic | null): HealthTone {
   if (!sp) return "neutral";
+  if (!sp.scan_attempted) return "neutral";
+  if (sp.scan_empty || sp.recommendation === "DeadZone") return "error";
   const rec = sp.recommendation;
   if (typeof rec === "string") {
-    if (rec === "NotRun" || rec === "DeadZone") return "neutral";
+    if (rec === "NotRun") return "neutral";
     if (rec === "ScanFailed" || rec === "WeakButBest") return "warning";
     if (rec === "KeepCurrent") return "healthy";
   }
-  // SwapTo
-  return sp.installed_carrier_detected ? "warning" : "error";
+  // SwapTo => installed SIM is not best fit here
+  return "warning";
 }
 
-function simPickerBadge(_sp?: SimPickerDiagnostic | null): string {
-  return "";
+function simPickerBadge(sp?: SimPickerDiagnostic | null): string {
+  const tone = simPickerHealth(sp);
+  if (tone === "healthy") return "Healthy";
+  if (tone === "warning") return "Warning";
+  if (tone === "error") return "Error";
+  return "Not run";
 }
 
 function simPickerPrimary(sp?: SimPickerDiagnostic | null): string {
@@ -1312,11 +1318,11 @@ export default function DiagnosticsTab() {
           onSendCommand={() => sendDiagnosticBlock("sim-picker")}
           sent={sentCommandId === "sim-picker"}
           compact={!simPicker?.scan_attempted}
-          onClear={simPicker ? async () => {
+          onClear={async () => {
             await invoke("clear_diagnostic_interface", { interface: "sim_picker" }).catch(() => {});
             setDiag(prev => prev ? { ...prev, sim_picker: null } : prev);
             setCardUpdatedAt(prev => ({ ...prev, sim_picker: null }));
-          } : undefined}
+          }}
         />
       </div>
     </section>
