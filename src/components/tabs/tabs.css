@@ -2134,10 +2134,11 @@
 
 .diag-card-equal-lines .diag-card-status-row,
 .diag-card-equal-lines .diag-card-secondary-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  display: inline-flex;
   align-items: center;
-  column-gap: 8px;
+  justify-content: flex-start;
+  gap: 6px;
+  flex-wrap: wrap;
 }
 
 .diag-card-equal-lines .diag-card-secondary-line {
@@ -2149,7 +2150,7 @@
 
 .diag-card-equal-lines .diag-card-primary-tags,
 .diag-card-equal-lines .diag-card-secondary-tags {
-  justify-self: end;
+  justify-self: auto;
 }
 
 .diag-card-secondary-tags {
