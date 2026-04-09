@@ -27,7 +27,6 @@ interface SystemDiagnostic {
 
 interface DiagnosticState {
   system?: SystemDiagnostic | null;
-  last_updated?: string | null;
 }
 
 function titleCase(input?: string | null): string {
@@ -110,32 +109,17 @@ export default function SystemConfigurationTab() {
         <p>Structured system details from station and system XML output.</p>
       </div>
 
-      <div className="card system-config-command-card">
-        <div className="system-config-request-row">
-          <div>
-            <div className="card-title" style={{ marginBottom: 4 }}>System Configuration Request</div>
-            <p className="hint" style={{ margin: 0 }}>
-              Pull station and system metadata from the controller.
-            </p>
-          </div>
-          <div className="btn-group">
-            <button className="btn btn-secondary" onClick={copyPayload}>
-              {copied ? "✓ Copied" : "Copy"}
-            </button>
-            <button className="btn btn-primary" onClick={sendPayload}>
-              {sent ? "✓ Sent" : "Send"}
-            </button>
-          </div>
+      <div className="diag-header-toolbar system-config-request-toolbar">
+        <div className="system-config-request-title">System Configuration Request</div>
+        <div className="btn-group">
+          <button className="btn btn-secondary" onClick={copyPayload}>
+            {copied ? "Copied" : "Copy"}
+          </button>
+          <button className="btn btn-secondary" onClick={sendPayload}>
+            {sent ? "Sent" : "Send"}
+          </button>
         </div>
-        <div className="system-config-command-summary">
-          Sends: <code>cat /var/etc/fwds/station_info</code> + <code>cat /var/etc/fwds/system_info</code>
-        </div>
-        {diagState?.last_updated && (
-          <div className="hint" style={{ marginTop: 8 }}>
-            Listening for updates… Last diagnostics update: {new Date(diagState.last_updated).toLocaleString()}
-          </div>
-        )}
-        {error && <div className="warning-item" style={{ marginTop: 10 }}>⚠ {error}</div>}
+        {error && <div className="warning-item">⚠ {error}</div>}
       </div>
 
       {hasPartialWarning && (
