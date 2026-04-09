@@ -98,7 +98,7 @@ export default function ConsoleTab() {
       pendingEchoRef.current = null;
     }
     try {
-      await invoke("send_input", { text: cmd });
+      await invoke("send_external_input", { text: cmd });
     } catch (e) {
       pendingEchoRef.current = null;
       addLine(`Error: ${String(e)}`, "error");

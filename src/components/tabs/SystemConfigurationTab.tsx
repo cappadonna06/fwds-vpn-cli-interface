@@ -93,7 +93,7 @@ export default function SystemConfigurationTab() {
 
   async function sendPayload() {
     try {
-      await invoke("send_input", { text: COMMAND_PAYLOAD });
+      await invoke("send_external_input", { text: COMMAND_PAYLOAD });
       setSent(true);
       setTimeout(() => setSent(false), 1500);
       setError(null);

@@ -51,6 +51,9 @@ struct InnerState {
     // as a \x03-prefixed debug entry so operators can see exactly what the
     // controller sends and when.
     shell_debug: bool,
+
+    // External Terminal.app session target (window id) used by Send buttons.
+    external_terminal_window_id: Option<i64>,
 }
 
 struct AppState {
@@ -1107,7 +1110,7 @@ fn open_controller_terminal(state: State<'_, AppState>) -> Result<(), String> {
         &ssh_cmd,
     );
     let script = format!(
-        "tell application \"Terminal\"\nactivate\ndo script {}\nend tell",
+        "tell application \"Terminal\"\nactivate\nset newTab to do script {}\nset targetWindow to (window of newTab)\nreturn id of targetWindow\nend tell",
         applescript_string_literal(&command)
     );
 
@@ -1118,6 +1121,13 @@ fn open_controller_terminal(state: State<'_, AppState>) -> Result<(), String> {
         .map_err(|e| format!("Failed to open Terminal: {e}"))?;
 
     if out.status.success() {
+        let window_id = String::from_utf8_lossy(&out.stdout)
+            .trim()
+            .parse::<i64>()
+            .ok();
+        if let Ok(mut inner) = state.inner.lock() {
+            inner.external_terminal_window_id = window_id;
+        }
         start_log_watcher_internal(&state, false)?;
         Ok(())
     } else {
@@ -1164,7 +1174,7 @@ fn open_local_serial_terminal(device: String, state: State<'_, AppState>) -> Res
         shell_quote(&device),
     );
     let script = format!(
-        "tell application \"Terminal\"\nactivate\ndo script {}\nend tell",
+        "tell application \"Terminal\"\nactivate\nset newTab to do script {}\nset targetWindow to (window of newTab)\nreturn id of targetWindow\nend tell",
         applescript_string_literal(&command)
     );
 
@@ -1175,6 +1185,13 @@ fn open_local_serial_terminal(device: String, state: State<'_, AppState>) -> Res
         .map_err(|e| format!("Failed to open Terminal: {e}"))?;
 
     if out.status.success() {
+        let window_id = String::from_utf8_lossy(&out.stdout)
+            .trim()
+            .parse::<i64>()
+            .ok();
+        if let Ok(mut inner) = state.inner.lock() {
+            inner.external_terminal_window_id = window_id;
+        }
         start_log_watcher_internal(&state, false)?;
         Ok(())
     } else {
@@ -1193,6 +1210,7 @@ fn disconnect_local_controller(state: State<'_, AppState>) -> Result<(), String>
         let mut inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
         inner.local_serial_device = None;
         inner.connection_mode = "local".into();
+        inner.external_terminal_window_id = None;
     }
     stop_log_watcher_internal(&state)?;
     if let Ok(mut diag) = state.diagnostic_state.lock() {
@@ -1221,7 +1239,40 @@ fn get_app_state(state: State<'_, AppState>) -> Result<serde_json::Value, String
         "controller_ip": inner.controller_ip,
         "connection_mode": inner.connection_mode,
         "local_serial_device": inner.local_serial_device,
+        "external_terminal_window_id": inner.external_terminal_window_id,
     }))
+}
+
+/// Send input to the active external Terminal.app session (window/tab launched by this app).
+#[tauri::command]
+fn send_external_input(text: String, state: State<'_, AppState>) -> Result<(), String> {
+    let window_id = {
+        let inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
+        inner
+            .external_terminal_window_id
+            .ok_or_else(|| "Open session first".to_string())?
+    };
+
+    let script = format!(
+        "tell application \"Terminal\"\nif not (exists window id {window_id}) then error \"Open session first\"\ndo script {} in selected tab of window id {window_id}\nactivate\nend tell",
+        applescript_string_literal(&text)
+    );
+    let out = Command::new("osascript")
+        .arg("-e")
+        .arg(&script)
+        .output()
+        .map_err(|e| format!("Failed to send command: {e}"))?;
+
+    if out.status.success() {
+        Ok(())
+    } else {
+        let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        Err(if stderr.is_empty() {
+            "Open session first".into()
+        } else {
+            "Open session first".into()
+        })
+    }
 }
 
 fn has_any_diag_data(diag: &DiagnosticState) -> bool {
@@ -2022,6 +2073,7 @@ fn kill_shell(inner: &mut InnerState) {
     inner.shell_suppress_redraw = false;
     inner.shell_phase = "disconnected".into();
     inner.shell_detail = String::new();
+    inner.external_terminal_window_id = None;
 }
 
 // ── String helpers ────────────────────────────────────────────────────────────
@@ -2060,6 +2112,7 @@ pub fn run() {
             get_controller_status,
             poll_controller,
             send_input,
+            send_external_input,
             send_interrupt,
             toggle_debug,
             disconnect_controller,
