@@ -256,11 +256,14 @@ export function generateRecommendedActions(
         detail: `Signal critically weak — ${wifi.strength_score}/100. Controller may lose Wi-Fi intermittently.`,
         dismissed: false, checked: false, custom: false,
       });
-    } else if (wifi.status === "orange" && (wifi.strength_score ?? 100) < 60) {
+    } else if (
+      wifi.status === "orange" &&
+      ((wifi.strength_score ?? 100) < 60 || (wifi.strength_label ?? "").toLowerCase() === "weak")
+    ) {
       actions.push({
         id: mkId(), interface: "Wi-Fi",
-        text: "Check antenna placement or router proximity",
-        detail: `Signal ${wifi.strength_score}/100 (${wifi.strength_label ?? "weak"}). Monitor for reliability issues.`,
+        text: "Improve Wi-Fi coverage",
+        detail: `Signal ${wifi.strength_score ?? "?"}/100 (${wifi.strength_label ?? "weak"}). Move AP closer or add a repeater to improve reliability.`,
         dismissed: false, checked: false, custom: false,
       });
     }

@@ -766,6 +766,23 @@ Done: Success
     }
 
     #[test]
+    fn wifi_check_weak_label_sets_orange_status() {
+        let mut state = DiagnosticState::default();
+        let log = r#"2026-04-08T16:47:40-0600 [18230967]# wifi-check
+Testing Wi-Fi...
+Internet reachability state: online
+Wi-Fi state: online
+Wi-Fi access point: PrettyFlyForaWifi
+Wi-Fi strength: 52/100 ("weak")
+Done: Success
+"#;
+        parse_log_into_state(log, &mut state);
+        let wifi = state.wifi.expect("wifi still exists");
+        assert_eq!(wifi.check_result, "Success");
+        assert_eq!(wifi.status, crate::DiagStatus::Orange);
+    }
+
+    #[test]
     fn ethernet_status_does_not_downgrade_on_partial_followup_chunk() {
         let mut state = DiagnosticState::default();
         let eth_check_log = "2026-04-01T10:32:46-0600 [22611067]# ethernet-check\nTesting Ethernet...\nInternet reachability state: online\nEthernet state: online\nEthernet supports IPv4? Yes\nEthernet supports IPv6? Yes\nEthernet name servers: 192.168.4.1\nDone: Success\n";
@@ -2261,6 +2278,25 @@ fn determine_wifi_status(diag: &mut WifiDiagnostic) {
     // Skip raw interface state checks (iw/ip data may be stale or from a different moment).
     // Only apply quality-of-link checks (signal + packet loss) which come from the same run.
     if diag.check_result == "Success" && diag.internet_reachable {
+        let weak_from_controller = diag
+            .strength_label
+            .as_deref()
+            .map(|v| v.eq_ignore_ascii_case("weak"))
+            .unwrap_or(false);
+        if weak_from_controller {
+            let ssid = diag
+                .ssid
+                .clone()
+                .or(diag.access_point.clone())
+                .unwrap_or_else(|| "Wi-Fi".into());
+            let signal = diag
+                .signal_dbm
+                .map(|v| format!("{v} dBm"))
+                .unwrap_or_else(|| "unknown signal".into());
+            diag.status = DiagStatus::Orange;
+            diag.summary = format!("{ssid} · weak signal ({signal})");
+            return;
+        }
         if let Some(dbm) = diag.signal_dbm {
             if diag.signal_dbm_trusted && dbm <= -75 {
                 let ssid = diag

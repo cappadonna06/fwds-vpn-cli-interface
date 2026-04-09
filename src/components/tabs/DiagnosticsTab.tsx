@@ -444,6 +444,7 @@ function formatLoopback(seconds?: number | null): string {
 function buildWifiSections(wifi?: WifiDiagnostic | null): DiagSection[] {
   if (!wifi) return [{ title: "Status", rows: [{ label: "Details", value: "No recent data" }] }];
   const wifiSig = wifiSignalLabel(wifi);
+  const weakByController = (wifi.strength_label || "").toLowerCase() === "weak";
   const internetTest = wifi.check_result === "Success"
     ? "Passed"
     : wifi.check_result === "Failure"
@@ -461,7 +462,9 @@ function buildWifiSections(wifi?: WifiDiagnostic | null): DiagSection[] {
 
   const action: DiagRow[] = [];
   if (wifi.check_error) action.push({ label: "Recommended action", value: "Check passphrase or AP selection" });
-  else if ((wifi.strength_score ?? 0) > 0 && (wifi.strength_score ?? 0) < 25) action.push({ label: "Recommended action", value: "Monitor weak signal" });
+  else if (weakByController || ((wifi.strength_score ?? 0) > 0 && (wifi.strength_score ?? 0) < 25)) {
+    action.push({ label: "Recommended action", value: "Improve Wi-Fi coverage (move AP closer or add a repeater)" });
+  }
 
   return [
     { title: "Network", rows: network },
@@ -634,6 +637,10 @@ function summarizeWifi(wifi?: WifiDiagnostic | null): CardSummary {
   const ssid = wifi.ssid || wifi.access_point || "Wi-Fi";
   if (!connected) return { health: "neutral", badgeLabel: "Inactive", primaryLine: "Not connected", secondaryLine: ssid };
   const sig = wifiSignalLabel(wifi);
+  const weakByController = (wifi.strength_label || "").toLowerCase() === "weak";
+  if (weakByController) {
+    return { health: "warning", badgeLabel: "Warning", primaryLine: ssid, secondaryLine: "Connected", signalLabel: sig, signalScore: wifi.strength_score };
+  }
   if ((wifi.strength_score ?? 0) > 0 && (wifi.strength_score ?? 0) < 25) {
     return { health: "warning", badgeLabel: "Warning", primaryLine: ssid, secondaryLine: "Monitoring recommended", signalLabel: sig, signalScore: wifi.strength_score };
   }
