@@ -369,11 +369,30 @@ pub struct EthernetDiagnostic {
     pub ethernet_diag_attempted: bool,
 }
 
-#[derive(serde::Serialize, serde::Deserialize, Clone)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Default)]
+#[serde(default)]
 pub struct SystemDiagnostic {
     pub sid: Option<String>,
     pub version: Option<String>,
     pub release_date: Option<String>,
+    pub system_name: Option<String>,
+    pub preferred_network: Option<String>,
+    pub install_date: Option<String>,
+    pub system_type: Option<String>,
+    pub foam_module: Option<bool>,
+    pub drain_cycle: Option<bool>,
+    pub initiation_cycles: Option<u32>,
+    pub water_use_mode: Option<String>,
+    pub zone_count: Option<u32>,
+    pub zones: Vec<SystemZone>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone, Default)]
+#[serde(default)]
+pub struct SystemZone {
+    pub number: Option<u32>,
+    pub zone_type: Option<String>,
+    pub name: Option<String>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Default)]
