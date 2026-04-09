@@ -357,6 +357,25 @@
   align-items: center;
 }
 
+.vpn-help {
+  margin-top: 4px;
+}
+
+.vpn-help-toggle {
+  font-size: 12px;
+}
+
+.vpn-help-list {
+  margin: 6px 0 0 16px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-1);
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
 .serial-picker-row {
   display: flex;
   gap: 8px;

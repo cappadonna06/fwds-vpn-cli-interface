@@ -379,7 +379,7 @@ fn build_satellite_parse_block(blocks: &[CommandBlock]) -> Option<String> {
             "===== SATELLITE LOOPBACK TEST =====",
         ],
     ) {
-        parts.push(wrapped.to_string());
+        parts.push(extract_satellite_scoped_text(wrapped));
     }
 
     if parts.is_empty() {
@@ -391,14 +391,59 @@ fn build_satellite_parse_block(blocks: &[CommandBlock]) -> Option<String> {
             &[
                 "===== satellite loopback test =====",
                 "===== satellite basic =====",
+                "===== quick satellite check =====",
             ],
         ) {
+            let scoped = extract_satellite_scoped_text(full_block);
+            if !scoped.trim().is_empty() {
+                return Some(scoped);
+            }
             return Some(full_block.to_string());
         }
         None
     } else {
         Some(parts.join("\n\n"))
     }
+}
+
+fn extract_satellite_scoped_text(text: &str) -> String {
+    let markers = [
+        "===== SATELLITE BASIC =====",
+        "===== QUICK SATELLITE CHECK =====",
+        "===== SATELLITE LOOPBACK TEST =====",
+    ];
+    let mut collected = Vec::new();
+    for marker in markers {
+        if let Some(section) = extract_section_until_next_marker(text, marker) {
+            collected.push(section);
+        }
+    }
+    if collected.is_empty() {
+        text.to_string()
+    } else {
+        collected.join("\n\n")
+    }
+}
+
+fn extract_section_until_next_marker(text: &str, start_marker: &str) -> Option<String> {
+    let lines: Vec<&str> = text.lines().collect();
+    let mut start_idx = None;
+    for (idx, line) in lines.iter().enumerate() {
+        if line.trim().eq_ignore_ascii_case(start_marker) {
+            start_idx = Some(idx);
+            break;
+        }
+    }
+    let start = start_idx?;
+    let mut end = lines.len();
+    for (idx, line) in lines.iter().enumerate().skip(start + 1) {
+        let trimmed = line.trim();
+        if trimmed.starts_with("=====") && trimmed.ends_with("=====") {
+            end = idx;
+            break;
+        }
+    }
+    Some(lines[start..end].join("\n"))
 }
 
 fn split_blocks(log: &str) -> Vec<CommandBlock> {
@@ -972,6 +1017,115 @@ APN: vzwinternet
         assert_eq!(cell.basic_provider.as_deref(), Some("Verizon"));
         assert_eq!(cell.basic_apn.as_deref(), Some("vzwinternet"));
     }
+
+    #[test]
+    fn wifi_link_bitrate_parses_without_connected_marker() {
+        let mut state = DiagnosticState::default();
+        let log = r#"2026-04-09T10:00:00-0600 [18230967]# iw dev wlan0 link
+	tx bitrate: 54.0 Mb/s
+"#;
+        parse_log_into_state(log, &mut state);
+        let wifi = state.wifi.expect("wifi should parse");
+        assert_eq!(wifi.tx_bitrate_mbps.map(|v| v.round() as i32), Some(54));
+    }
+
+    #[test]
+    fn wifi_station_bitrate_fallback_is_parsed_when_link_missing() {
+        let mut state = DiagnosticState::default();
+        let log = r#"2026-04-09T10:00:00-0600 [18230967]# iw dev wlan0 station dump
+Station c8:84:8c:a9:a2:60 (on wlan0)
+	tx bitrate: 72.2 Mbits/s
+"#;
+        parse_log_into_state(log, &mut state);
+        let wifi = state.wifi.expect("wifi should parse");
+        assert_eq!(wifi.tx_bitrate_mbps, None);
+        assert_eq!(
+            wifi.station_tx_bitrate_mbps.map(|v| v.round() as i32),
+            Some(72)
+        );
+    }
+
+    #[test]
+    fn satellite_scope_ignores_non_satellite_errors_in_full_block() {
+        let mut state = DiagnosticState::default();
+        let log = r#"2026-04-09T10:00:00-0600 [18230967]# (
+> echo "===== WIFI DIAGNOSTICS START ====="
+> wifi-check
+> echo "===== WIFI DIAGNOSTICS END ====="
+> echo "===== SYSTEM ====="
+> version
+> sid
+> echo "===== PRESSURE SNAPSHOT ====="
+> pressure-monitor -v --hhc=mp3 --pressure-sensor=source -u us
+> echo "===== SATELLITE BASIC ====="
+> sat-imei
+> echo "===== SATELLITE LOOPBACK TEST ====="
+> satellite-check -t
+> )
+===== WIFI DIAGNOSTICS START =====
+Done: Failure: -65553: Network technology is not enabled
+===== WIFI DIAGNOSTICS END =====
+===== SYSTEM =====
+r4.0.1
+18230967
+===== PRESSURE SNAPSHOT =====
+CRITICAL:ASSERT:/tmp/Fake.cpp, line: 7
+===== SATELLITE BASIC =====
+300234010753370
+===== SATELLITE LOOPBACK TEST =====
+1 packets transmitted, 1 received, 0% packet loss, time 0:00:28.418
+successfully completed satellite loopback with status: 0: Success
+"#;
+        parse_log_into_state(log, &mut state);
+        let sat = state.satellite.expect("satellite diagnostics expected");
+        assert_eq!(sat.loopback_test_success, Some(true));
+        assert_eq!(sat.status, crate::DiagStatus::Green);
+        assert_eq!(sat.loopback_packet_loss_pct, Some(0));
+        assert_eq!(sat.total_time_seconds, Some(28));
+    }
+
+    #[test]
+    fn satellite_no_loopback_marker_keeps_not_validated_state() {
+        let mut state = DiagnosticState::default();
+        let log = r#"2026-04-09T10:00:00-0600 [18230967]# (
+> echo "===== SYSTEM ====="
+> version
+> sid
+> echo "===== PRESSURE SNAPSHOT ====="
+> pressure-monitor -v --hhc=mp3 --pressure-sensor=source -u us
+> echo "===== SATELLITE BASIC ====="
+> sat-imei
+> )
+===== SYSTEM =====
+r4.0.1
+18230967
+===== PRESSURE SNAPSHOT =====
+INFO: pressure ok
+===== SATELLITE BASIC =====
+300234010753370
+"#;
+        parse_log_into_state(log, &mut state);
+        let sat = state.satellite.expect("satellite diagnostics expected");
+        assert_eq!(sat.modem_present, Some(true));
+        assert!(!sat.loopback_test_ran);
+        assert_eq!(sat.status, crate::DiagStatus::Grey);
+    }
+
+    #[test]
+    fn satellite_parses_modern_duration_and_packet_loss_formats() {
+        let mut state = DiagnosticState::default();
+        let log = r#"2026-04-09T10:00:00-0600 [18230967]# satellite-check -t
+seq=1 time=0:00:28.416
+1 packets transmitted, 1 received, 0% packet loss, time 0:00:28.418
+successfully completed satellite loopback with status: 0: Success
+"#;
+        parse_log_into_state(log, &mut state);
+        let sat = state.satellite.expect("satellite diagnostics expected");
+        assert_eq!(sat.loopback_test_success, Some(true));
+        assert_eq!(sat.loopback_packet_loss_pct, Some(0));
+        assert_eq!(sat.total_time_seconds, Some(28));
+        assert!(sat.loopback_duration_seconds.unwrap_or_default() >= 28.4);
+    }
 }
 
 // Parse all WiFi fields from a scoped WiFi section body (or any single wifi-related
@@ -1058,9 +1212,10 @@ fn parse_wifi_section(text: &str, w: &mut WifiDiagnostic) {
             w.signal_dbm =
                 extract_regex(text, r"signal:\s*(-?\d+)\s*dBm").and_then(|v| v.parse::<i32>().ok());
         }
-        w.tx_bitrate_mbps = extract_regex(text, r"tx bitrate:\s*([0-9.]+)\s*MBit/s")
-            .and_then(|v| v.parse::<f64>().ok());
     }
+    w.tx_bitrate_mbps = w
+        .tx_bitrate_mbps
+        .or_else(|| extract_wifi_bitrate_mbps(text));
 
     // iw dev wlan0 station dump
     w.station_signal_dbm =
@@ -1069,8 +1224,9 @@ fn parse_wifi_section(text: &str, w: &mut WifiDiagnostic) {
         extract_regex(text, r"tx retries:\s*(\d+)").and_then(|v| v.parse::<u64>().ok());
     w.station_tx_failed =
         extract_regex(text, r"tx failed:\s*(\d+)").and_then(|v| v.parse::<u64>().ok());
-    w.station_tx_bitrate_mbps = extract_regex(text, r"tx bitrate:\s*([0-9.]+)\s*MBit/s")
-        .and_then(|v| v.parse::<f64>().ok());
+    w.station_tx_bitrate_mbps = w
+        .station_tx_bitrate_mbps
+        .or_else(|| extract_wifi_bitrate_mbps(text));
 
     // ip link show wlan0 — search for the interface line rather than blindly taking
     // the first line (which may be wifi-check output when parsing the full section).
@@ -1190,6 +1346,11 @@ fn parse_wifi_section(text: &str, w: &mut WifiDiagnostic) {
             }
         }
     }
+}
+
+fn extract_wifi_bitrate_mbps(text: &str) -> Option<f64> {
+    extract_regex(text, r"(?i)tx bitrate:\s*([0-9.]+)\s*M(?:bit|bits|b)/s")
+        .and_then(|v| v.parse::<f64>().ok())
 }
 
 fn parse_wifi(blocks: &[CommandBlock]) -> Option<WifiDiagnostic> {
@@ -1379,7 +1540,7 @@ fn parse_wifi(blocks: &[CommandBlock]) -> Option<WifiDiagnostic> {
     if let Some(text) = iw_link {
         if text.contains("Not connected") {
             w.connected = Some(false);
-        } else {
+        } else if text.contains("Connected to ") {
             w.connected = Some(true);
             w.ap_bssid = extract_regex(text, r"Connected to ([0-9a-f:]{17})");
             w.ssid = w.ssid.or_else(|| capture_after(text, "SSID:"));
@@ -1398,9 +1559,10 @@ fn parse_wifi(blocks: &[CommandBlock]) -> Option<WifiDiagnostic> {
                 w.signal_dbm = extract_regex(text, r"signal:\s*(-?\d+)\s*dBm")
                     .and_then(|v| v.parse::<i32>().ok());
             }
-            w.tx_bitrate_mbps = extract_regex(text, r"tx bitrate:\s*([0-9.]+)\s*MBit/s")
-                .and_then(|v| v.parse::<f64>().ok());
         }
+        w.tx_bitrate_mbps = w
+            .tx_bitrate_mbps
+            .or_else(|| extract_wifi_bitrate_mbps(text));
     }
     if let Some(text) = iw_station {
         w.station_signal_dbm =
@@ -1409,8 +1571,9 @@ fn parse_wifi(blocks: &[CommandBlock]) -> Option<WifiDiagnostic> {
             extract_regex(text, r"tx retries:\s*(\d+)").and_then(|v| v.parse::<u64>().ok());
         w.station_tx_failed =
             extract_regex(text, r"tx failed:\s*(\d+)").and_then(|v| v.parse::<u64>().ok());
-        w.station_tx_bitrate_mbps = extract_regex(text, r"tx bitrate:\s*([0-9.]+)\s*MBit/s")
-            .and_then(|v| v.parse::<f64>().ok());
+        w.station_tx_bitrate_mbps = w
+            .station_tx_bitrate_mbps
+            .or_else(|| extract_wifi_bitrate_mbps(text));
     }
     if let Some(text) = ip_link {
         let line = text.lines().next().unwrap_or_default();
@@ -1759,6 +1922,8 @@ pub fn parse_satellite(block: &str) -> SatelliteDiagnostic {
         server_sent_epoch: None,
         current_epoch: None,
         total_time_seconds: None,
+        loopback_duration_seconds: None,
+        loopback_packet_loss_pct: None,
         recommended_action: None,
         other_actions: vec![],
     };
@@ -1767,7 +1932,8 @@ pub fn parse_satellite(block: &str) -> SatelliteDiagnostic {
     parse_satellite_imei(block, &mut diag);
     parse_satellite_connman_context(block, &mut diag);
     parse_satellite_routing_context(block, &mut diag);
-    parse_satellite_check(block, &mut diag);
+    let satellite_only = extract_satellite_scoped_text(block);
+    parse_satellite_check(&satellite_only, &mut diag);
     determine_satellite_status(&mut diag);
     diag
 }
@@ -1912,8 +2078,12 @@ fn parse_satellite_check(text: &str, diag: &mut SatelliteDiagnostic) {
             .and_then(|v| v.parse().ok());
         diag.current_epoch =
             extract_regex(text, r"current time:\s*(\d+)").and_then(|v| v.parse().ok());
+        let legacy_total = extract_regex(text, r"total time:\s*(\d+)").and_then(|v| v.parse().ok());
+        let parsed_duration = parse_satellite_duration_seconds(text);
+        diag.loopback_duration_seconds = parsed_duration.or(legacy_total.map(|v| v as f64));
         diag.total_time_seconds =
-            extract_regex(text, r"total time:\s*(\d+)").and_then(|v| v.parse().ok());
+            legacy_total.or_else(|| parsed_duration.map(|v| v.round() as u64));
+        diag.loopback_packet_loss_pct = parse_packet_loss(text);
     }
 
     let has_light_command = lower.contains("satellite-check -c 1 -w 1")
@@ -1931,6 +2101,22 @@ fn parse_satellite_check(text: &str, diag: &mut SatelliteDiagnostic) {
             diag.light_test_error = Some(extract_last_non_empty_line(text));
         }
     }
+}
+
+fn parse_satellite_duration_seconds(text: &str) -> Option<f64> {
+    extract_regex(text, r"time(?:=|\s+)(\d+:\d{2}:\d{2}(?:\.\d+)?)")
+        .and_then(|raw| parse_hms_duration_to_seconds(&raw))
+}
+
+fn parse_hms_duration_to_seconds(value: &str) -> Option<f64> {
+    let mut pieces = value.split(':');
+    let hours = pieces.next()?.parse::<f64>().ok()?;
+    let minutes = pieces.next()?.parse::<f64>().ok()?;
+    let seconds = pieces.next()?.parse::<f64>().ok()?;
+    if pieces.next().is_some() {
+        return None;
+    }
+    Some(hours * 3600.0 + minutes * 60.0 + seconds)
 }
 
 fn determine_satellite_status(diag: &mut SatelliteDiagnostic) {

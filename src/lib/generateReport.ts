@@ -25,6 +25,7 @@ interface WifiDiag {
   strength_label?: string | null;
   signal_dbm?: number | null;
   tx_bitrate_mbps?: number | null;
+  station_tx_bitrate_mbps?: number | null;
   ssid?: string | null;
   access_point?: string | null;
 }
@@ -67,6 +68,10 @@ interface SatelliteDiag {
   summary: string;
   loopback_test_ran?: boolean;
   loopback_test_success?: boolean | null;
+  sat_imei?: string | null;
+  loopback_duration_seconds?: number | null;
+  total_time_seconds?: number | null;
+  loopback_packet_loss_pct?: number | null;
 }
 
 interface SystemDiag {
@@ -134,10 +139,32 @@ function formatWifiSummary(wifi: WifiDiag): string {
   const dbmPart = wifi.signal_dbm !== null && wifi.signal_dbm !== undefined
     ? ` (${wifi.signal_dbm} dBm)`
     : "";
-  const speedPart = wifi.tx_bitrate_mbps !== null && wifi.tx_bitrate_mbps !== undefined
-    ? ` · ${wifi.tx_bitrate_mbps.toFixed(1)} Mbps`
+  const speedMbps = wifi.tx_bitrate_mbps ?? wifi.station_tx_bitrate_mbps;
+  const speedPart = speedMbps !== null && speedMbps !== undefined
+    ? ` · ${speedMbps.toFixed(1)} Mbps`
     : "";
   return `${network} · 📶 ${quality}${scorePart}${dbmPart}${speedPart}`;
+}
+
+function formatSatelliteSummary(sat: SatelliteDiag): string {
+  const state = sat.loopback_test_success === true
+    ? "Link verified"
+    : sat.loopback_test_ran
+      ? "Loopback failed"
+      : sat.summary || "Not validated";
+  const details: string[] = [];
+  if (sat.sat_imei) details.push(`IMEI ${sat.sat_imei}`);
+  const duration = sat.loopback_duration_seconds ?? sat.total_time_seconds;
+  if (duration !== null && duration !== undefined) {
+    const rounded = Math.round(duration);
+    const mins = Math.floor(rounded / 60);
+    const secs = rounded % 60;
+    details.push(mins > 0 ? `Duration ${mins}m ${secs}s` : `Duration ${secs}s`);
+  }
+  if (sat.loopback_packet_loss_pct !== null && sat.loopback_packet_loss_pct !== undefined) {
+    details.push(`Loss ${sat.loopback_packet_loss_pct}%`);
+  }
+  return details.length ? `${state} · ${details.join(" · ")}` : state;
 }
 
 function formatCellSummary(cell: CellularDiag): string {
@@ -209,7 +236,7 @@ export function generateNetworkRows(diag: DiagnosticState): NetworkStatusRow[] {
     {
       interface: "Satellite",
       status: toStatus(diag.satellite?.status),
-      summary: diag.satellite?.summary ?? "Diagnostics not collected",
+      summary: diag.satellite ? formatSatelliteSummary(diag.satellite) : "Diagnostics not collected",
     },
   ];
 }

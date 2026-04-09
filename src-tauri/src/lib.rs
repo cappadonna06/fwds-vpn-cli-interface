@@ -341,6 +341,8 @@ pub struct SatelliteDiagnostic {
     pub server_sent_epoch: Option<i64>,
     pub current_epoch: Option<i64>,
     pub total_time_seconds: Option<u64>,
+    pub loopback_duration_seconds: Option<f64>,
+    pub loopback_packet_loss_pct: Option<u8>,
 
     // Recommended actions
     pub recommended_action: Option<String>,
@@ -583,17 +585,37 @@ fn start_vpn(folder: String, state: State<'_, AppState>) -> Result<(), String> {
 #[tauri::command]
 fn stop_vpn(state: State<'_, AppState>) -> Result<(), String> {
     let mut inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
-    let Some(pid) = inner.managed_openvpn_pid.take() else {
-        inner.vpn_phase = "disconnected".into();
-        inner.vpn_detail = String::new();
-        return Ok(());
+    let mut pids = detect_openvpn_pids();
+    if let Some(pid) = inner.managed_openvpn_pid.take() {
+        if !pids.contains(&pid) {
+            pids.push(pid);
+        }
     };
-    stop_openvpn_elevated(pid)?;
+
+    if !pids.is_empty() {
+        stop_openvpn_pids_elevated(&pids)?;
+        push_vpn_log(
+            &mut inner,
+            format!(
+                "Stopped OpenVPN process(es): {}",
+                pids.iter()
+                    .map(u32::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        );
+    } else {
+        push_vpn_log(
+            &mut inner,
+            "Stop requested; no running OpenVPN processes found".into(),
+        );
+    }
+
     cleanup_stage_dir(inner.managed_openvpn_stage_dir.take());
+    inner.managed_openvpn_log_path = None;
     inner.managed_openvpn_log_offset = 0;
     inner.vpn_phase = "disconnected".into();
     inner.vpn_detail = "OpenVPN stopped".into();
-    push_vpn_log(&mut inner, format!("Stopped OpenVPN process {pid}"));
     Ok(())
 }
 
@@ -1724,6 +1746,37 @@ fn stop_openvpn_elevated(pid: u32) -> Result<(), String> {
     }
 }
 
+fn stop_openvpn_pids_elevated(pids: &[u32]) -> Result<(), String> {
+    if pids.is_empty() {
+        return Ok(());
+    }
+    let pid_list = pids
+        .iter()
+        .map(u32::to_string)
+        .collect::<Vec<_>>()
+        .join(" ");
+    let script = format!(
+        "do shell script \"kill {} >/dev/null 2>&1 || true\" with administrator privileges",
+        pid_list
+    );
+    let out = Command::new("osascript")
+        .arg("-e")
+        .arg(&script)
+        .output()
+        .map_err(|e| format!("Failed to invoke osascript to stop OpenVPN: {e}"))?;
+
+    if out.status.success() {
+        Ok(())
+    } else {
+        let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        if stderr.is_empty() {
+            Err("Failed to stop the elevated OpenVPN process.".into())
+        } else {
+            Err(format!("Failed to stop OpenVPN: {stderr}"))
+        }
+    }
+}
+
 fn sync_vpn_logs(inner: &mut InnerState) {
     let Some(ref log_path) = inner.managed_openvpn_log_path.clone() else {
         return;
@@ -1752,13 +1805,17 @@ fn sync_vpn_logs(inner: &mut InnerState) {
         inner.vpn_logs.push(line.to_string());
     }
 
-    // Detect openvpn death while still "connecting"
+    // Detect openvpn death while still active
     if let Some(pid) = inner.managed_openvpn_pid {
-        if inner.vpn_phase == "connecting" && !process_alive(pid) {
+        let should_watch_liveness =
+            inner.vpn_phase == "connecting" || inner.vpn_phase == "connected";
+        if should_watch_liveness && !process_alive(pid) {
             inner.managed_openvpn_pid = None;
             cleanup_stage_dir(inner.managed_openvpn_stage_dir.take());
-            inner.vpn_phase = "failed".into();
-            inner.vpn_detail = "OpenVPN exited before the tunnel was established".into();
+            inner.managed_openvpn_log_path = None;
+            inner.managed_openvpn_log_offset = 0;
+            inner.vpn_phase = "disconnected".into();
+            inner.vpn_detail = "OpenVPN tunnel dropped. Reconnect OpenVPN.".into();
             inner.vpn_logs.push(inner.vpn_detail.clone());
         }
     }

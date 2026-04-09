@@ -58,6 +58,7 @@ export default function SessionTab({ onControllerConnected }: SessionTabProps) {
   const [vpnIp, setVpnIp] = useState("");
   const [lastOctet, setLastOctet] = useState("");
   const [savedOctet, setSavedOctet] = useState("");
+  const [showVpnHelp, setShowVpnHelp] = useState(false);
   const [ctrlStatus, setCtrlStatus] = useState<ControllerStatus>("disconnected");
   const [ctrlDetail, setCtrlDetail] = useState("");
 
@@ -381,12 +382,32 @@ export default function SessionTab({ onControllerConnected }: SessionTabProps) {
                   </button>
                   <button
                     className="btn btn-secondary"
-                    disabled={vpnStatus === "disconnected" || vpnStatus === "failed"}
                     onClick={stopVpn}
                   >
                     Stop
                   </button>
                 </div>
+              </div>
+              <div className="vpn-help">
+                <button
+                  className="btn-link vpn-help-toggle"
+                  type="button"
+                  onClick={() => setShowVpnHelp((prev) => !prev)}
+                  aria-expanded={showVpnHelp}
+                >
+                  Having VPN issues?
+                </button>
+                {showVpnHelp && (
+                  <ol className="vpn-help-list">
+                    <li>Disconnect controller in app.</li>
+                    <li>Stop VPN in API.</li>
+                    <li>Refresh API page.</li>
+                    <li>Start VPN in API.</li>
+                    <li>Stop OpenVPN in app.</li>
+                    <li>Start OpenVPN in app.</li>
+                    <li>Reconnect + Launch.</li>
+                  </ol>
+                )}
               </div>
               {vpnDetail && <div className="hint session-hint">{vpnDetail}</div>}
             </div>
