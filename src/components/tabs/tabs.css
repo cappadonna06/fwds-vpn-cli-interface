@@ -2119,14 +2119,20 @@
   flex-wrap: wrap;
 }
 
-.diag-card-secondary-line {
+.diag-card-secondary-row {
   margin-top: 4px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.diag-card-secondary-line {
   color: var(--text-secondary);
   font-size: 13px;
 }
 
 .diag-card-secondary-tags {
-  margin-top: 4px;
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -2162,10 +2168,18 @@
 }
 
 .diag-card-collapsed-reco {
-  margin-top: 6px;
-  color: var(--text-secondary);
+  margin-top: 8px;
+  margin-bottom: 8px;
+  align-self: center;
+  width: 100%;
+  border: 1px solid color-mix(in srgb, var(--warning) 55%, var(--border));
+  background: color-mix(in srgb, var(--warning) 14%, var(--bg-1));
+  border-radius: 8px;
+  padding: 7px 10px;
+  color: color-mix(in srgb, var(--warning) 72%, var(--text-primary));
   font-size: 12px;
   line-height: 1.25;
+  text-align: left;
 }
 
 .diag-card-compact .diag-card-subline:empty {

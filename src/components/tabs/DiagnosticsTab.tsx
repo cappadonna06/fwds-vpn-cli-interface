@@ -717,7 +717,7 @@ function buildPressureSecondaryTags(pressure?: PressureDiagnostic | null): strin
   const source = pressure.sensors?.source?.latest;
   const isValidSource = source !== null && source !== undefined && source >= 0 && source <= 218;
   const showSourceTag = isValidSource && (pressure.via_sensor ?? "").toLowerCase() !== "source";
-  return showSourceTag ? [`${source!.toFixed(1)} PSI (Source (P3))`] : [];
+  return showSourceTag ? ["Source (P3)"] : [];
 }
 
 type CardSummary = {
@@ -814,11 +814,14 @@ function summarizePressure(pressure?: PressureDiagnostic | null): CardSummary {
   if (!pressure) return { health: "neutral", badgeLabel: "No data", primaryLine: "No data yet" };
   const health = pressure.status === "red" ? "error" : pressure.status === "orange" ? "warning" : "healthy";
   const badgeLabel = pressure.status === "red" ? "Error" : pressure.status === "orange" ? "Warning" : "Healthy";
+  const source = pressure.sensors?.source?.latest;
+  const isValidSource = source !== null && source !== undefined && source >= 0 && source <= 218;
+  const showSourceLine = isValidSource && (pressure.via_sensor ?? "").toLowerCase() !== "source";
   return {
     health,
     badgeLabel,
     primaryLine: pressure.display_psi !== null && pressure.display_psi !== undefined ? `${pressure.display_psi.toFixed(1)} PSI` : "—",
-    secondaryLine: null,
+    secondaryLine: showSourceLine ? `${source!.toFixed(1)} PSI` : null,
   };
 }
 
@@ -976,12 +979,16 @@ function DiagCard({
           </div>
         )}
       </div>
-      {secondaryLine && <div className="diag-card-secondary-line">{secondaryLine}</div>}
-      {secondaryTags && secondaryTags.length > 0 && (
-        <div className="diag-card-secondary-tags">
-          {secondaryTags.map((tag) => (
-            <span key={`${title}-${tag}`} className="diag-role-pill-inline">{tag}</span>
-          ))}
+      {(secondaryLine || (secondaryTags && secondaryTags.length > 0)) && (
+        <div className="diag-card-secondary-row">
+          {secondaryLine && <div className="diag-card-secondary-line">{secondaryLine}</div>}
+          {secondaryTags && secondaryTags.length > 0 && (
+            <div className="diag-card-secondary-tags">
+              {secondaryTags.map((tag) => (
+                <span key={`${title}-${tag}`} className="diag-role-pill-inline">{tag}</span>
+              ))}
+            </div>
+          )}
         </div>
       )}
       {hasSignalInfo && (
@@ -997,7 +1004,7 @@ function DiagCard({
           {cardSignalLabel && <span>{cardSignalLabel}</span>}
         </div>
       )}
-      {collapsedRecommendation && <div className="diag-card-collapsed-reco">Recommended: {collapsedRecommendation}</div>}
+      {collapsedRecommendation && <div className="diag-card-collapsed-reco">⚠ {collapsedRecommendation}</div>}
 
       {expanded && (
         <div className="diag-details-wrap">
