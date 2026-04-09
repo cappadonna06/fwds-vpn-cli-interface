@@ -2404,7 +2404,7 @@
   transition: background 120ms ease, color 120ms ease;
 }
 
-.diag-tier-btn:hover {
+.diag-tier-btn:not(.diag-tier-btn-active):hover {
   background: color-mix(in srgb, var(--accent) 8%, transparent);
   color: var(--text-primary);
 }

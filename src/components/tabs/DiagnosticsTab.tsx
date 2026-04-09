@@ -659,7 +659,6 @@ function buildPressureSections(pressure?: PressureDiagnostic | null): DiagSectio
   const supply = pressure.sensors?.supply;
   const readings: DiagRow[] = [];
 
-  if (source) readings.push({ label: "Source (P3)", value: `${formatPsi(source.latest)}${source.voltage !== null && source.voltage !== undefined ? ` · ${source.voltage.toFixed(2)}V` : ""}` });
   if (distribution) {
     const inactiveExpected = pressure.is_active === false && distribution.latest < 1.0;
     readings.push({
@@ -669,6 +668,7 @@ function buildPressureSections(pressure?: PressureDiagnostic | null): DiagSectio
         : `${formatPsi(distribution.latest)}${distribution.voltage !== null && distribution.voltage !== undefined ? ` · ${distribution.voltage.toFixed(2)}V` : ""}`,
     });
   }
+  if (source) readings.push({ label: "Source (P3)", value: `${formatPsi(source.latest)}${source.voltage !== null && source.voltage !== undefined ? ` · ${source.voltage.toFixed(2)}V` : ""}` });
   if (supply) readings.push({ label: "Supply (P1)", value: `${formatPsi(supply.latest)}${supply.voltage !== null && supply.voltage !== undefined ? ` · ${supply.voltage.toFixed(2)}V` : ""}` });
 
   if (!supply) {
@@ -704,16 +704,11 @@ function buildPressureSections(pressure?: PressureDiagnostic | null): DiagSectio
 
 function buildPressurePrimaryTags(pressure?: PressureDiagnostic | null): string[] {
   if (!pressure) return [];
-  const tags: string[] = [];
-  const source = pressure.sensors?.source;
-  const distribution = pressure.sensors?.distribution;
-  if (source?.latest !== undefined) {
-    tags.push(`${source.latest.toFixed(1)} PSI (Source P3)`);
-  }
-  if (pressure.is_active && distribution?.latest !== undefined) {
-    tags.push(`${distribution.latest.toFixed(1)} PSI (Distribution P2)`);
-  }
-  return tags;
+  const via = (pressure.via_sensor ?? "").toLowerCase();
+  if (via === "distribution") return ["Distribution (P2)"];
+  if (via === "source") return ["Source (P3)"];
+  if (via === "supply") return ["Supply (P1)"];
+  return [];
 }
 
 type CardSummary = {
@@ -862,6 +857,19 @@ function DiagCard({
   onClear,
 }: DiagCardProps) {
   const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!menuOpen) return;
+    const onDocClick = (event: MouseEvent) => {
+      if (!menuRef.current) return;
+      if (!menuRef.current.contains(event.target as Node)) {
+        setMenuOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", onDocClick);
+    return () => document.removeEventListener("mousedown", onDocClick);
+  }, [menuOpen]);
 
   return (
     <article className={`diag-card diag-card-${health} ${expanded ? "diag-card-open" : ""} ${compact ? "diag-card-compact" : ""}`}>
@@ -879,7 +887,7 @@ function DiagCard({
             <span>{statusLabel}</span>
           </span>
           {onClear && (
-            <div className="diag-card-menu-wrap">
+            <div className="diag-card-menu-wrap" ref={menuRef}>
               <button
                 type="button"
                 className="diag-card-menu-btn"
