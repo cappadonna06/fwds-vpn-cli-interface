@@ -274,6 +274,7 @@ interface DiagCardProps {
   primaryTags?: string[];
   primaryLine: string;
   secondaryLine?: string | null;
+  secondaryTags?: string[];
   role?: string | null;
   signalLabel?: string | null;
   signalScore?: number | null;
@@ -711,6 +712,14 @@ function buildPressurePrimaryTags(pressure?: PressureDiagnostic | null): string[
   return [];
 }
 
+function buildPressureSecondaryTags(pressure?: PressureDiagnostic | null): string[] {
+  if (!pressure) return [];
+  const source = pressure.sensors?.source?.latest;
+  const isValidSource = source !== null && source !== undefined && source >= 0 && source <= 218;
+  const showSourceTag = isValidSource && (pressure.via_sensor ?? "").toLowerCase() !== "source";
+  return showSourceTag ? [`${source!.toFixed(1)} PSI (Source (P3))`] : [];
+}
+
 type CardSummary = {
   health: HealthTone;
   badgeLabel: string;
@@ -805,14 +814,11 @@ function summarizePressure(pressure?: PressureDiagnostic | null): CardSummary {
   if (!pressure) return { health: "neutral", badgeLabel: "No data", primaryLine: "No data yet" };
   const health = pressure.status === "red" ? "error" : pressure.status === "orange" ? "warning" : "healthy";
   const badgeLabel = pressure.status === "red" ? "Error" : pressure.status === "orange" ? "Warning" : "Healthy";
-  const source = pressure.sensors?.source?.latest;
-  const isValidSource = source !== null && source !== undefined && source >= 0 && source <= 218;
-  const showSourceLine = isValidSource && (pressure.via_sensor ?? "").toLowerCase() !== "source";
   return {
     health,
     badgeLabel,
     primaryLine: pressure.display_psi !== null && pressure.display_psi !== undefined ? `${pressure.display_psi.toFixed(1)} PSI` : "—",
-    secondaryLine: showSourceLine ? `${source!.toFixed(1)} PSI (Source (P3))` : null,
+    secondaryLine: null,
   };
 }
 
@@ -845,6 +851,7 @@ function DiagCard({
   primaryTags,
   primaryLine,
   secondaryLine,
+  secondaryTags,
   role,
   signalLabel: cardSignalLabel,
   signalScore,
@@ -873,9 +880,14 @@ function DiagCard({
     document.addEventListener("mousedown", onDocClick);
     return () => document.removeEventListener("mousedown", onDocClick);
   }, [menuOpen]);
+  const hasSignalInfo =
+    (signalScore !== null && signalScore !== undefined) || !!cardSignalLabel;
+  const collapsedRecommendation = !expanded && (health === "warning" || health === "error")
+    ? sections.flatMap((s) => s.rows).find((row) => row.label.toLowerCase().includes("recommended action"))?.value
+    : null;
 
   return (
-    <article className={`diag-card diag-card-${health} ${expanded ? "diag-card-open" : ""} ${compact ? "diag-card-compact" : ""}`}>
+    <article className={`diag-card diag-card-${health} ${expanded ? "diag-card-open" : "diag-card-collapsed"} ${compact ? "diag-card-compact" : ""}`}>
       <div className="diag-card-head">
         <div className="diag-card-title-wrap">
           <span className="diag-card-icon" aria-hidden>{icon}</span>
@@ -965,17 +977,27 @@ function DiagCard({
         )}
       </div>
       {secondaryLine && <div className="diag-card-secondary-line">{secondaryLine}</div>}
-      <div className="diag-card-subline">
-        {signalScore !== null && signalScore !== undefined && (
-          <span className={`diag-signal-bars tone-${signalBars(signalScore) >= 3 ? "good" : signalBars(signalScore) >= 2 ? "warn" : "bad"}`} aria-hidden>
-            <i className={signalBars(signalScore) >= 1 ? "on" : ""} />
-            <i className={signalBars(signalScore) >= 2 ? "on" : ""} />
-            <i className={signalBars(signalScore) >= 3 ? "on" : ""} />
-            <i className={signalBars(signalScore) >= 4 ? "on" : ""} />
-          </span>
-        )}
-        {cardSignalLabel && <span>{cardSignalLabel}</span>}
-      </div>
+      {secondaryTags && secondaryTags.length > 0 && (
+        <div className="diag-card-secondary-tags">
+          {secondaryTags.map((tag) => (
+            <span key={`${title}-${tag}`} className="diag-role-pill-inline">{tag}</span>
+          ))}
+        </div>
+      )}
+      {hasSignalInfo && (
+        <div className="diag-card-subline">
+          {signalScore !== null && signalScore !== undefined && (
+            <span className={`diag-signal-bars tone-${signalBars(signalScore) >= 3 ? "good" : signalBars(signalScore) >= 2 ? "warn" : "bad"}`} aria-hidden>
+              <i className={signalBars(signalScore) >= 1 ? "on" : ""} />
+              <i className={signalBars(signalScore) >= 2 ? "on" : ""} />
+              <i className={signalBars(signalScore) >= 3 ? "on" : ""} />
+              <i className={signalBars(signalScore) >= 4 ? "on" : ""} />
+            </span>
+          )}
+          {cardSignalLabel && <span>{cardSignalLabel}</span>}
+        </div>
+      )}
+      {collapsedRecommendation && <div className="diag-card-collapsed-reco">Recommended: {collapsedRecommendation}</div>}
 
       {expanded && (
         <div className="diag-details-wrap">
@@ -1298,6 +1320,7 @@ export default function DiagnosticsTab() {
           health={pressureSummary.health || toneFromStatus(pressure?.status)}
           statusLabel={pressureSummary.badgeLabel}
           primaryTags={buildPressurePrimaryTags(pressure)}
+          secondaryTags={buildPressureSecondaryTags(pressure)}
           primaryLine={pressureSummary.primaryLine}
           secondaryLine={pressureSummary.secondaryLine}
           sections={buildPressureSections(pressure)}
