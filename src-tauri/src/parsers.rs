@@ -2400,6 +2400,22 @@ fn build_pressure_from_text(text: &str, system: &SystemDiagnostic) -> Option<Pre
             }
         }
     }
+    if is_mp3_or_lv2 {
+        if let Some(dist) = &distribution_sensor {
+            if dist.latest > PRESSURE_VALID_MIN {
+                issues.push(PressureIssue {
+                    id: "WARN_MP3_LV2_P2_PRESENT".into(),
+                    severity: DiagStatus::Orange,
+                    title: "Unexpected distribution pressure on MP3/LV2".into(),
+                    description: format!(
+                        "Distribution (P2) is {:.2} PSI on an MP3/LV2 system.",
+                        dist.latest
+                    ),
+                    action: "Check P2/P3 wiring and re-test pressure sensors".into(),
+                });
+            }
+        }
+    }
 
     for sensor in [
         source_sensor.as_ref(),

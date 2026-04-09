@@ -271,6 +271,7 @@ interface DiagCardProps {
   icon: string;
   health: HealthTone;
   statusLabel: string;
+  headerTags?: string[];
   primaryLine: string;
   secondaryLine?: string | null;
   role?: string | null;
@@ -689,19 +690,24 @@ function buildPressureSections(pressure?: PressureDiagnostic | null): DiagSectio
   if (issues.length === 0) issues.push({ label: "✓ Healthy", value: "All sensors healthy — no anomalies detected" });
 
   return [
-    {
-      title: "Controller",
-      rows: [
-        { label: "Controller ID", value: pressure.controller_id ?? "—" },
-        { label: "FW", value: pressure.fw_version ?? "—" },
-        { label: "System type", value: pressure.system_type ?? "—" },
-        { label: "Active", value: pressure.is_active ? "Yes" : "No" },
-      ],
-    },
     { title: "Raw readings", rows: readings.length ? readings : [{ label: "Readings", value: "No pressure readings captured" }] },
     ...(stats.length ? [{ title: "Live stats", rows: stats }] : []),
     { title: "Diagnostics", rows: issues },
   ];
+}
+
+function buildPressureHeaderTags(pressure?: PressureDiagnostic | null): string[] {
+  if (!pressure) return [];
+  const tags: string[] = [];
+  const source = pressure.sensors?.source;
+  const distribution = pressure.sensors?.distribution;
+  if (source?.latest !== undefined) {
+    tags.push(`${source.latest.toFixed(1)} PSI (Source P3)`);
+  }
+  if (pressure.is_active && distribution?.latest !== undefined) {
+    tags.push(`${distribution.latest.toFixed(1)} PSI (Distribution P2)`);
+  }
+  return tags;
 }
 
 type CardSummary = {
@@ -797,7 +803,7 @@ function summarizeEthernet(ethernet?: EthernetDiagnostic | null): CardSummary {
 function summarizePressure(pressure?: PressureDiagnostic | null): CardSummary {
   if (!pressure) return { health: "neutral", badgeLabel: "No data", primaryLine: "No data yet" };
   const health = pressure.status === "red" ? "error" : pressure.status === "orange" ? "warning" : "healthy";
-  const badgeLabel = pressure.status === "red" ? "Error" : pressure.status === "orange" ? "Warning" : "OK";
+  const badgeLabel = pressure.status === "red" ? "Error" : pressure.status === "orange" ? "Warning" : "Healthy";
   return {
     health,
     badgeLabel,
@@ -832,6 +838,7 @@ function DiagCard({
   icon,
   health,
   statusLabel,
+  headerTags,
   primaryLine,
   secondaryLine,
   role,
@@ -859,6 +866,7 @@ function DiagCard({
             {title}
           </span>
           {role ? <span className="diag-role-pill-inline">{role}</span> : null}
+          {headerTags?.map((tag) => <span key={`${title}-${tag}`} className="diag-role-pill-inline">{tag}</span>)}
         </div>
         <div className="diag-card-head-right">
           <span className="diag-status-label">
@@ -1264,6 +1272,7 @@ export default function DiagnosticsTab() {
           icon="💧"
           health={pressureSummary.health || toneFromStatus(pressure?.status)}
           statusLabel={pressureSummary.badgeLabel}
+          headerTags={buildPressureHeaderTags(pressure)}
           primaryLine={pressureSummary.primaryLine}
           secondaryLine={pressureSummary.secondaryLine}
           sections={buildPressureSections(pressure)}
