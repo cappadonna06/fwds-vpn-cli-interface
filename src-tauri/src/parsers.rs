@@ -1126,6 +1126,22 @@ successfully completed satellite loopback with status: 0: Success
         assert_eq!(sat.total_time_seconds, Some(28));
         assert!(sat.loopback_duration_seconds.unwrap_or_default() >= 28.4);
     }
+
+    #[test]
+    fn satellite_parses_success_from_loopback_status_line_without_test_completed() {
+        let mut state = DiagnosticState::default();
+        let log = r#"2026-04-09T10:00:00-0600 [18230967]# satellite-check -t
+Performing loopback test from satellite to server and back...
+===> \            16 bytes: seq=1 time=0:00:56.069
+successfully completed satellite loopback with status: 0: Success
+1 packets transmitted, 1 received, 0% packet loss, time 0:00:56.070
+"#;
+        parse_log_into_state(log, &mut state);
+        let sat = state.satellite.expect("satellite diagnostics expected");
+        assert_eq!(sat.loopback_test_ran, true);
+        assert_eq!(sat.loopback_test_success, Some(true));
+        assert_eq!(sat.status, crate::DiagStatus::Green);
+    }
 }
 
 // Parse all WiFi fields from a scoped WiFi section body (or any single wifi-related
@@ -2038,8 +2054,10 @@ fn parse_satellite_check(text: &str, diag: &mut SatelliteDiagnostic) {
     let looks_like_loopback = lower.contains("satellite loopback test")
         || lower.contains("satellite-check -t")
         || lower.contains("loopback test");
-    let has_success_marker =
-        lower.contains("test completed") || lower.contains("received satellite ping response");
+    let has_success_marker = lower.contains("test completed")
+        || lower.contains("received satellite ping response")
+        || lower.contains("successfully completed satellite loopback")
+        || lower.contains("status: 0: success");
     let blocked_in_use = lower.contains("network service is in use by another resource")
         || lower.contains("(-65555)");
     let timeout_like = lower.contains("timeout")

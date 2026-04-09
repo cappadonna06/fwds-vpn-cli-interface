@@ -582,9 +582,11 @@ function buildSatelliteSections(sat?: SatelliteDiagnostic | null): DiagSection[]
     sat.loopback_test_success === true
       ? "Passed"
       : sat.loopback_test_ran
-        ? sat.loopback_test_blocked_in_use
-          ? "Blocked"
-          : "Failed"
+        ? sat.loopback_test_success === false
+          ? sat.loopback_test_blocked_in_use
+            ? "Blocked"
+            : "Failed"
+          : "In progress"
         : "Not run";
 
   const actions: DiagRow[] = [];
@@ -841,6 +843,7 @@ function summarizeSatellite(sat?: SatelliteDiagnostic | null): CardSummary {
   if (sat.loopback_test_success === true) return { health: "healthy", badgeLabel: "Verified", primaryLine: "Link verified" };
   if (sat.loopback_test_blocked_in_use) return { health: "warning", badgeLabel: "Warning", primaryLine: "Test blocked" };
   if (sat.loopback_test_ran && sat.loopback_test_success === false) return { health: "error", badgeLabel: "Issue", primaryLine: "Loopback failed" };
+  if (sat.loopback_test_ran) return { health: "warning", badgeLabel: "Running", primaryLine: "Loopback in progress" };
   if (sat.light_test_success === true) return { health: "healthy", badgeLabel: "Healthy", primaryLine: "Satellite check passed" };
   if (sat.light_test_ran && sat.light_test_success === false) return { health: "error", badgeLabel: "Issue", primaryLine: "Quick check failed" };
   if (sat.satellites_seen === 0) return { health: "error", badgeLabel: "Issue", primaryLine: "No satellites visible" };
