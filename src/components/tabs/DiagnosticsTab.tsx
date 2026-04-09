@@ -158,6 +158,7 @@ interface SatelliteDiagnostic {
 interface EthernetDiagnostic {
   status: DiagStatus;
   summary: string;
+  technology_disabled?: boolean;
   internet_reachable: boolean;
   eth_state: string;
   ipv4: boolean;
@@ -221,6 +222,7 @@ interface SystemDiagnostic {
   sid?: string | null;
   version?: string | null;
   release_date?: string | null;
+  preferred_network?: string | null;
 }
 
 type SimPickerRecommendation =
@@ -499,6 +501,9 @@ function buildWifiSections(wifi?: WifiDiagnostic | null): DiagSection[] {
   const speedMbps = wifi.tx_bitrate_mbps ?? wifi.station_tx_bitrate_mbps;
   const wifiSig = wifiSignalLabel(wifi);
   const weakByController = (wifi.strength_label || "").toLowerCase() === "weak";
+  const connected = wifi.connected === true
+    || wifi.connman_wifi_connected === true
+    || wifi.internet_reachable === true;
   const internetTest = wifi.check_result === "Success"
     ? "Passed"
     : wifi.check_result === "Failure"
@@ -507,9 +512,9 @@ function buildWifiSections(wifi?: WifiDiagnostic | null): DiagSection[] {
 
   const network: DiagRow[] = [
     { label: "Network", value: (wifi.ssid && !wifi.ssid.startsWith('=') ? wifi.ssid : null) || wifi.access_point || "Unknown" },
-    { label: "Connection", value: wifi.connected === true ? "Connected" : "Not connected" },
+    { label: "Connection", value: connected ? "Connected" : "Not connected" },
     { label: "Signal", value: `${wifiSig}${wifi.signal_dbm !== null && wifi.signal_dbm !== undefined ? ` (${wifi.signal_dbm} dBm)` : ""}` },
-    { label: "Role", value: wifi.default_via_wlan0 === true ? "Active" : wifi.connected === true ? "Backup" : "Inactive" },
+    { label: "Role", value: wifi.default_via_wlan0 === true ? "Primary" : connected ? "Backup" : "Unknown" },
     { label: "Speed", value: speedMbps !== null && speedMbps !== undefined ? `${speedMbps.toFixed(1)} Mbps` : "—" },
     { label: "Internet test", value: internetTest },
   ];
@@ -550,7 +555,7 @@ function buildCellularSections(cell?: CellularDiagnostic | null): DiagSection[] 
         { label: "Carrier", value: cleanCellValue(cell.operator_name) || resolveCarrierCode(cell.provider_code) || resolveCarrierCode(cell.basic_provider) || "—" },
         { label: "Signal", value: signalLabel(cell.strength_score) + (cell.strength_score !== null && cell.strength_score !== undefined ? ` (${cell.strength_score}/100)` : "") },
         { label: "Connection", value: (cell.connman_cell_connected === true || cell.internet_reachable === true) ? "Connected" : "Not connected" },
-        { label: "Role", value: roleLabel(cell.role) || "Inactive" },
+        { label: "Role", value: roleLabel(cell.role) || "Unknown" },
         { label: "SIM", value: cell.sim_inserted === false ? "Missing" : cell.sim_ready === true ? "Ready" : "Unknown" },
         { label: "Modem", value: cell.modem_not_present ? "Not detected" : cell.modem_unreachable ? "Detected — not responding" : cell.cellular_disabled && cell.imei ? "Powered off (detected)" : cell.cellular_disabled ? "Powered off" : cell.modem_present === true ? cell.modem_model ?? "Detected" : "Unknown" },
         { label: "Network", value: [cell.rat, cell.band].filter(Boolean).join(" / ") || "—" },
@@ -748,7 +753,7 @@ type CardSummary = {
   signalScore?: number | null;
 };
 
-function resolvePrimaryNetwork(diag: { wifi?: WifiDiagnostic | null; cellular?: CellularDiagnostic | null; satellite?: SatelliteDiagnostic | null; ethernet?: EthernetDiagnostic | null }): "wifi" | "cellular" | "ethernet" | null {
+function resolvePrimaryNetwork(diag: { wifi?: WifiDiagnostic | null; cellular?: CellularDiagnostic | null; satellite?: SatelliteDiagnostic | null; ethernet?: EthernetDiagnostic | null; system?: SystemDiagnostic | null }): "wifi" | "cellular" | "ethernet" | null {
   if (diag.satellite?.default_via_eth0 === true) return "ethernet";
   if (diag.satellite?.default_via_wlan0 === true || diag.wifi?.default_via_wlan0 === true) return "wifi";
   if (diag.satellite?.default_via_wwan0 === true) return "cellular";
@@ -759,8 +764,24 @@ function resolvePrimaryNetwork(diag: { wifi?: WifiDiagnostic | null; cellular?: 
   if (active.includes("wwan") || active.includes("cell")) return "cellular";
 
   if (diag.ethernet?.internet_reachable) return "ethernet";
-  if (diag.wifi?.connected || diag.wifi?.connman_wifi_connected) return "wifi";
-  if (diag.cellular?.connman_cell_connected) return "cellular";
+  if (diag.wifi?.connected || diag.wifi?.connman_wifi_connected || diag.wifi?.internet_reachable) return "wifi";
+  if (diag.cellular?.connman_cell_connected || diag.cellular?.internet_reachable) return "cellular";
+
+  const preferred = (diag.system?.preferred_network || "").toLowerCase();
+  if (preferred.includes("eth")) return "ethernet";
+  if (preferred.includes("wifi") || preferred.includes("wlan")) return "wifi";
+  if (preferred.includes("cell") || preferred.includes("wwan")) return "cellular";
+
+  // Final deterministic fallback by station preference among connected paths.
+  const ethConnected = diag.ethernet?.internet_reachable === true;
+  const wifiConnected = diag.wifi?.connected === true
+    || diag.wifi?.connman_wifi_connected === true
+    || diag.wifi?.internet_reachable === true;
+  const cellConnected = diag.cellular?.connman_cell_connected === true
+    || diag.cellular?.internet_reachable === true;
+  if (ethConnected) return "ethernet";
+  if (wifiConnected) return "wifi";
+  if (cellConnected) return "cellular";
   return null;
 }
 
@@ -821,6 +842,14 @@ function summarizeCellular(cell?: CellularDiagnostic | null): CardSummary {
 
 function summarizeEthernet(ethernet?: EthernetDiagnostic | null): CardSummary {
   if (!ethernet) return { health: "neutral", badgeLabel: "No data", primaryLine: "No data yet" };
+  const checkLower = (ethernet.check_result || "").toLowerCase();
+  if (
+    ethernet.technology_disabled === true
+    || (checkLower.startsWith("failure")
+      && (checkLower.includes("-65553") || checkLower.includes("not enabled")))
+  ) {
+    return { health: "neutral", badgeLabel: "Inactive", primaryLine: "Ethernet disabled" };
+  }
   const internetPassed = ethernet.check_result === "Success" && ethernet.internet_reachable === true;
   if (internetPassed) return { health: "healthy", badgeLabel: "Healthy", primaryLine: "Connected", secondaryLine: "Internet reachable" };
   if (ethernet.link_detected === false) return { health: "neutral", badgeLabel: "Inactive", primaryLine: "No link detected" };
@@ -1147,9 +1176,9 @@ export default function DiagnosticsTab() {
   const satelliteSummary = summarizeSatellite(satellite);
   const ethernetSummary = summarizeEthernet(ethernet);
   const pressureSummary = summarizePressure(pressure);
-  const primaryNetwork = resolvePrimaryNetwork({ wifi, cellular, satellite, ethernet });
+  const primaryNetwork = resolvePrimaryNetwork({ wifi, cellular, satellite, ethernet, system });
   const wifiRole = resolveRole("wifi", primaryNetwork, !!(wifi?.connected || wifi?.connman_wifi_connected));
-  const cellularRole = resolveRole("cellular", primaryNetwork, cellular?.connman_cell_connected === true);
+  const cellularRole = resolveRole("cellular", primaryNetwork, !!(cellular?.connman_cell_connected || cellular?.internet_reachable));
   const ethernetRole = resolveRole("ethernet", primaryNetwork, !!(ethernet?.link_detected || ethernet?.internet_reachable));
 
   async function clearCards() {
