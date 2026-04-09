@@ -201,13 +201,13 @@ fn merge_wifi_diag(prev: WifiDiagnostic, mut next: WifiDiagnostic) -> WifiDiagno
         return next;
     }
     if wifi_has_authoritative_check(&prev) {
+        carry_non_authoritative_fields(&prev, &mut next);
         next.status = prev.status;
         next.summary = prev.summary;
         next.check_result = prev.check_result;
         next.check_error = prev.check_error;
         next.internet_reachable = prev.internet_reachable;
         next.wifi_state = prev.wifi_state;
-        carry_non_authoritative_fields(&prev, &mut next);
         next.ipv4 = next.ipv4 || prev.ipv4;
         next.ipv6 = next.ipv6 || prev.ipv6;
         if next.dns_servers == "—" {
