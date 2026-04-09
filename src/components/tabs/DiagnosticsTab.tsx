@@ -372,6 +372,23 @@ function signalLabel(score?: number | null): string {
   return "No service";
 }
 
+function signalLabelFromDbm(dbm?: number | null): string | null {
+  if (dbm === null || dbm === undefined || Number.isNaN(dbm)) return null;
+  if (dbm >= -60) return "Strong";
+  if (dbm >= -67) return "Good";
+  if (dbm >= -72) return "Fair";
+  if (dbm >= -80) return "Weak";
+  return "Poor";
+}
+
+function wifiSignalLabel(wifi?: WifiDiagnostic | null): string {
+  if (!wifi) return "No service";
+  if (wifi.strength_label && wifi.strength_label.trim()) {
+    return wifi.strength_label[0].toUpperCase() + wifi.strength_label.slice(1).toLowerCase();
+  }
+  return signalLabelFromDbm(wifi.signal_dbm) ?? signalLabel(wifi.strength_score);
+}
+
 function roleLabel(role?: string | null): string | null {
   if (!role) return null;
   if (role === "active") return "Active";
@@ -426,19 +443,28 @@ function formatLoopback(seconds?: number | null): string {
 
 function buildWifiSections(wifi?: WifiDiagnostic | null): DiagSection[] {
   if (!wifi) return [{ title: "Status", rows: [{ label: "Details", value: "No recent data" }] }];
+  const wifiSig = wifiSignalLabel(wifi);
+  const weakByController = (wifi.strength_label || "").toLowerCase() === "weak";
+  const internetTest = wifi.check_result === "Success"
+    ? "Passed"
+    : wifi.check_result === "Failure"
+      ? "Failed"
+      : "Not run";
 
   const network: DiagRow[] = [
     { label: "Network", value: (wifi.ssid && !wifi.ssid.startsWith('=') ? wifi.ssid : null) || wifi.access_point || "Unknown" },
     { label: "Connection", value: wifi.connected === true ? "Connected" : "Not connected" },
-    { label: "Signal", value: `${signalLabel(wifi.strength_score)}${wifi.signal_dbm !== null && wifi.signal_dbm !== undefined ? ` (${wifi.signal_dbm} dBm)` : ""}` },
+    { label: "Signal", value: `${wifiSig}${wifi.signal_dbm !== null && wifi.signal_dbm !== undefined ? ` (${wifi.signal_dbm} dBm)` : ""}` },
     { label: "Role", value: wifi.default_via_wlan0 === true ? "Active" : wifi.connected === true ? "Backup" : "Inactive" },
     { label: "Speed", value: wifi.tx_bitrate_mbps !== null && wifi.tx_bitrate_mbps !== undefined ? `${wifi.tx_bitrate_mbps.toFixed(0)} Mbps` : "—" },
-    { label: "Internet test", value: wifi.internet_reachable ? "Passed" : "Failed" },
+    { label: "Internet test", value: internetTest },
   ];
 
   const action: DiagRow[] = [];
   if (wifi.check_error) action.push({ label: "Recommended action", value: "Check passphrase or AP selection" });
-  else if ((wifi.strength_score ?? 0) > 0 && (wifi.strength_score ?? 0) < 25) action.push({ label: "Recommended action", value: "Monitor weak signal" });
+  else if (weakByController || ((wifi.strength_score ?? 0) > 0 && (wifi.strength_score ?? 0) < 25)) {
+    action.push({ label: "Recommended action", value: "Improve Wi-Fi coverage (move AP closer or add a repeater)" });
+  }
 
   return [
     { title: "Network", rows: network },
@@ -610,11 +636,15 @@ function summarizeWifi(wifi?: WifiDiagnostic | null): CardSummary {
     || wifi.internet_reachable === true;
   const ssid = wifi.ssid || wifi.access_point || "Wi-Fi";
   if (!connected) return { health: "neutral", badgeLabel: "Inactive", primaryLine: "Not connected", secondaryLine: ssid };
-  const sig = signalLabel(wifi.strength_score);
+  const sig = wifiSignalLabel(wifi);
+  const weakByController = (wifi.strength_label || "").toLowerCase() === "weak";
+  if (weakByController) {
+    return { health: "warning", badgeLabel: "Warning", primaryLine: ssid, secondaryLine: "Connected", signalLabel: sig, signalScore: wifi.strength_score };
+  }
   if ((wifi.strength_score ?? 0) > 0 && (wifi.strength_score ?? 0) < 25) {
     return { health: "warning", badgeLabel: "Warning", primaryLine: ssid, secondaryLine: "Monitoring recommended", signalLabel: sig, signalScore: wifi.strength_score };
   }
-  if (!wifi.internet_reachable) {
+  if (wifi.check_result === "Failure") {
     return { health: "warning", badgeLabel: "Warning", primaryLine: ssid, secondaryLine: "Connected · limited data", signalLabel: sig, signalScore: wifi.strength_score };
   }
   return { health: "healthy", badgeLabel: "Healthy", primaryLine: ssid, secondaryLine: "Connected", signalLabel: sig, signalScore: wifi.strength_score };
