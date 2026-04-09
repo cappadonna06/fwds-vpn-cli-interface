@@ -491,7 +491,7 @@ function formatLoopback(seconds?: number | null): string {
 }
 
 function buildWifiSections(wifi?: WifiDiagnostic | null): DiagSection[] {
-  if (!wifi) return [{ title: "Status", rows: [{ label: "Details", value: "No recent data" }] }];
+  if (!wifi) return [{ title: "Details", rows: [{ label: "Details", value: "No recent data" }] }];
   const wifiSig = wifiSignalLabel(wifi);
   const weakByController = (wifi.strength_label || "").toLowerCase() === "weak";
   const internetTest = wifi.check_result === "Success"
@@ -516,13 +516,13 @@ function buildWifiSections(wifi?: WifiDiagnostic | null): DiagSection[] {
   }
 
   return [
-    { title: "Network", rows: network },
-    ...(action.length ? [{ title: "Next action", rows: action }] : []),
+    { title: "Details", rows: network },
+    ...(action.length ? [{ title: "Recommended Actions", rows: action }] : []),
   ];
 }
 
 function buildCellularSections(cell?: CellularDiagnostic | null): DiagSection[] {
-  if (!cell) return [{ title: "Status", rows: [{ label: "Details", value: "No recent data" }] }];
+  if (!cell) return [{ title: "Details", rows: [{ label: "Details", value: "No recent data" }] }];
 
   const primaryAction = cell.recommended_action
     || (cell.sim_inserted === false ? "Insert SIM card" : null)
@@ -540,7 +540,7 @@ function buildCellularSections(cell?: CellularDiagnostic | null): DiagSection[] 
 
   return [
     {
-      title: "Cellular",
+      title: "Details",
       rows: [
         { label: "Carrier", value: cleanCellValue(cell.operator_name) || resolveCarrierCode(cell.provider_code) || resolveCarrierCode(cell.basic_provider) || "—" },
         { label: "Signal", value: signalLabel(cell.strength_score) + (cell.strength_score !== null && cell.strength_score !== undefined ? ` (${cell.strength_score}/100)` : "") },
@@ -553,7 +553,7 @@ function buildCellularSections(cell?: CellularDiagnostic | null): DiagSection[] 
       ],
     },
     {
-      title: "Connectivity",
+      title: "Details",
       rows: [
         { label: "Internet test", value: cell.internet_reachable ? "Passed" : "Failed" },
         { label: "Packet loss", value: `${cell.check_packet_loss_pct}%` },
@@ -561,7 +561,7 @@ function buildCellularSections(cell?: CellularDiagnostic | null): DiagSection[] 
       ],
     },
     ...((primaryAction || otherOptions.length > 0) ? [{
-      title: "Next action",
+      title: "Recommended Actions",
       rows: [
         ...(primaryAction ? [{ label: "Recommended action", value: primaryAction }] : []),
         ...(otherOptions.length > 0 ? [{ label: "Other options", value: otherOptions.join(" • ") }] : []),
@@ -571,7 +571,7 @@ function buildCellularSections(cell?: CellularDiagnostic | null): DiagSection[] 
 }
 
 function buildSatelliteSections(sat?: SatelliteDiagnostic | null): DiagSection[] {
-  if (!sat) return [{ title: "Status", rows: [{ label: "Status", value: "No diagnostics run" }, { label: "Last test", value: "—" }] }];
+  if (!sat) return [{ title: "Details", rows: [{ label: "Details", value: "No diagnostics run" }, { label: "Last test", value: "—" }] }];
 
   const loopback =
     sat.loopback_test_success === true
@@ -595,7 +595,7 @@ function buildSatelliteSections(sat?: SatelliteDiagnostic | null): DiagSection[]
 
   return [
     {
-      title: "Satellite",
+      title: "Details",
       rows: [
         { label: "Modem", value: sat.modem_present === true ? "Detected" : sat.modem_present === false ? "Not detected" : "Unknown" },
         { label: "Loopback", value: loopback },
@@ -614,7 +614,7 @@ function buildSatelliteSections(sat?: SatelliteDiagnostic | null): DiagSection[]
       ],
     },
     ...(actions.length || sat.loopback_test_error || sat.light_test_error ? [{
-      title: "Next action",
+      title: "Recommended Actions",
       rows: [
         ...actions,
         ...(sat.loopback_test_error ? [{ label: "Last error", value: sat.loopback_test_error }] : sat.light_test_error ? [{ label: "Last error", value: sat.light_test_error }] : []),
@@ -624,7 +624,7 @@ function buildSatelliteSections(sat?: SatelliteDiagnostic | null): DiagSection[]
 }
 
 function buildEthernetSections(ethernet?: EthernetDiagnostic | null): DiagSection[] {
-  if (!ethernet) return [{ title: "Status", rows: [{ label: "Status", value: "No data yet" }, { label: "Last test", value: "—" }] }];
+  if (!ethernet) return [{ title: "Details", rows: [{ label: "Details", value: "No data yet" }, { label: "Last test", value: "—" }] }];
 
   const internetPassed = ethernet.check_result === "Success" && ethernet.internet_reachable === true;
   const connected = internetPassed || ethernet.link_detected === true;
@@ -635,7 +635,7 @@ function buildEthernetSections(ethernet?: EthernetDiagnostic | null): DiagSectio
 
   return [
     {
-      title: "Ethernet",
+      title: "Details",
       rows: [
         { label: "Connection", value: connected ? "Connected" : "No link" },
         { label: "Speed", value: speedLabel(ethernet.speed) + (ethernet.duplex ? ` (${ethernet.duplex})` : "") },
@@ -644,7 +644,7 @@ function buildEthernetSections(ethernet?: EthernetDiagnostic | null): DiagSectio
         { label: "Stability", value: ethernet.flap_count > 0 ? "Recent link flaps" : "Stable" },
       ],
     },
-    ...(actions.length ? [{ title: "Next action", rows: actions }] : []),
+    ...(actions.length ? [{ title: "Recommended Actions", rows: actions }] : []),
   ];
 }
 
@@ -654,7 +654,7 @@ function formatPsi(value?: number | null): string {
 }
 
 function buildPressureSections(pressure?: PressureDiagnostic | null): DiagSection[] {
-  if (!pressure) return [{ title: "Status", rows: [{ label: "Details", value: "No recent data" }] }];
+  if (!pressure) return [{ title: "Details", rows: [{ label: "Details", value: "No recent data" }] }];
   const source = pressure.sensors?.source;
   const distribution = pressure.sensors?.distribution;
   const supply = pressure.sensors?.supply;
@@ -697,9 +697,9 @@ function buildPressureSections(pressure?: PressureDiagnostic | null): DiagSectio
   if (issues.length === 0) issues.push({ label: "✓ Healthy", value: "All sensors healthy — no anomalies detected" });
 
   return [
-    { title: "Raw readings", rows: readings.length ? readings : [{ label: "Readings", value: "No pressure readings captured" }] },
+    { title: "Details", rows: readings.length ? readings : [{ label: "Readings", value: "No pressure readings captured" }] },
     ...(stats.length ? [{ title: "Live stats", rows: stats }] : []),
-    { title: "Diagnostics", rows: issues },
+    { title: "Recommended Actions", rows: issues },
   ];
 }
 
@@ -886,7 +886,10 @@ function DiagCard({
   const hasSignalInfo =
     (signalScore !== null && signalScore !== undefined) || !!cardSignalLabel;
   const collapsedRecommendation = !expanded && (health === "warning" || health === "error")
-    ? sections.flatMap((s) => s.rows).find((row) => row.label.toLowerCase().includes("recommended action"))?.value
+    ? (
+      sections.find((s) => s.title.toLowerCase() === "recommended actions")?.rows[0]?.value
+      ?? sections.flatMap((s) => s.rows).find((row) => row.label.toLowerCase().includes("recommended action"))?.value
+    )
     : null;
 
   return (
