@@ -1110,7 +1110,7 @@ fn open_controller_terminal(state: State<'_, AppState>) -> Result<(), String> {
         &ssh_cmd,
     );
     let script = format!(
-        "tell application \"Terminal\"\nactivate\nset newTab to do script {}\nset targetWindow to (window of newTab)\nreturn id of targetWindow\nend tell",
+        "tell application \"Terminal\"\nactivate\ndo script {}\ndelay 0.1\nreturn id of front window\nend tell",
         applescript_string_literal(&command)
     );
 
@@ -1174,7 +1174,7 @@ fn open_local_serial_terminal(device: String, state: State<'_, AppState>) -> Res
         shell_quote(&device),
     );
     let script = format!(
-        "tell application \"Terminal\"\nactivate\nset newTab to do script {}\nset targetWindow to (window of newTab)\nreturn id of targetWindow\nend tell",
+        "tell application \"Terminal\"\nactivate\ndo script {}\ndelay 0.1\nreturn id of front window\nend tell",
         applescript_string_literal(&command)
     );
 
