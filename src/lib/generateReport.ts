@@ -242,6 +242,7 @@ export function generateNetworkRows(diag: DiagnosticState): NetworkStatusRow[] {
 }
 
 export function generatePressureRows(diag: DiagnosticState): PressureStatusRow[] {
+  const PRESSURE_NEAR_ZERO_DISPLAY_THRESHOLD = 0.5;
   const toStatus = (s?: DiagStatus | null): "green" | "orange" | "red" | "unknown" => {
     if (s === "green") return "green";
     if (s === "orange") return "orange";
@@ -251,10 +252,17 @@ export function generatePressureRows(diag: DiagnosticState): PressureStatusRow[]
   const pressure = diag.pressure;
   const source = pressure?.sensors?.source?.latest;
   const distribution = pressure?.sensors?.distribution?.latest;
-  const hasValid = (v?: number | null) => v !== null && v !== undefined && v >= 0 && v <= 218;
+  const hasValidSource = (v?: number | null) => v !== null && v !== undefined && v >= 0 && v <= 218;
+  const hasReportableDistribution = (v?: number | null) =>
+    v !== null
+    && v !== undefined
+    && v <= 218
+    && (v >= 0 || Math.abs(v) < PRESSURE_NEAR_ZERO_DISPLAY_THRESHOLD);
+  const formatDistribution = (v: number) =>
+    Math.abs(v) < PRESSURE_NEAR_ZERO_DISPLAY_THRESHOLD ? "~0.0 PSI" : `${v.toFixed(2)} PSI`;
   const readingParts: string[] = [];
-  if (hasValid(source)) readingParts.push(`Source (P3) ${source!.toFixed(2)} PSI`);
-  if (hasValid(distribution)) readingParts.push(`Distribution (P2) ${distribution!.toFixed(2)} PSI`);
+  if (hasValidSource(source)) readingParts.push(`Source (P3) ${source!.toFixed(2)} PSI`);
+  if (hasReportableDistribution(distribution)) readingParts.push(`Distribution (P2) ${formatDistribution(distribution!)}`);
   const issueTitles = (pressure?.issues ?? []).map((i) => i.title).join(", ");
   const summary = readingParts.length > 0
     ? `${issueTitles ? `${issueTitles} · ` : ""}${readingParts.join(" · ")}`

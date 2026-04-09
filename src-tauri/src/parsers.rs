@@ -537,8 +537,8 @@ fn split_blocks(log: &str) -> Vec<CommandBlock> {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_cellular, parse_log_into_state, split_blocks};
-    use crate::DiagnosticState;
+    use super::{build_pressure_from_text, parse_cellular, parse_log_into_state, split_blocks};
+    use crate::{DiagStatus, DiagnosticState, SystemDiagnostic};
 
     #[test]
     fn split_blocks_parses_timestamped_prompts() {
@@ -1141,6 +1141,76 @@ successfully completed satellite loopback with status: 0: Success
         assert_eq!(sat.loopback_test_ran, true);
         assert_eq!(sat.loopback_test_success, Some(true));
         assert_eq!(sat.status, crate::DiagStatus::Green);
+    }
+
+    #[test]
+    fn pressure_parser_accepts_signed_distribution_values() {
+        let system = SystemDiagnostic {
+            system_type: Some("MP3".into()),
+            ..Default::default()
+        };
+        let text = r#"
+DEBUG:[GetPressure] 2.48V
+INFO: 2 Source 74.10 PSI
+DEBUG:[GetPressure] 2.45V
+INFO: 1 Distribution -0.27 PSI
+DEBUG:[GetPressure] 2.40V
+INFO: 0 Supply 73.95 PSI
+"#;
+        let pressure = build_pressure_from_text(text, &system).expect("pressure should parse");
+        let distribution = pressure
+            .sensors
+            .distribution
+            .expect("distribution sensor should parse");
+        assert_eq!(distribution.latest, -0.27);
+    }
+
+    #[test]
+    fn pressure_source_material_negative_sets_red_issue() {
+        let system = SystemDiagnostic {
+            system_type: Some("MP3".into()),
+            ..Default::default()
+        };
+        let text = r#"
+INFO: 2 Source -2.50 PSI
+INFO: 1 Distribution 0.00 PSI
+"#;
+        let pressure = build_pressure_from_text(text, &system).expect("pressure should parse");
+        assert_eq!(pressure.status, DiagStatus::Red);
+        assert!(pressure
+            .issues
+            .iter()
+            .any(|i| i.id == "ERR_SOURCE_NEGATIVE" && i.severity == DiagStatus::Red));
+    }
+
+    #[test]
+    fn pressure_supply_negative_uses_warning_and_red_tiers() {
+        let system = SystemDiagnostic {
+            system_type: Some("MP3".into()),
+            ..Default::default()
+        };
+
+        let warning_text = r#"
+INFO: 2 Source 74.00 PSI
+INFO: 0 Supply -0.75 PSI
+"#;
+        let warning_pressure =
+            build_pressure_from_text(warning_text, &system).expect("pressure should parse");
+        assert!(warning_pressure
+            .issues
+            .iter()
+            .any(|i| i.id == "WARN_SUPPLY_NEGATIVE" && i.severity == DiagStatus::Orange));
+
+        let red_text = r#"
+INFO: 2 Source 74.00 PSI
+INFO: 0 Supply -2.10 PSI
+"#;
+        let red_pressure =
+            build_pressure_from_text(red_text, &system).expect("pressure should parse");
+        assert!(red_pressure
+            .issues
+            .iter()
+            .any(|i| i.id == "ERR_SUPPLY_NEGATIVE" && i.severity == DiagStatus::Red));
     }
 }
 
@@ -2381,6 +2451,9 @@ const PRESSURE_VALID_MIN: f64 = 1.0;
 const PRESSURE_VALID_MAX: f64 = 218.0;
 const PRESSURE_LOW_SOURCE_MIN: f64 = 30.0;
 const PRESSURE_STDEV_WARN: f64 = 5.0;
+const PRESSURE_NEAR_ZERO_OFFSET_MAX: f64 = 0.5;
+const PRESSURE_UNEXPECTED_NEGATIVE_RED: f64 = -2.0;
+const PRESSURE_UNEXPECTED_NEGATIVE_WARN_MAX: f64 = -0.5;
 
 fn parse_pressure(
     blocks: &[CommandBlock],
@@ -2399,7 +2472,7 @@ fn parse_pressure(
 
 fn build_pressure_from_text(text: &str, system: &SystemDiagnostic) -> Option<PressureDiagnostic> {
     let controller_re = Regex::new(r":\s*(\d{8}):\s*pressure-monitor").ok()?;
-    let info_re = Regex::new(r"INFO:\s+(\d+)\s+(\w+)\s+([\d.]+)\s+PSI").ok()?;
+    let info_re = Regex::new(r"INFO:\s+(\d+)\s+(\w+)\s+([+-]?\d+(?:\.\d+)?)\s+PSI").ok()?;
     let voltage_re = Regex::new(r"DEBUG:\[GetPressure\]\s+([\d.]+)V").ok()?;
     let error_re =
         Regex::new(r"could not get\s+(\d+)\s+pressure sensor:\s+(.+?)\s+\((-?\d+)\)$").ok()?;
@@ -2529,7 +2602,41 @@ fn build_pressure_from_text(text: &str, system: &SystemDiagnostic) -> Option<Pre
 
     if !miswire_candidate {
         if let Some(src) = &source_sensor {
-            if src.latest < PRESSURE_VALID_MIN || src.latest >= 219.0 {
+            if src.latest < 0.0 {
+                let (severity, id, title, action) = if src.latest < PRESSURE_UNEXPECTED_NEGATIVE_RED
+                {
+                    (
+                        DiagStatus::Red,
+                        "ERR_SOURCE_NEGATIVE",
+                        "Source pressure negative",
+                        "Check Source (P3) transducer wiring · verify pressure manifold · replace sensor if reading remains negative",
+                    )
+                } else if src.latest <= PRESSURE_UNEXPECTED_NEGATIVE_WARN_MAX {
+                    (
+                        DiagStatus::Orange,
+                        "WARN_SOURCE_NEGATIVE",
+                        "Source pressure below zero",
+                        "Inspect Source (P3) offset and wiring · re-run pressure-monitor to confirm trend",
+                    )
+                } else {
+                    (
+                        DiagStatus::Orange,
+                        "WARN_SOURCE_NEAR_ZERO_NEGATIVE",
+                        "Source pressure near zero offset",
+                        "Monitor Source (P3) offset drift and re-check after stabilization",
+                    )
+                };
+                issues.push(PressureIssue {
+                    id: id.into(),
+                    severity,
+                    title: title.into(),
+                    description: format!(
+                        "Source (P3) reports {:.2} PSI. Negative source pressure is unexpected.",
+                        src.latest
+                    ),
+                    action: action.into(),
+                });
+            } else if src.latest < PRESSURE_VALID_MIN || src.latest >= 219.0 {
                 issues.push(PressureIssue {
                     id: "ERR_SOURCE_OUT_OF_BAND".into(),
                     severity: DiagStatus::Red,
@@ -2567,6 +2674,69 @@ fn build_pressure_from_text(text: &str, system: &SystemDiagnostic) -> Option<Pre
                     dist.latest
                 ),
                 action: "Check P2 sensor wiring · check manifold connection".into(),
+            });
+        }
+    }
+
+    if let Some(supply) = &supply_sensor {
+        if supply.latest < 0.0 {
+            let (severity, id, title, action) = if supply.latest < PRESSURE_UNEXPECTED_NEGATIVE_RED
+            {
+                (
+                    DiagStatus::Red,
+                    "ERR_SUPPLY_NEGATIVE",
+                    "Supply pressure negative",
+                    "Check Supply (P1) transducer wiring · verify pressure input plumbing · replace sensor if reading remains negative",
+                )
+            } else if supply.latest <= PRESSURE_UNEXPECTED_NEGATIVE_WARN_MAX {
+                (
+                    DiagStatus::Orange,
+                    "WARN_SUPPLY_NEGATIVE",
+                    "Supply pressure below zero",
+                    "Inspect Supply (P1) offset and wiring · re-run pressure-monitor to confirm trend",
+                )
+            } else {
+                (
+                    DiagStatus::Orange,
+                    "WARN_SUPPLY_NEAR_ZERO_NEGATIVE",
+                    "Supply pressure near zero offset",
+                    "Monitor Supply (P1) offset drift and verify sensor zero calibration",
+                )
+            };
+            issues.push(PressureIssue {
+                id: id.into(),
+                severity,
+                title: title.into(),
+                description: format!(
+                    "Supply (P1) reports {:.2} PSI. Negative supply pressure is unexpected.",
+                    supply.latest
+                ),
+                action: action.into(),
+            });
+        } else if supply.latest > PRESSURE_VALID_MAX {
+            issues.push(PressureIssue {
+                id: "ERR_SUPPLY_OUT_OF_BAND".into(),
+                severity: DiagStatus::Red,
+                title: "Supply pressure invalid".into(),
+                description: format!(
+                    "Supply reading {:.2} PSI is outside valid 1–218 PSI range.",
+                    supply.latest
+                ),
+                action: "Check Supply (P1) sensor wiring · verify transducer scaling".into(),
+            });
+        } else if supply.latest < PRESSURE_VALID_MIN
+            && supply.latest >= PRESSURE_NEAR_ZERO_OFFSET_MAX
+        {
+            issues.push(PressureIssue {
+                id: "WARN_SUPPLY_LOW".into(),
+                severity: DiagStatus::Orange,
+                title: "Supply pressure low".into(),
+                description: format!(
+                    "Supply (P1) is {:.2} PSI, below the expected minimum of {:.1} PSI.",
+                    supply.latest, PRESSURE_VALID_MIN
+                ),
+                action: "Check upstream supply valve position and verify P1 sensor calibration"
+                    .into(),
             });
         }
     }
