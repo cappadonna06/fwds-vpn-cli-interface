@@ -22,6 +22,7 @@ const IFACE_ICON: Record<string, string> = {
   "Wi-Fi": "🛜",
   Cellular: "📡",
   Satellite: "🛰️",
+  Pressure: "💧",
 };
 
 const STATUS_EMOJI: Record<string, string> = {

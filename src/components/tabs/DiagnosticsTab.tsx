@@ -271,7 +271,7 @@ interface DiagCardProps {
   icon: string;
   health: HealthTone;
   statusLabel: string;
-  headerTags?: string[];
+  primaryTags?: string[];
   primaryLine: string;
   secondaryLine?: string | null;
   role?: string | null;
@@ -702,7 +702,7 @@ function buildPressureSections(pressure?: PressureDiagnostic | null): DiagSectio
   ];
 }
 
-function buildPressureHeaderTags(pressure?: PressureDiagnostic | null): string[] {
+function buildPressurePrimaryTags(pressure?: PressureDiagnostic | null): string[] {
   if (!pressure) return [];
   const tags: string[] = [];
   const source = pressure.sensors?.source;
@@ -814,7 +814,7 @@ function summarizePressure(pressure?: PressureDiagnostic | null): CardSummary {
     health,
     badgeLabel,
     primaryLine: pressure.display_psi !== null && pressure.display_psi !== undefined ? `${pressure.display_psi.toFixed(1)} PSI` : "—",
-    secondaryLine: pressure.via_sensor ? `via ${pressure.via_sensor}` : null,
+    secondaryLine: null,
   };
 }
 
@@ -844,7 +844,7 @@ function DiagCard({
   icon,
   health,
   statusLabel,
-  headerTags,
+  primaryTags,
   primaryLine,
   secondaryLine,
   role,
@@ -872,7 +872,6 @@ function DiagCard({
             {title}
           </span>
           {role ? <span className="diag-role-pill-inline">{role}</span> : null}
-          {headerTags?.map((tag) => <span key={`${title}-${tag}`} className="diag-role-pill-inline">{tag}</span>)}
         </div>
         <div className="diag-card-head-right">
           <span className="diag-status-label">
@@ -944,7 +943,16 @@ function DiagCard({
         </div>
       </div>
 
-      <div className="diag-card-status-line">{primaryLine}</div>
+      <div className="diag-card-status-row">
+        <div className="diag-card-status-line">{primaryLine}</div>
+        {primaryTags && primaryTags.length > 0 && (
+          <div className="diag-card-primary-tags">
+            {primaryTags.map((tag) => (
+              <span key={`${title}-${tag}`} className="diag-role-pill-inline">{tag}</span>
+            ))}
+          </div>
+        )}
+      </div>
       {secondaryLine && <div className="diag-card-secondary-line">{secondaryLine}</div>}
       <div className="diag-card-subline">
         {signalScore !== null && signalScore !== undefined && (
@@ -1278,7 +1286,7 @@ export default function DiagnosticsTab() {
           icon="💧"
           health={pressureSummary.health || toneFromStatus(pressure?.status)}
           statusLabel={pressureSummary.badgeLabel}
-          headerTags={buildPressureHeaderTags(pressure)}
+          primaryTags={buildPressurePrimaryTags(pressure)}
           primaryLine={pressureSummary.primaryLine}
           secondaryLine={pressureSummary.secondaryLine}
           sections={buildPressureSections(pressure)}

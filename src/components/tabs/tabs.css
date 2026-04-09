@@ -2093,11 +2093,25 @@
 }
 
 .diag-card-status-line {
-  margin-top: 10px;
   color: var(--text-primary);
   font-size: 16px;
   font-weight: 630;
   line-height: 1.2;
+}
+
+.diag-card-status-row {
+  margin-top: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.diag-card-primary-tags {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
 }
 
 .diag-card-secondary-line {

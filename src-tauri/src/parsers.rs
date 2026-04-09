@@ -2305,6 +2305,8 @@ fn build_pressure_from_text(text: &str, system: &SystemDiagnostic) -> Option<Pre
     }
 
     let mut issues: Vec<PressureIssue> = Vec::new();
+    let miswire_candidate = !is_active
+        && matches!((&distribution_sensor, &source_sensor), (Some(dist), Some(src)) if dist.latest > PRESSURE_VALID_MIN && dist.latest > src.latest);
     for err in &sensor_errors {
         if err.sensor_index == 0 && err.errno == -2 && is_mp3_or_lv2 {
             continue;
@@ -2321,30 +2323,32 @@ fn build_pressure_from_text(text: &str, system: &SystemDiagnostic) -> Option<Pre
         });
     }
 
-    if let Some(src) = &source_sensor {
-        if src.latest < PRESSURE_VALID_MIN || src.latest >= 219.0 {
-            issues.push(PressureIssue {
-                id: "ERR_SOURCE_OUT_OF_BAND".into(),
-                severity: DiagStatus::Red,
-                title: "Source pressure invalid".into(),
-                description: format!(
-                    "Source reading {:.2} PSI is outside valid 1–218 PSI range.",
-                    src.latest
-                ),
-                action: "Check sensor wiring · replace sensor".into(),
-            });
-        } else if src.latest < PRESSURE_LOW_SOURCE_MIN {
-            issues.push(PressureIssue {
-                id: "ERR_SOURCE_LOW".into(),
-                severity: DiagStatus::Red,
-                title: "Source pressure low".into(),
-                description: format!(
-                    "Source pressure {:.2} PSI is below {} PSI minimum.",
-                    src.latest, PRESSURE_LOW_SOURCE_MIN
-                ),
-                action: "Check supply shutoff valve · check booster pump · verify water main"
-                    .into(),
-            });
+    if !miswire_candidate {
+        if let Some(src) = &source_sensor {
+            if src.latest < PRESSURE_VALID_MIN || src.latest >= 219.0 {
+                issues.push(PressureIssue {
+                    id: "ERR_SOURCE_OUT_OF_BAND".into(),
+                    severity: DiagStatus::Red,
+                    title: "Source pressure invalid".into(),
+                    description: format!(
+                        "Source reading {:.2} PSI is outside valid 1–218 PSI range.",
+                        src.latest
+                    ),
+                    action: "Check sensor wiring · replace sensor".into(),
+                });
+            } else if src.latest < PRESSURE_LOW_SOURCE_MIN {
+                issues.push(PressureIssue {
+                    id: "ERR_SOURCE_LOW".into(),
+                    severity: DiagStatus::Red,
+                    title: "Source pressure low".into(),
+                    description: format!(
+                        "Source pressure {:.2} PSI is below {} PSI minimum.",
+                        src.latest, PRESSURE_LOW_SOURCE_MIN
+                    ),
+                    action: "Check supply shutoff valve · check booster pump · verify water main"
+                        .into(),
+                });
+            }
         }
     }
 
@@ -2400,7 +2404,7 @@ fn build_pressure_from_text(text: &str, system: &SystemDiagnostic) -> Option<Pre
             }
         }
     }
-    if is_mp3_or_lv2 {
+    if is_mp3_or_lv2 && !miswire_candidate {
         if let Some(dist) = &distribution_sensor {
             if dist.latest > PRESSURE_VALID_MIN {
                 issues.push(PressureIssue {

@@ -77,6 +77,10 @@ interface SystemDiag {
 interface PressureDiag {
   status: DiagStatus;
   summary: string;
+  sensors?: {
+    source?: { latest: number } | null;
+    distribution?: { latest: number } | null;
+  };
   issues?: Array<{ id: string; severity: DiagStatus; title: string; description: string; action: string }>;
 }
 
@@ -217,10 +221,22 @@ export function generatePressureRows(diag: DiagnosticState): PressureStatusRow[]
     if (s === "red") return "red";
     return "unknown";
   };
+  const pressure = diag.pressure;
+  const source = pressure?.sensors?.source?.latest;
+  const distribution = pressure?.sensors?.distribution?.latest;
+  const hasValid = (v?: number | null) => v !== null && v !== undefined && v >= 0 && v <= 218;
+  const readingParts: string[] = [];
+  if (hasValid(source)) readingParts.push(`Source (P3) ${source!.toFixed(2)} PSI`);
+  if (hasValid(distribution)) readingParts.push(`Distribution (P2) ${distribution!.toFixed(2)} PSI`);
+  const issueTitles = (pressure?.issues ?? []).map((i) => i.title).join(", ");
+  const summary = readingParts.length > 0
+    ? `${issueTitles ? `${issueTitles} · ` : ""}${readingParts.join(" · ")}`
+    : pressure?.summary ?? "Diagnostics not collected";
+
   return [{
     label: "System Pressure",
-    status: toStatus(diag.pressure?.status),
-    summary: diag.pressure?.summary ?? "Diagnostics not collected",
+    status: toStatus(pressure?.status),
+    summary,
   }];
 }
 
@@ -395,7 +411,7 @@ export function generateRecommendedActions(
   if (diag.pressure?.issues?.length) {
     for (const issue of diag.pressure.issues) {
       actions.push({
-        id: mkId(), interface: "Custom",
+        id: mkId(), interface: "Pressure",
         text: issue.title,
         detail: `${issue.description} ${issue.action}`.trim(),
         dismissed: false, checked: false, custom: false,
@@ -412,6 +428,7 @@ export function generateRecommendedActions(
         "Wi-Fi": diag.wifi?.status,
         Cellular: diag.cellular?.status,
         Satellite: diag.satellite?.status,
+        Pressure: diag.pressure?.status,
       };
       const status = diagMap[action.interface];
       return status === "red" ? 0 : status === "orange" ? 1 : 2;

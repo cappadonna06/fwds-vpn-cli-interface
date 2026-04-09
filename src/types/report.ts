@@ -11,7 +11,7 @@ export interface ReportAction {
 
 export interface ReportRecommendedAction {
   id: string;
-  interface: "Ethernet" | "Wi-Fi" | "Cellular" | "Satellite" | "Custom";
+  interface: "Ethernet" | "Wi-Fi" | "Cellular" | "Satellite" | "Pressure" | "Custom";
   text: string;
   detail: string;
   dismissed: boolean;
