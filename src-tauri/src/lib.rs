@@ -1246,11 +1246,14 @@ fn get_app_state(state: State<'_, AppState>) -> Result<serde_json::Value, String
 /// Send input to the active external Terminal.app session (window/tab launched by this app).
 #[tauri::command]
 fn send_external_input(text: String, state: State<'_, AppState>) -> Result<(), String> {
-    let window_id = {
+    let (window_id, connection_mode) = {
         let inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
-        inner
-            .external_terminal_window_id
-            .ok_or_else(|| "Open session first".to_string())?
+        (
+            inner
+                .external_terminal_window_id
+                .ok_or_else(|| "Open session first".to_string())?,
+            inner.connection_mode.clone(),
+        )
     };
 
     let script = format!(
@@ -1282,7 +1285,10 @@ fn send_external_input(text: String, state: State<'_, AppState>) -> Result<(), S
         .map_err(|e| format!("Failed to open terminal session: {e}"))?;
     tty.write_all(text.as_bytes())
         .map_err(|e| format!("Failed to send command: {e}"))?;
-    tty.write_all(b"\n")
+    // Local serial (minicom) expects carriage-return semantics for Enter.
+    // VPN SSH shell works with newline.
+    let enter = if connection_mode == "local" { b"\r" } else { b"\n" };
+    tty.write_all(enter)
         .map_err(|e| format!("Failed to send command: {e}"))?;
     tty.flush()
         .map_err(|e| format!("Failed to flush terminal session: {e}"))?;
