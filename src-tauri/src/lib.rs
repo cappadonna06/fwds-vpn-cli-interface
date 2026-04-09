@@ -353,6 +353,8 @@ pub struct SatelliteDiagnostic {
 pub struct EthernetDiagnostic {
     pub status: DiagStatus,
     pub summary: String,
+    #[serde(default)]
+    pub technology_disabled: bool,
     pub internet_reachable: bool,
     pub eth_state: String,
     pub ipv4: bool,

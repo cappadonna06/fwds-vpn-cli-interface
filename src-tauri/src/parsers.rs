@@ -275,6 +275,7 @@ fn merge_ethernet_diag(
     if ethernet_has_authoritative_check(&prev) {
         next.status = prev.status;
         next.summary = prev.summary;
+        next.technology_disabled = prev.technology_disabled;
         next.check_result = prev.check_result;
         next.internet_reachable = prev.internet_reachable;
         if next.eth_state == "unknown" || next.eth_state == "up" {
@@ -1212,6 +1213,71 @@ INFO: 0 Supply -2.10 PSI
             .iter()
             .any(|i| i.id == "ERR_SUPPLY_NEGATIVE" && i.severity == DiagStatus::Red));
     }
+
+    #[test]
+    fn quick_check_sample_maps_eth_wifi_cell_states() {
+        let mut state = DiagnosticState::default();
+        let log = r#"2026-04-09T15:29:20-0600 [24250176]# ethernet-check
+Testing Ethernet...
+Internet reachability state: online
+Ethernet state: online
+Ethernet supports IPv4? Yes
+Ethernet supports IPv6? No
+Ethernet name servers: 192.168.1.1
+Done: Success
+2026-04-09T15:29:38-0600 [24250176]# wifi-check
+Testing Wi-Fi...
+Internet reachability state: online
+Wi-Fi state: ready
+Wi-Fi access point: SpectrumSetup-81
+Wi-Fi strength: 73/100 ("average")
+Wi-Fi supports IPv4? Yes
+Wi-Fi supports IPv6? No
+Wi-Fi name servers: 192.168.1.1
+Done: Success
+2026-04-09T15:29:48-0600 [24250176]# wifi-signal
+"wlan0" signal strength: -47 dBm
+2026-04-09T15:29:48-0600 [24250176]# cellular-check
+Testing Cellular...
+Done: Failure: -65554: Network technology is not connected
+"#;
+
+        parse_log_into_state(log, &mut state);
+
+        let eth = state.ethernet.expect("expected ethernet diagnostics");
+        assert_eq!(eth.status, crate::DiagStatus::Green);
+
+        let wifi = state.wifi.expect("expected wifi diagnostics");
+        assert_eq!(wifi.status, crate::DiagStatus::Green);
+        assert_eq!(wifi.signal_dbm, Some(-47));
+
+        let cell = state.cellular.expect("expected cellular diagnostics");
+        assert_eq!(cell.status, crate::DiagStatus::Red);
+        assert_eq!(cell.check_result, "Failure");
+        assert!(cell
+            .check_error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("-65554"));
+    }
+
+    #[test]
+    fn ethernet_disabled_check_maps_to_grey_inactive() {
+        let mut state = DiagnosticState::default();
+        let log = r#"2026-04-09T15:34:39-0600 [45230110]# ethernet-check
+Testing Ethernet...
+Done: Failure: -65553: Network technology is not enabled
+"#;
+        parse_log_into_state(log, &mut state);
+
+        let eth = state.ethernet.expect("expected ethernet diagnostics");
+        assert_eq!(eth.status, crate::DiagStatus::Grey);
+        assert!(eth.technology_disabled);
+        assert_eq!(
+            eth.check_result,
+            "Failure: -65553: Network technology is not enabled"
+        );
+    }
 }
 
 // Parse all WiFi fields from a scoped WiFi section body (or any single wifi-related
@@ -1395,9 +1461,6 @@ fn parse_wifi_section(text: &str, w: &mut WifiDiagnostic) {
                 w.connman_wifi_active = Some(trimmed.contains("wifi_"));
                 break;
             }
-        }
-        if w.connman_wifi_active.is_none() {
-            w.connman_wifi_active = Some(false);
         }
     }
 
@@ -1726,9 +1789,6 @@ fn parse_wifi(blocks: &[CommandBlock]) -> Option<WifiDiagnostic> {
                 w.connman_wifi_active = Some(trimmed.contains("wifi_"));
                 break;
             }
-        }
-        if w.connman_wifi_active.is_none() {
-            w.connman_wifi_active = Some(false);
         }
     }
     if let Some(text) = conn_state {
@@ -2369,6 +2429,11 @@ fn parse_ethernet(
     let check_result = ethernet_check_scoped
         .and_then(|b| capture_after(b, "Done:"))
         .unwrap_or_else(|| "Unknown".into());
+    let check_result_lower = check_result.to_ascii_lowercase();
+    let technology_disabled = check_result_lower.starts_with("failure")
+        && (check_result_lower.contains("-65553")
+            || check_result_lower.contains("network technology is not enabled")
+            || check_result_lower.contains("not enabled"));
 
     let speed = ethtool_scoped.and_then(|b| capture_after(b, "Speed:"));
     let duplex = ethtool_scoped.and_then(|b| capture_after(b, "Duplex:"));
@@ -2391,8 +2456,10 @@ fn parse_ethernet(
         .map(|(_, _, rx_drop)| rx_drop)
         .unwrap_or(0);
 
-    let check_failed = check_result.to_ascii_lowercase().starts_with("failure");
-    let status = if link_detected == Some(false) {
+    let check_failed = check_result_lower.starts_with("failure");
+    let status = if technology_disabled {
+        DiagStatus::Grey
+    } else if link_detected == Some(false) {
         DiagStatus::Unknown
     } else if check_failed || (!internet_reachable && check_result != "Unknown") {
         DiagStatus::Red
@@ -2413,6 +2480,7 @@ fn parse_ethernet(
     Some(EthernetDiagnostic {
         status,
         summary,
+        technology_disabled,
         internet_reachable,
         eth_state,
         ipv4,
@@ -3654,19 +3722,16 @@ fn parse_connman_cellular(text: &str, diag: &mut CellularDiagnostic) {
             diag.connman_state = Some(state.trim().to_string());
         }
     }
-    if diag.connman_cell_active.is_none() {
-        diag.connman_cell_active = Some(false);
-    }
     if diag.connman_cell_ready.is_none() && text.contains("cellular_") {
         diag.connman_cell_ready = Some(false);
     }
-    diag.role = Some(if diag.connman_cell_active == Some(true) {
-        "active".into()
+    diag.role = if diag.connman_cell_active == Some(true) {
+        Some("active".into())
     } else if diag.connman_cell_ready == Some(true) {
-        "backup".into()
+        Some("backup".into())
     } else {
-        "inactive".into()
-    });
+        None
+    };
 }
 
 fn parse_wwan_interface(text: &str, diag: &mut CellularDiagnostic) {
