@@ -75,8 +75,42 @@ pub struct DiagnosticState {
     pub pressure: Option<PressureDiagnostic>,
     pub system: Option<SystemDiagnostic>,
     pub sim_picker: Option<SimPickerDiagnostic>,
+    #[serde(default)]
+    pub run_lifecycle: HashMap<String, InterfaceRunLifecycle>,
     pub last_updated: Option<String>,
     pub session_has_data: bool,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum RunStatus {
+    #[default]
+    Idle,
+    InProgress,
+    Completed,
+    Failed,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum RunStartedVia {
+    #[default]
+    Unknown,
+    SendInApp,
+    SendExternal,
+    Manual,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone, Default)]
+#[serde(default)]
+pub struct InterfaceRunLifecycle {
+    pub status: RunStatus,
+    pub run_id: Option<String>,
+    pub started_at: Option<String>,
+    pub completed_at: Option<String>,
+    pub last_update_at: Option<String>,
+    pub started_via: RunStartedVia,
+    pub last_error: Option<String>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Default)]
@@ -996,6 +1030,12 @@ fn send_interrupt(state: State<'_, AppState>) -> Result<(), String> {
 /// the user's replacement — prevents "DefaultNewValue" concatenation.
 #[tauri::command]
 fn send_input(text: String, state: State<'_, AppState>) -> Result<(), String> {
+    let inferred = infer_interfaces_from_text(&text);
+    if !inferred.is_empty() {
+        if let Ok(mut diag) = state.diagnostic_state.lock() {
+            mark_interfaces_run_started(&mut diag, &inferred, RunStartedVia::SendInApp);
+        }
+    }
     let mut inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
     // Read and clear the wizard flag before borrowing stdin.
     let is_wizard = std::mem::replace(&mut inner.shell_wizard_input, false);
@@ -1246,6 +1286,12 @@ fn get_app_state(state: State<'_, AppState>) -> Result<serde_json::Value, String
 /// Send input to the active external Terminal.app session (window/tab launched by this app).
 #[tauri::command]
 fn send_external_input(text: String, state: State<'_, AppState>) -> Result<(), String> {
+    let inferred = infer_interfaces_from_text(&text);
+    if !inferred.is_empty() {
+        if let Ok(mut diag) = state.diagnostic_state.lock() {
+            mark_interfaces_run_started(&mut diag, &inferred, RunStartedVia::SendExternal);
+        }
+    }
     let window_id = {
         let inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
         inner
@@ -1297,6 +1343,126 @@ fn has_any_diag_data(diag: &DiagnosticState) -> bool {
         || diag.system.is_some()
 }
 
+fn now_iso_string() -> String {
+    chrono::Utc::now().to_rfc3339()
+}
+
+fn next_run_id(interface: &str) -> String {
+    format!(
+        "{interface}-{}",
+        chrono::Utc::now().timestamp_millis()
+    )
+}
+
+fn infer_interfaces_from_text(text: &str) -> Vec<&'static str> {
+    let lower = text.to_ascii_lowercase();
+    let mut interfaces: Vec<&'static str> = Vec::new();
+    let mut push = |name: &'static str| {
+        if !interfaces.contains(&name) {
+            interfaces.push(name);
+        }
+    };
+    let full_run = lower.contains("full-diags")
+        || lower.contains("networking-all")
+        || lower.contains("full diagnostics")
+        || lower.contains("run full diagnostics");
+    if full_run {
+        interfaces.extend(["wifi", "cellular", "satellite", "ethernet", "pressure", "sim_picker"]);
+        return interfaces;
+    }
+    if lower.contains("wifi") || lower.contains("wlan0") {
+        push("wifi");
+    }
+    if lower.contains("cellular") || lower.contains("wwan0") || lower.contains("setup-cellular") {
+        push("cellular");
+        if lower.contains("sim picker") || lower.contains("--scan") {
+            push("sim_picker");
+        }
+    }
+    if lower.contains("satellite") || lower.contains("loopback") {
+        push("satellite");
+    }
+    if lower.contains("ethernet") || lower.contains("eth0") {
+        push("ethernet");
+    }
+    if lower.contains("pressure") {
+        push("pressure");
+    }
+    interfaces
+}
+
+fn mark_interfaces_run_started(
+    diag: &mut DiagnosticState,
+    interfaces: &[&str],
+    started_via: RunStartedVia,
+) {
+    let now = now_iso_string();
+    for interface in interfaces {
+        let entry = diag
+            .run_lifecycle
+            .entry((*interface).to_string())
+            .or_default();
+        entry.status = RunStatus::InProgress;
+        entry.run_id = Some(next_run_id(interface));
+        entry.started_at = Some(now.clone());
+        entry.completed_at = None;
+        entry.last_update_at = Some(now.clone());
+        entry.started_via = started_via.clone();
+        entry.last_error = None;
+    }
+}
+
+fn mark_interface_run_finished(diag: &mut DiagnosticState, interface: &str, status: RunStatus) {
+    let now = now_iso_string();
+    let entry = diag.run_lifecycle.entry(interface.to_string()).or_default();
+    entry.status = status;
+    entry.completed_at = Some(now.clone());
+    entry.last_update_at = Some(now);
+}
+
+fn interface_has_meaningful_data(diag: &DiagnosticState, interface: &str) -> bool {
+    match interface {
+        "wifi" => diag.wifi.as_ref().is_some_and(|w| {
+            w.check_result != "Unknown" || w.check_error.is_some() || w.connected == Some(true)
+        }),
+        "cellular" => diag.cellular.as_ref().is_some_and(|c| {
+            c.check_result != "Unknown"
+                || c.check_error.is_some()
+                || c.internet_reachable
+                || c.modem_present == Some(false)
+        }),
+        "satellite" => diag.satellite.as_ref().is_some_and(|s| {
+            s.light_test_ran || s.loopback_test_ran || s.modem_present.is_some()
+        }),
+        "ethernet" => diag.ethernet.as_ref().is_some_and(|e| {
+            e.check_result != "Unknown" || e.ethernet_diag_attempted || e.link_detected.is_some()
+        }),
+        "pressure" => diag
+            .pressure
+            .as_ref()
+            .is_some_and(|p| !p.summary.is_empty() || p.display_psi.is_some()),
+        "sim_picker" => diag
+            .sim_picker
+            .as_ref()
+            .is_some_and(|s| s.scan_attempted || s.full_block_run),
+        _ => false,
+    }
+}
+
+fn update_lifecycle_from_diag(diag: &mut DiagnosticState) {
+    for interface in ["wifi", "cellular", "satellite", "ethernet", "pressure", "sim_picker"] {
+        let has_data = interface_has_meaningful_data(diag, interface);
+        let status = diag
+            .run_lifecycle
+            .get(interface)
+            .map(|entry| entry.status.clone())
+            .unwrap_or_default();
+        if matches!(status, RunStatus::InProgress) && has_data {
+            mark_interface_run_finished(diag, interface, RunStatus::Completed);
+        }
+    }
+}
+
 fn merge_non_empty_cards(base: &mut DiagnosticState, incoming: &DiagnosticState) {
     if incoming.wifi.is_some() {
         base.wifi = incoming.wifi.clone();
@@ -1313,8 +1479,15 @@ fn merge_non_empty_cards(base: &mut DiagnosticState, incoming: &DiagnosticState)
     if incoming.pressure.is_some() {
         base.pressure = incoming.pressure.clone();
     }
+    if incoming.sim_picker.is_some() {
+        base.sim_picker = incoming.sim_picker.clone();
+    }
     if incoming.system.is_some() {
         base.system = incoming.system.clone();
+    }
+    for (interface, lifecycle) in &incoming.run_lifecycle {
+        base.run_lifecycle
+            .insert(interface.clone(), lifecycle.clone());
     }
     base.last_updated = incoming.last_updated.clone().or(base.last_updated.clone());
 }
@@ -1425,6 +1598,7 @@ fn start_log_watcher_internal(state: &AppState, start_from_end: bool) -> Result<
                     buffer.push_str(&chunk);
                     if let Ok(mut diag) = diag_arc.lock() {
                         parse_log_into_state(&buffer, &mut diag);
+                        update_lifecycle_from_diag(&mut diag);
                         diag.last_updated =
                             Some(chrono::Local::now().format("%H:%M:%S").to_string());
                         diag.session_has_data = has_any_diag_data(&diag);
@@ -1487,6 +1661,32 @@ fn get_diagnostic_state(state: State<'_, AppState>) -> Result<DiagnosticState, S
 }
 
 #[tauri::command]
+fn mark_diagnostic_run_started(
+    state: State<'_, AppState>,
+    interface: String,
+) -> Result<(), String> {
+    let mut diag = state.diagnostic_state.lock().map_err(|_| "lock poisoned")?;
+    mark_interfaces_run_started(&mut diag, &[interface.as_str()], RunStartedVia::Manual);
+    Ok(())
+}
+
+#[tauri::command]
+fn mark_diagnostic_run_completed(
+    state: State<'_, AppState>,
+    interface: String,
+    failed: Option<bool>,
+) -> Result<(), String> {
+    let mut diag = state.diagnostic_state.lock().map_err(|_| "lock poisoned")?;
+    let status = if failed.unwrap_or(false) {
+        RunStatus::Failed
+    } else {
+        RunStatus::Completed
+    };
+    mark_interface_run_finished(&mut diag, &interface, status);
+    Ok(())
+}
+
+#[tauri::command]
 fn clear_diagnostic_state(state: State<'_, AppState>) -> Result<(), String> {
     {
         let mut diag = state.diagnostic_state.lock().map_err(|_| "lock poisoned")?;
@@ -1510,6 +1710,7 @@ fn clear_diagnostic_interface(state: State<'_, AppState>, interface: String) -> 
         "sim_picker" => diag.sim_picker = None,
         _ => {}
     }
+    diag.run_lifecycle.remove(&interface);
     Ok(())
 }
 
@@ -2137,6 +2338,8 @@ pub fn run() {
             get_app_state,
             start_log_watcher,
             get_diagnostic_state,
+            mark_diagnostic_run_started,
+            mark_diagnostic_run_completed,
             clear_diagnostic_state,
             clear_diagnostic_interface,
             stop_log_watcher,
