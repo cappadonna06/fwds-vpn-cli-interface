@@ -1217,26 +1217,27 @@ INFO: 0 Supply -2.10 PSI
 
     #[test]
     fn pressure_requested_sensors_without_readings_emit_missing_sensor_issues() {
-        let system = SystemDiagnostic::default();
+        let system = SystemDiagnostic {
+            system_type: Some("MP3".into()),
+            ..Default::default()
+        };
         let text = r#"
 2026-04-10T15:52:41.344811Z: 45230110: pressure-monitor[1467:76c3fb80]: CRITICAL:ASSERT:/opt/fwds/pressure.cpp, line: 402
 pressure-monitor -v --hhc=mp3 --pressure-sensor=source -u us
+pressure-monitor -v --hhc=mp3 --pressure-sensor=distribution -u us
 pressure-monitor -v --hhc=mp3 --pressure-sensor=supply -u us
 "#;
         let pressure = build_pressure_from_text(text, &system).expect("pressure should parse");
         assert_eq!(pressure.status, DiagStatus::Red);
+        assert!(!pressure.sensor_errors.iter().any(|e| e.sensor_index == 0));
         assert!(pressure
             .sensor_errors
             .iter()
-            .any(|e| e.sensor_index == 0 && e.message.contains("No P1 detected")));
-        assert!(pressure
-            .sensor_errors
-            .iter()
-            .any(|e| e.sensor_index == 2 && e.message.contains("No P3 detected")));
+            .any(|e| e.sensor_index == 1 && e.message.contains("No P2 detected")));
+        assert!(pressure.sensor_errors.iter().any(|e| e.sensor_index == 2 && e.message.contains("No P3 detected")));
         assert!(pressure
             .issues
-            .iter()
-            .any(|issue| issue.id == "ERR_PRIMARY_SENSORS_MISSING"));
+            .iter().any(|issue| issue.id == "ERR_PRIMARY_SENSORS_MISSING" && issue.description.contains("P2 / P3")));
     }
 
     #[test]
@@ -2683,6 +2684,10 @@ fn build_pressure_from_text(text: &str, system: &SystemDiagnostic) -> Option<Pre
         (1u8, "Distribution", "P2", distribution_sensor.is_some()),
         (2u8, "Source", "P3", source_sensor.is_some()),
     ] {
+        let expected_missing_on_platform = is_mp3_or_lv2 && sensor_index == 0;
+        if expected_missing_on_platform {
+            continue;
+        }
         if requested_sensors.contains(&sensor_index) && !present {
             sensor_errors.push(PressureSensorError {
                 sensor_index,
@@ -2720,11 +2725,15 @@ fn build_pressure_from_text(text: &str, system: &SystemDiagnostic) -> Option<Pre
         });
     }
     let missing_supply = sensor_errors.iter().any(|e| e.sensor_index == 0);
+    let missing_distribution = sensor_errors.iter().any(|e| e.sensor_index == 1);
     let missing_source = sensor_errors.iter().any(|e| e.sensor_index == 2);
-    if missing_supply || missing_source {
+    if missing_supply || missing_distribution || missing_source {
         let mut missing_labels: Vec<&str> = Vec::new();
         if missing_supply {
             missing_labels.push("P1");
+        }
+        if missing_distribution {
+            missing_labels.push("P2");
         }
         if missing_source {
             missing_labels.push("P3");
@@ -2739,7 +2748,7 @@ fn build_pressure_from_text(text: &str, system: &SystemDiagnostic) -> Option<Pre
                     "No {} detected. Check cabling and pressure sensors.",
                     missing_labels.join(" / ")
                 ),
-                action: "Inspect P1/P3 harness and connectors, reseat sensor leads, then rerun pressure diagnostics.".into(),
+                action: "Check cabling and sensor health; reseat/replace failing sensors, then rerun pressure diagnostics.".into(),
             },
         );
     }
