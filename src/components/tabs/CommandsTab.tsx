@@ -724,6 +724,7 @@ interface ConfirmModalProps {
   onConfirm: () => void;
   hardConfirmText: string;
   setHardConfirmText: (v: string) => void;
+  action: "copy" | "send";
 }
 
 function ConfirmModal({
@@ -732,6 +733,7 @@ function ConfirmModal({
   onConfirm,
   hardConfirmText,
   setHardConfirmText,
+  action,
 }: ConfirmModalProps) {
   const canConfirm = hardConfirmText === cmd.command;
 
@@ -772,7 +774,7 @@ function ConfirmModal({
             disabled={!canConfirm}
             onClick={onConfirm}
           >
-            Copy {cmd.command}
+            {action === "send" ? `Send ${cmd.command}` : `Copy ${cmd.command}`}
           </button>
         </div>
       </div>
@@ -804,6 +806,8 @@ export default function CommandsTab() {
   const [collapsedCategories, setCollapsedCategories] = useState<Set<CommandCategory>>(new Set());
   const [hardConfirmCmd, setHardConfirmCmd] = useState<ControllerCommand | null>(null);
   const [hardConfirmText, setHardConfirmText] = useState("");
+  const [hardConfirmAction, setHardConfirmAction] = useState<"copy" | "send">("copy");
+  const [sendError, setSendError] = useState<string | null>(null);
 
   const searchRef = useRef<HTMLInputElement>(null);
 
@@ -853,24 +857,31 @@ export default function CommandsTab() {
 
   async function doSend(text: string, id: string) {
     try {
-      await invoke("send_input", { text });
+      await invoke("send_external_input", { text });
       setSentId(id);
       setTimeout(() => setSentId((prev: string | null) => (prev === id ? null : prev)), 1500);
-    } catch { /* no active session — silent */ }
+      setSendError(null);
+    } catch (e) {
+      setSendError(String(e) || "Open session first");
+    }
   }
 
   async function doSendBlock(text: string, key: string) {
     try {
-      await invoke("send_input", { text });
+      await invoke("send_external_input", { text });
       setSentBlockId(key);
       setTimeout(() => setSentBlockId((prev: string | null) => (prev === key ? null : prev)), 1500);
-    } catch { /* no active session — silent */ }
+      setSendError(null);
+    } catch (e) {
+      setSendError(String(e) || "Open session first");
+    }
   }
 
   // Called by CommandRow for guard:none and guard:hard
   function handleCopyFromRow(cmd: ControllerCommand) {
     if (cmd.guard === "hard") {
       setHardConfirmText("");
+      setHardConfirmAction("copy");
       setHardConfirmCmd(cmd);
       return;
     }
@@ -886,6 +897,7 @@ export default function CommandsTab() {
   function handleSendFromRow(cmd: ControllerCommand) {
     if (cmd.guard === "hard") {
       setHardConfirmText("");
+      setHardConfirmAction("send");
       setHardConfirmCmd(cmd);
       return;
     }
@@ -901,6 +913,7 @@ export default function CommandsTab() {
   function handleCopyFromDrawer(cmd: ControllerCommand) {
     if (cmd.guard === "hard" || cmd.guard === "confirm") {
       setHardConfirmText("");
+      setHardConfirmAction("copy");
       setHardConfirmCmd(cmd);
       return;
     }
@@ -911,6 +924,7 @@ export default function CommandsTab() {
   function handleSendFromDrawer(cmd: ControllerCommand) {
     if (cmd.guard === "hard" || cmd.guard === "confirm") {
       setHardConfirmText("");
+      setHardConfirmAction("send");
       setHardConfirmCmd(cmd);
       return;
     }
@@ -919,9 +933,14 @@ export default function CommandsTab() {
 
   function handleHardConfirm() {
     if (hardConfirmCmd) {
-      doCopy(hardConfirmCmd.command, hardConfirmCmd.id);
+      if (hardConfirmAction === "send") {
+        doSend(hardConfirmCmd.command, hardConfirmCmd.id);
+      } else {
+        doCopy(hardConfirmCmd.command, hardConfirmCmd.id);
+      }
       setHardConfirmCmd(null);
       setHardConfirmText("");
+      setHardConfirmAction("copy");
     }
   }
 
@@ -1061,6 +1080,7 @@ export default function CommandsTab() {
             </button>
           )}
         </div>
+        {sendError && <div className="warning-item">⚠ {sendError}</div>}
       </div>
 
       {/* Body */}
@@ -1241,6 +1261,7 @@ export default function CommandsTab() {
           onConfirm={handleHardConfirm}
           hardConfirmText={hardConfirmText}
           setHardConfirmText={setHardConfirmText}
+          action={hardConfirmAction}
         />
       )}
     </div>

@@ -1126,6 +1126,7 @@ export default function DiagnosticsTab() {
   const [systemUpdatedAt, setSystemUpdatedAt] = useState<string | null>(null);
   const [copiedCommandId, setCopiedCommandId] = useState<string | null>(null);
   const [sentCommandId, setSentCommandId] = useState<string | null>(null);
+  const [sendError, setSendError] = useState<string | null>(null);
   const [globalDiagTier, setGlobalDiagTier] = useState<"quick" | "full" | "no-satellite">("quick");
 
   useEffect(() => {
@@ -1227,11 +1228,12 @@ export default function DiagnosticsTab() {
     const script = resolveBlockScript(block, "heavy");
     if (!script) return;
     try {
-      await invoke("send_input", { text: script });
+      await invoke("send_external_input", { text: script });
       setSentCommandId(blockId);
       setTimeout(() => setSentCommandId((prev) => (prev === blockId ? null : prev)), 1400);
-    } catch {
-      // No active controller session — silent; user can still use Copy
+      setSendError(null);
+    } catch (e) {
+      setSendError(String(e) || "Open session first");
     }
   }
 
@@ -1267,6 +1269,7 @@ export default function DiagnosticsTab() {
             <button className="btn btn-secondary" onClick={() => sendDiagnosticBlock(globalDiagBlockId)}>
               {sentCommandId === globalDiagBlockId ? "Sent" : "Send"}
             </button>
+            {sendError && <div className="warning-item">⚠ {sendError}</div>}
           </div>
         </div>
 
