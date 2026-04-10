@@ -1,16 +1,18 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
-type VpnStatus = "disconnected" | "connecting" | "connected" | "failed";
+type VpnStatus = "disconnected" | "starting" | "connected" | "stopping" | "failed" | "unknown";
 type ControllerStatus = "disconnected" | "connecting" | "connected" | "failed";
 type LocalStatusTone = "neutral" | "ok" | "fail";
 type ConnectionMode = "vpn" | "local";
 
 const VPN_LABELS: Record<VpnStatus, string> = {
   disconnected: "Not connected",
-  connecting: "Connecting…",
+  starting: "Starting…",
   connected: "Connected",
+  stopping: "Stopping…",
   failed: "Failed",
+  unknown: "Unknown",
 };
 
 const CTRL_LABELS: Record<ControllerStatus, string> = {
@@ -38,7 +40,7 @@ interface PreflightResult {
 
 function statusTone(status: VpnStatus | ControllerStatus): "neutral" | "ok" | "warn" | "fail" {
   if (status === "connected") return "ok";
-  if (status === "connecting") return "warn";
+  if (status === "connecting" || status === "starting" || status === "stopping") return "warn";
   if (status === "failed") return "fail";
   return "neutral";
 }
@@ -85,7 +87,7 @@ export default function SessionTab({ onControllerConnected }: SessionTabProps) {
   }, []);
 
   useEffect(() => {
-    const active = vpnStatus === "connecting" || vpnStatus === "connected";
+    const active = vpnStatus === "starting" || vpnStatus === "connected" || vpnStatus === "stopping";
     if (active && !vpnPollRef.current) {
       vpnPollRef.current = setInterval(pollVpn, 1000);
     } else if (!active && vpnPollRef.current) {
@@ -199,7 +201,7 @@ export default function SessionTab({ onControllerConnected }: SessionTabProps) {
   }
 
   async function startVpn() {
-    setVpnStatus("connecting");
+    setVpnStatus("starting");
     setVpnDetail("Requesting administrator privileges…");
     try {
       await invoke("start_vpn", { folder: bundlePath });
@@ -215,8 +217,8 @@ export default function SessionTab({ onControllerConnected }: SessionTabProps) {
     } catch {
       // best effort
     }
-    setVpnStatus("disconnected");
-    setVpnDetail("");
+    setVpnStatus("stopping");
+    setVpnDetail("Stopping OpenVPN…");
     setPreflight(null);
   }
 
@@ -374,13 +376,14 @@ export default function SessionTab({ onControllerConnected }: SessionTabProps) {
                 <div className="btn-group">
                   <button
                     className="btn btn-primary"
-                    disabled={!allFilesOk || vpnStatus === "connected" || vpnStatus === "connecting"}
+                    disabled={!allFilesOk || vpnStatus === "connected" || vpnStatus === "starting" || vpnStatus === "stopping"}
                     onClick={startVpn}
                   >
                     Open VPN
                   </button>
                   <button
                     className="btn btn-secondary"
+                    disabled={vpnStatus === "disconnected" || vpnStatus === "stopping"}
                     onClick={stopVpn}
                   >
                     Stop

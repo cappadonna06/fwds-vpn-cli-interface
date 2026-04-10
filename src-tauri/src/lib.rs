@@ -13,6 +13,11 @@ mod parsers;
 
 use parsers::parse_log_into_state;
 
+const VPN_CONNECT_TIMEOUT: Duration = Duration::from_secs(25);
+const VPN_STOP_TIMEOUT: Duration = Duration::from_secs(8);
+const VPN_STALE_CLEANUP_TIMEOUT: Duration = Duration::from_secs(4);
+const VPN_LOG_LIMIT: usize = 500;
+
 // ── State ─────────────────────────────────────────────────────────────────────
 
 #[derive(Default)]
@@ -22,9 +27,12 @@ struct InnerState {
     managed_openvpn_log_path: Option<String>,
     managed_openvpn_log_offset: u64,
     managed_openvpn_stage_dir: Option<String>,
-    vpn_phase: String, // disconnected | connecting | connected | failed
+    vpn_phase: String, // disconnected | starting | connected | stopping | failed | unknown
     vpn_detail: String,
     vpn_logs: Vec<String>,
+    vpn_transition_in_flight: bool,
+    vpn_transition_token: u64,
+    vpn_cancel_requested: bool,
 
     // Controller shell (SSH session)
     shell_child: Option<Child>,
@@ -562,65 +570,101 @@ async fn validate_bundle(folder: String) -> Result<serde_json::Value, String> {
 /// Auto-kills any existing openvpn sessions first.
 #[tauri::command]
 fn start_vpn(folder: String, state: State<'_, AppState>) -> Result<(), String> {
-    let existing_pids = reset_vpn_state(&state)?;
-    let stage_dir = stage_bundle(&folder)?;
-    let staged_config = stage_dir.join("ovpn.conf");
-    let log_path = vpn_log_path();
-    let openvpn_binary = resolve_openvpn()?;
-    let launcher = write_launcher_script(&stage_dir, &staged_config, &log_path, &openvpn_binary)?;
-    let pid = launch_openvpn_elevated(&launcher, &existing_pids)?;
+    {
+        let mut inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
+        if !can_start_from(inner.vpn_phase.as_str()) {
+            match inner.vpn_phase.as_str() {
+                "connected" => {
+                    push_vpn_log(&mut inner, "Start requested while connected; no-op".into());
+                    return Ok(());
+                }
+                "starting" => {
+                    push_vpn_log(
+                        &mut inner,
+                        "Start requested while starting; coalesced".into(),
+                    );
+                    return Ok(());
+                }
+                "stopping" => {
+                    push_vpn_log(&mut inner, "Start requested while stopping; ignored".into());
+                    return Ok(());
+                }
+                _ => {}
+            }
+        }
+        if inner.vpn_transition_in_flight {
+            push_vpn_log(
+                &mut inner,
+                "Start requested during in-flight transition; coalesced".into(),
+            );
+            return Ok(());
+        }
+        inner.vpn_transition_in_flight = true;
+        inner.vpn_transition_token = inner.vpn_transition_token.wrapping_add(1);
+        inner.vpn_cancel_requested = false;
+        inner.vpn_phase = "starting".into();
+        inner.vpn_detail = "OpenVPN startup requested".into();
+        inner.vpn_logs.clear();
+        push_vpn_log(&mut inner, "Starting OpenVPN transition".into());
+    }
 
-    let mut inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
-    inner.managed_openvpn_pid = Some(pid);
-    inner.managed_openvpn_log_path = Some(log_path.to_string_lossy().into_owned());
-    inner.managed_openvpn_log_offset = 0;
-    inner.managed_openvpn_stage_dir = Some(stage_dir.to_string_lossy().into_owned());
-    inner.vpn_phase = "connecting".into();
-    inner.vpn_detail = "OpenVPN starting with administrator privileges".into();
-    push_vpn_log(
-        &mut inner,
-        format!("Staged bundle → {}", stage_dir.display()),
-    );
-    push_vpn_log(&mut inner, format!("OpenVPN PID: {pid}"));
-    push_vpn_log(&mut inner, format!("Log file: {}", log_path.display()));
+    let inner_state = state.inner.clone();
+    thread::spawn(move || run_vpn_start_transition(inner_state, folder));
     Ok(())
 }
 
 /// Stop the managed OpenVPN process (elevated kill via osascript).
 #[tauri::command]
 fn stop_vpn(state: State<'_, AppState>) -> Result<(), String> {
-    let mut inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
-    let mut pids = detect_openvpn_pids();
-    if let Some(pid) = inner.managed_openvpn_pid.take() {
-        if !pids.contains(&pid) {
-            pids.push(pid);
+    let mut should_spawn = false;
+    {
+        let mut inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
+        if !can_stop_from(inner.vpn_phase.as_str()) {
+            match inner.vpn_phase.as_str() {
+                "disconnected" | "failed" => {
+                    push_vpn_log(
+                        &mut inner,
+                        "Stop requested while disconnected/failed; no-op".into(),
+                    );
+                    inner.vpn_phase = "disconnected".into();
+                    inner.vpn_detail = "OpenVPN already stopped".into();
+                    return Ok(());
+                }
+                "stopping" => {
+                    push_vpn_log(
+                        &mut inner,
+                        "Stop requested while stopping; coalesced".into(),
+                    );
+                    return Ok(());
+                }
+                "starting" => {
+                    inner.vpn_cancel_requested = true;
+                    inner.vpn_phase = "stopping".into();
+                    inner.vpn_detail = "Cancelling startup and stopping OpenVPN…".into();
+                    push_vpn_log(
+                        &mut inner,
+                        "Stop requested during startup; cancellation queued".into(),
+                    );
+                    return Ok(());
+                }
+                _ => {}
+            }
         }
-    };
-
-    if !pids.is_empty() {
-        stop_openvpn_pids_elevated(&pids)?;
-        push_vpn_log(
-            &mut inner,
-            format!(
-                "Stopped OpenVPN process(es): {}",
-                pids.iter()
-                    .map(u32::to_string)
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ),
-        );
-    } else {
-        push_vpn_log(
-            &mut inner,
-            "Stop requested; no running OpenVPN processes found".into(),
-        );
+        if !inner.vpn_transition_in_flight {
+            inner.vpn_transition_in_flight = true;
+            inner.vpn_transition_token = inner.vpn_transition_token.wrapping_add(1);
+            should_spawn = true;
+        }
+        inner.vpn_phase = "stopping".into();
+        inner.vpn_detail = "Stopping OpenVPN…".into();
+        inner.vpn_cancel_requested = true;
+        push_vpn_log(&mut inner, "Stopping OpenVPN transition".into());
     }
 
-    cleanup_stage_dir(inner.managed_openvpn_stage_dir.take());
-    inner.managed_openvpn_log_path = None;
-    inner.managed_openvpn_log_offset = 0;
-    inner.vpn_phase = "disconnected".into();
-    inner.vpn_detail = "OpenVPN stopped".into();
+    if should_spawn {
+        let inner_state = state.inner.clone();
+        thread::spawn(move || run_vpn_stop_transition(inner_state));
+    }
     Ok(())
 }
 
@@ -1571,21 +1615,202 @@ fn stop_log_watcher_internal(state: &AppState) -> Result<(), String> {
 
 // ── VPN helpers ───────────────────────────────────────────────────────────────
 
-/// Kill any previously managed openvpn, clear VPN state, return known PIDs to kill atomically.
-fn reset_vpn_state(state: &AppState) -> Result<Vec<u32>, String> {
-    let mut inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
-    let mut pids = detect_openvpn_pids();
-    if let Some(pid) = inner.managed_openvpn_pid.take() {
-        if !pids.contains(&pid) {
-            pids.push(pid);
+fn run_vpn_start_transition(inner_state: Arc<Mutex<InnerState>>, folder: String) {
+    let transition_token = match inner_state.lock() {
+        Ok(inner) => inner.vpn_transition_token,
+        Err(_) => return,
+    };
+    let result = do_vpn_start_transition(&inner_state, transition_token, &folder);
+    if let Err(err) = result {
+        if let Ok(mut inner) = inner_state.lock() {
+            if inner.vpn_transition_token == transition_token {
+                inner.vpn_phase = "failed".into();
+                inner.vpn_detail = err.clone();
+                inner.vpn_transition_in_flight = false;
+                push_vpn_log(&mut inner, format!("Start transition failed: {err}"));
+            }
         }
     }
-    inner.managed_openvpn_log_offset = 0;
-    cleanup_stage_dir(inner.managed_openvpn_stage_dir.take());
-    inner.vpn_logs.clear();
-    inner.vpn_phase = "disconnected".into();
-    inner.vpn_detail = String::new();
-    Ok(pids)
+}
+
+fn do_vpn_start_transition(
+    inner_state: &Arc<Mutex<InnerState>>,
+    transition_token: u64,
+    folder: &str,
+) -> Result<(), String> {
+    let existing_pids = collect_known_openvpn_pids(inner_state);
+    if !existing_pids.is_empty() {
+        with_vpn_state(inner_state, transition_token, |inner| {
+            push_vpn_log(
+                inner,
+                format!(
+                    "Stale OpenVPN process cleanup requested for pid(s): {}",
+                    existing_pids
+                        .iter()
+                        .map(u32::to_string)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            );
+        })?;
+        stop_openvpn_pids_elevated(&existing_pids)?;
+        wait_for_processes_to_exit(&existing_pids, VPN_STALE_CLEANUP_TIMEOUT)?;
+    }
+    with_vpn_state(inner_state, transition_token, |inner| {
+        inner.managed_openvpn_pid = None;
+        inner.managed_openvpn_log_path = None;
+        inner.managed_openvpn_log_offset = 0;
+        cleanup_stage_dir(inner.managed_openvpn_stage_dir.take());
+        inner.vpn_cancel_requested = false;
+    })?;
+
+    let stage_dir = stage_bundle(folder)?;
+    let staged_config = stage_dir.join("ovpn.conf");
+    let log_path = vpn_log_path();
+    let openvpn_binary = resolve_openvpn()?;
+    let launcher = write_launcher_script(&stage_dir, &staged_config, &log_path, &openvpn_binary)?;
+    let pid = launch_openvpn_elevated(&launcher, &[])?;
+
+    with_vpn_state(inner_state, transition_token, |inner| {
+        inner.managed_openvpn_pid = Some(pid);
+        inner.managed_openvpn_log_path = Some(log_path.to_string_lossy().into_owned());
+        inner.managed_openvpn_log_offset = 0;
+        inner.managed_openvpn_stage_dir = Some(stage_dir.to_string_lossy().into_owned());
+        inner.vpn_phase = "starting".into();
+        inner.vpn_detail = "OpenVPN starting with administrator privileges".into();
+        push_vpn_log(inner, format!("Staged bundle → {}", stage_dir.display()));
+        push_vpn_log(inner, format!("OpenVPN PID: {pid}"));
+        push_vpn_log(inner, format!("Log file: {}", log_path.display()));
+    })?;
+
+    let started = std::time::Instant::now();
+    while started.elapsed() < VPN_CONNECT_TIMEOUT {
+        thread::sleep(Duration::from_millis(250));
+        let mut should_stop = false;
+        let mut done = false;
+        with_vpn_state(inner_state, transition_token, |inner| {
+            sync_vpn_logs(inner);
+            if inner.vpn_cancel_requested {
+                should_stop = true;
+                inner.vpn_detail = "Startup cancelled; stopping OpenVPN…".into();
+            } else if inner.vpn_phase == "connected" {
+                inner.vpn_transition_in_flight = false;
+                done = true;
+                push_vpn_log(inner, "OpenVPN transition complete: connected".into());
+            } else if inner.vpn_phase == "failed" {
+                inner.vpn_transition_in_flight = false;
+                done = true;
+            }
+        })?;
+        if done {
+            return Ok(());
+        }
+        if should_stop {
+            return do_vpn_stop_transition(inner_state, transition_token);
+        }
+    }
+
+    with_vpn_state(inner_state, transition_token, |inner| {
+        inner.vpn_phase = "failed".into();
+        inner.vpn_detail = format!(
+            "OpenVPN did not become ready within {} seconds",
+            VPN_CONNECT_TIMEOUT.as_secs()
+        );
+        push_vpn_log(inner, inner.vpn_detail.clone());
+    })?;
+    do_vpn_stop_transition(inner_state, transition_token)
+}
+
+fn run_vpn_stop_transition(inner_state: Arc<Mutex<InnerState>>) {
+    let transition_token = match inner_state.lock() {
+        Ok(inner) => inner.vpn_transition_token,
+        Err(_) => return,
+    };
+    if let Err(err) = do_vpn_stop_transition(&inner_state, transition_token) {
+        if let Ok(mut inner) = inner_state.lock() {
+            if inner.vpn_transition_token == transition_token {
+                inner.vpn_phase = "failed".into();
+                inner.vpn_detail = err.clone();
+                inner.vpn_transition_in_flight = false;
+                push_vpn_log(&mut inner, format!("Stop transition failed: {err}"));
+            }
+        }
+    }
+}
+
+fn do_vpn_stop_transition(
+    inner_state: &Arc<Mutex<InnerState>>,
+    transition_token: u64,
+) -> Result<(), String> {
+    let pids = collect_known_openvpn_pids(inner_state);
+    if !pids.is_empty() {
+        stop_openvpn_pids_elevated(&pids)?;
+        if wait_for_processes_to_exit(&pids, VPN_STOP_TIMEOUT).is_err() {
+            stop_openvpn_pids_force_elevated(&pids)?;
+            wait_for_processes_to_exit(&pids, Duration::from_secs(2))?;
+        }
+    }
+    with_vpn_state(inner_state, transition_token, |inner| {
+        cleanup_stage_dir(inner.managed_openvpn_stage_dir.take());
+        inner.managed_openvpn_pid = None;
+        inner.managed_openvpn_log_path = None;
+        inner.managed_openvpn_log_offset = 0;
+        inner.vpn_cancel_requested = false;
+        inner.vpn_transition_in_flight = false;
+        inner.vpn_phase = "disconnected".into();
+        inner.vpn_detail = "OpenVPN stopped".into();
+        push_vpn_log(inner, "OpenVPN transition complete: disconnected".into());
+    })
+}
+
+fn with_vpn_state<F>(
+    inner_state: &Arc<Mutex<InnerState>>,
+    transition_token: u64,
+    mut f: F,
+) -> Result<(), String>
+where
+    F: FnMut(&mut InnerState),
+{
+    let mut inner = inner_state.lock().map_err(|_| "state lock poisoned")?;
+    if inner.vpn_transition_token != transition_token {
+        return Err("VPN transition superseded by a newer action".into());
+    }
+    f(&mut inner);
+    Ok(())
+}
+
+fn collect_known_openvpn_pids(inner_state: &Arc<Mutex<InnerState>>) -> Vec<u32> {
+    let mut pids = detect_openvpn_pids();
+    if let Ok(inner) = inner_state.lock() {
+        if let Some(pid) = inner.managed_openvpn_pid {
+            if !pids.contains(&pid) {
+                pids.push(pid);
+            }
+        }
+    }
+    pids
+}
+
+fn wait_for_processes_to_exit(pids: &[u32], timeout: Duration) -> Result<(), String> {
+    let started = std::time::Instant::now();
+    while started.elapsed() < timeout {
+        if pids.iter().all(|pid| !process_alive(*pid)) {
+            return Ok(());
+        }
+        thread::sleep(Duration::from_millis(200));
+    }
+    Err(format!(
+        "Timed out waiting for OpenVPN process(es) to exit after {}s",
+        timeout.as_secs()
+    ))
+}
+
+fn can_start_from(phase: &str) -> bool {
+    matches!(phase, "disconnected" | "failed" | "unknown")
+}
+
+fn can_stop_from(phase: &str) -> bool {
+    matches!(phase, "connected" | "starting")
 }
 
 fn stage_bundle(folder_path: &str) -> Result<PathBuf, String> {
@@ -1851,6 +2076,37 @@ fn stop_openvpn_pids_elevated(pids: &[u32]) -> Result<(), String> {
     }
 }
 
+fn stop_openvpn_pids_force_elevated(pids: &[u32]) -> Result<(), String> {
+    if pids.is_empty() {
+        return Ok(());
+    }
+    let pid_list = pids
+        .iter()
+        .map(u32::to_string)
+        .collect::<Vec<_>>()
+        .join(" ");
+    let script = format!(
+        "do shell script \"kill -9 {} >/dev/null 2>&1 || true\" with administrator privileges",
+        pid_list
+    );
+    let out = Command::new("osascript")
+        .arg("-e")
+        .arg(&script)
+        .output()
+        .map_err(|e| format!("Failed to force-stop OpenVPN with osascript: {e}"))?;
+
+    if out.status.success() {
+        Ok(())
+    } else {
+        let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        if stderr.is_empty() {
+            Err("Failed to force-stop OpenVPN.".into())
+        } else {
+            Err(format!("Failed to force-stop OpenVPN: {stderr}"))
+        }
+    }
+}
+
 fn sync_vpn_logs(inner: &mut InnerState) {
     let Some(ref log_path) = inner.managed_openvpn_log_path.clone() else {
         return;
@@ -1876,21 +2132,25 @@ fn sync_vpn_logs(inner: &mut InnerState) {
             continue;
         }
         update_vpn_status(inner, line);
-        inner.vpn_logs.push(line.to_string());
+        push_vpn_log(inner, line.to_string());
     }
 
     // Detect openvpn death while still active
     if let Some(pid) = inner.managed_openvpn_pid {
-        let should_watch_liveness =
-            inner.vpn_phase == "connecting" || inner.vpn_phase == "connected";
+        let should_watch_liveness = inner.vpn_phase == "starting" || inner.vpn_phase == "connected";
         if should_watch_liveness && !process_alive(pid) {
             inner.managed_openvpn_pid = None;
             cleanup_stage_dir(inner.managed_openvpn_stage_dir.take());
             inner.managed_openvpn_log_path = None;
             inner.managed_openvpn_log_offset = 0;
-            inner.vpn_phase = "disconnected".into();
-            inner.vpn_detail = "OpenVPN tunnel dropped. Reconnect OpenVPN.".into();
-            inner.vpn_logs.push(inner.vpn_detail.clone());
+            if inner.vpn_phase == "starting" {
+                inner.vpn_phase = "failed".into();
+                inner.vpn_detail = "OpenVPN exited before establishing the tunnel.".into();
+            } else {
+                inner.vpn_phase = "disconnected".into();
+                inner.vpn_detail = "OpenVPN tunnel dropped. Reconnect OpenVPN.".into();
+            }
+            push_vpn_log(inner, inner.vpn_detail.clone());
         }
     }
 }
@@ -1940,6 +2200,10 @@ fn process_alive(pid: u32) -> bool {
 
 fn push_vpn_log(inner: &mut InnerState, msg: String) {
     inner.vpn_logs.push(msg);
+    if inner.vpn_logs.len() > VPN_LOG_LIMIT {
+        let overflow = inner.vpn_logs.len() - VPN_LOG_LIMIT;
+        inner.vpn_logs.drain(0..overflow);
+    }
 }
 
 fn cleanup_stage_dir(path: Option<String>) {
@@ -2111,11 +2375,16 @@ fn applescript_string_literal(value: &str) -> String {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let mut initial_inner = InnerState::default();
+    initial_inner.vpn_phase = "disconnected".into();
+    initial_inner.shell_phase = "disconnected".into();
+    initial_inner.connection_mode = "vpn".into();
+
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .manage(AppState {
-            inner: Arc::new(Mutex::new(InnerState::default())),
+            inner: Arc::new(Mutex::new(initial_inner)),
             diagnostic_state: Arc::new(Mutex::new(DiagnosticState::default())),
             log_watcher_kill: Arc::new(Mutex::new(None)),
             watcher_paused: Arc::new(AtomicBool::new(false)),
@@ -2152,4 +2421,43 @@ pub fn run() {
         .setup(|_app| Ok(()))
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn vpn_start_state_rules() {
+        assert!(can_start_from("disconnected"));
+        assert!(can_start_from("failed"));
+        assert!(can_start_from("unknown"));
+        assert!(!can_start_from("starting"));
+        assert!(!can_start_from("connected"));
+        assert!(!can_start_from("stopping"));
+    }
+
+    #[test]
+    fn vpn_stop_state_rules() {
+        assert!(can_stop_from("starting"));
+        assert!(can_stop_from("connected"));
+        assert!(!can_stop_from("disconnected"));
+        assert!(!can_stop_from("failed"));
+        assert!(!can_stop_from("stopping"));
+    }
+
+    #[test]
+    fn vpn_log_buffer_is_bounded() {
+        let mut inner = InnerState::default();
+        for i in 0..(VPN_LOG_LIMIT + 25) {
+            push_vpn_log(&mut inner, format!("line-{i}"));
+        }
+        assert_eq!(inner.vpn_logs.len(), VPN_LOG_LIMIT);
+        assert_eq!(inner.vpn_logs.first().map(String::as_str), Some("line-25"));
+        let expected_last = format!("line-{}", VPN_LOG_LIMIT + 24);
+        assert_eq!(
+            inner.vpn_logs.last().map(String::as_str),
+            Some(expected_last.as_str())
+        );
+    }
 }
