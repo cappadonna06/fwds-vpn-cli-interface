@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::fs::{self, OpenOptions};
+use std::fs;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
@@ -1246,53 +1246,42 @@ fn get_app_state(state: State<'_, AppState>) -> Result<serde_json::Value, String
 /// Send input to the active external Terminal.app session (window/tab launched by this app).
 #[tauri::command]
 fn send_external_input(text: String, state: State<'_, AppState>) -> Result<(), String> {
-    let (window_id, connection_mode) = {
+    let window_id = {
         let inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
-        (
-            inner
-                .external_terminal_window_id
-                .ok_or_else(|| "Open session first".to_string())?,
-            inner.connection_mode.clone(),
-        )
+        inner
+            .external_terminal_window_id
+            .ok_or_else(|| "Open session first".to_string())?
     };
 
+    let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
     let script = format!(
-        "tell application \"Terminal\"\nif not (exists window id {window_id}) then error \"Open session first\"\nreturn tty of selected tab of window id {window_id}\nend tell"
+        "tell application \"Terminal\"\nif not (exists window id {window_id}) then error \"Open session first\"\nactivate\nset index of window id {window_id} to 1\nend tell\n\
+delay 0.05\n\
+set payload to {}\n\
+set oldDelims to AppleScript's text item delimiters\n\
+set AppleScript's text item delimiters to linefeed\n\
+set payloadLines to text items of payload\n\
+set AppleScript's text item delimiters to oldDelims\n\
+tell application \"System Events\"\nrepeat with lineText in payloadLines\nset cmd to contents of lineText\nif cmd is not \"\" then\nkeystroke cmd\nkey code 36\nend if\nend repeat\nend tell",
+        applescript_string_literal(&normalized)
     );
     let out = Command::new("osascript")
         .arg("-e")
         .arg(&script)
         .output()
-        .map_err(|e| format!("Failed to resolve Terminal session: {e}"))?;
+        .map_err(|e| format!("Failed to send command: {e}"))?;
 
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        if stderr.contains("Not authorized to send Apple events") {
+            return Err("Enable Accessibility + Automation permissions for command send.".into());
+        }
         return Err(if stderr.is_empty() {
             "Open session first".into()
         } else {
-            "Open session first".into()
+            format!("Failed to send command: {stderr}")
         });
     }
-
-    let tty_path = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    if tty_path.is_empty() || !tty_path.starts_with("/dev/") {
-        return Err("Open session first".into());
-    }
-
-    let mut tty = OpenOptions::new()
-        .write(true)
-        .open(&tty_path)
-        .map_err(|e| format!("Failed to open terminal session: {e}"))?;
-    tty.write_all(text.as_bytes())
-        .map_err(|e| format!("Failed to send command: {e}"))?;
-    // Local serial (minicom) needs CRLF-style Enter so cursor advances and
-    // command submits cleanly in the interactive shell.
-    // VPN SSH shell works with newline.
-    let enter = if connection_mode == "local" { b"\r\n" } else { b"\n" };
-    tty.write_all(enter)
-        .map_err(|e| format!("Failed to send command: {e}"))?;
-    tty.flush()
-        .map_err(|e| format!("Failed to flush terminal session: {e}"))?;
 
     Ok(())
 }
