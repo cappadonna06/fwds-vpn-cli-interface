@@ -1285,9 +1285,10 @@ fn send_external_input(text: String, state: State<'_, AppState>) -> Result<(), S
         .map_err(|e| format!("Failed to open terminal session: {e}"))?;
     tty.write_all(text.as_bytes())
         .map_err(|e| format!("Failed to send command: {e}"))?;
-    // Local serial (minicom) expects carriage-return semantics for Enter.
+    // Local serial (minicom) needs CRLF-style Enter so cursor advances and
+    // command submits cleanly in the interactive shell.
     // VPN SSH shell works with newline.
-    let enter = if connection_mode == "local" { b"\r" } else { b"\n" };
+    let enter = if connection_mode == "local" { b"\r\n" } else { b"\n" };
     tty.write_all(enter)
         .map_err(|e| format!("Failed to send command: {e}"))?;
     tty.flush()
