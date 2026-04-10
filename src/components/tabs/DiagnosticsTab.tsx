@@ -771,9 +771,14 @@ function buildPressurePrimaryTags(pressure?: PressureDiagnostic | null): string[
 
 function buildPressureSecondaryTags(pressure?: PressureDiagnostic | null): string[] {
   if (!pressure) return [];
+  const source = pressure.sensors?.source?.latest;
   const distribution = pressure.sensors?.distribution?.latest;
+  const hasSource = source !== null && source !== undefined && !Number.isNaN(source);
   const hasDistribution = distribution !== null && distribution !== undefined && !Number.isNaN(distribution);
-  return hasDistribution ? ["P2 Distribution Pressure"] : [];
+  const tags: string[] = [];
+  if (hasSource) tags.push("P3 Source Pressure");
+  if (hasDistribution) tags.push("P2 Distribution Pressure");
+  return tags;
 }
 
 type CardSummary = {
@@ -894,13 +899,18 @@ function summarizePressure(pressure?: PressureDiagnostic | null): CardSummary {
   if (!pressure) return { health: "neutral", badgeLabel: "No data", primaryLine: "No data yet" };
   const health = pressure.status === "red" ? "error" : pressure.status === "orange" ? "warning" : "healthy";
   const badgeLabel = pressure.status === "red" ? "Error" : pressure.status === "orange" ? "Warning" : "Healthy";
+  const source = pressure.sensors?.source?.latest;
   const distribution = pressure.sensors?.distribution?.latest;
+  const hasSource = source !== null && source !== undefined && !Number.isNaN(source);
   const hasDistribution = distribution !== null && distribution !== undefined && !Number.isNaN(distribution);
+  const secondaryParts: string[] = [];
+  if (hasSource) secondaryParts.push(`${formatPressureSummaryPsi(source)} P3 Source Pressure`);
+  if (hasDistribution) secondaryParts.push(`${formatPressureSummaryPsi(distribution)} P2 Distribution Pressure`);
   return {
     health,
     badgeLabel,
     primaryLine: pressure.display_psi !== null && pressure.display_psi !== undefined ? `${pressure.display_psi.toFixed(1)} PSI` : "—",
-    secondaryLine: hasDistribution ? formatPressureSummaryPsi(distribution) : null,
+    secondaryLine: secondaryParts.length ? secondaryParts.join(" · ") : null,
   };
 }
 
