@@ -293,13 +293,37 @@ interface DiagCardProps {
   compact?: boolean;
   emphasizeSecondaryLine?: boolean;
   onClear?: () => void;
+  updating?: boolean;
+  onForceRelease?: () => void;
 }
+
+type InterfaceKey = "wifi" | "cellular" | "satellite" | "ethernet" | "pressure" | "sim_picker";
+type HoldState = { startedAt: number; expiresAt: number; reason: string };
 
 function resolveBlockScript(block: DiagnosticBlock, tier: "light" | "heavy"): string {
   const custom = tier === "light" ? block.light_script : block.heavy_script;
   if (custom && custom.trim().length > 0) return custom;
   const ids = tier === "light" ? block.light_command_ids : block.heavy_command_ids;
   return ids.join("\n");
+}
+
+function inferInterfacesFromScript(script: string): InterfaceKey[] {
+  const lower = script.toLowerCase();
+  const interfaces = new Set<InterfaceKey>();
+  if (lower.includes("wifi-check") || lower.includes("wifi-signal")) interfaces.add("wifi");
+  if (lower.includes("cellular-check") || lower.includes("cell-")) interfaces.add("cellular");
+  if (lower.includes("satellite-check") || lower.includes("sat-imei")) interfaces.add("satellite");
+  if (lower.includes("ethernet-check") || lower.includes("ethtool eth0")) interfaces.add("ethernet");
+  if (lower.includes("pressure-monitor")) interfaces.add("pressure");
+  if (lower.includes("sim picker") || lower.includes("cell-support --no-ofono --at --scan")) interfaces.add("sim_picker");
+  return [...interfaces];
+}
+
+function holdTimeoutMsForInterface(iface: InterfaceKey, script: string): number {
+  const lower = script.toLowerCase();
+  const hasSatelliteLoopback = lower.includes("satellite-check -t");
+  if (iface === "satellite" && hasSatelliteLoopback) return 15 * 60 * 1000;
+  return 60 * 1000;
 }
 
 function toneFromStatus(status?: DiagStatus | null): HealthTone {
@@ -925,6 +949,8 @@ function DiagCard({
   compact,
   emphasizeSecondaryLine = false,
   onClear,
+  updating,
+  onForceRelease,
 }: DiagCardProps) {
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement | null>(null);
@@ -963,7 +989,7 @@ function DiagCard({
         <div className="diag-card-head-right">
           <span className="diag-status-label">
             <span className={`diag-status-dot diag-status-${health}`} />
-            <span>{statusLabel}</span>
+            <span>{updating ? "Updating…" : statusLabel}</span>
           </span>
           {onClear && (
             <div className="diag-card-menu-wrap" ref={menuRef}>
@@ -1021,6 +1047,18 @@ function DiagCard({
                       }}
                     >
                       Clear card
+                    </button>
+                  )}
+                  {updating && onForceRelease && (
+                    <button
+                      type="button"
+                      className="diag-card-menu-item"
+                      onClick={() => {
+                        onForceRelease();
+                        setMenuOpen(false);
+                      }}
+                    >
+                      Release update hold
                     </button>
                   )}
                 </div>
@@ -1096,7 +1134,8 @@ function DiagCard({
 }
 
 export default function DiagnosticsTab() {
-  const [diag, setDiag] = useState<DiagnosticState | null>(null);
+  const [rawDiag, setRawDiag] = useState<DiagnosticState | null>(null);
+  const [displayDiag, setDisplayDiag] = useState<DiagnosticState | null>(null);
   const [lastUpdated, setLastUpdated] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({
     wifi: false,
@@ -1128,6 +1167,12 @@ export default function DiagnosticsTab() {
   const [sentCommandId, setSentCommandId] = useState<string | null>(null);
   const [sendError, setSendError] = useState<string | null>(null);
   const [globalDiagTier, setGlobalDiagTier] = useState<"quick" | "full" | "no-satellite">("quick");
+  const [cardHolds, setCardHolds] = useState<Partial<Record<InterfaceKey, HoldState>>>({});
+  const cardHoldsRef = useRef<Partial<Record<InterfaceKey, HoldState>>>({});
+
+  useEffect(() => {
+    cardHoldsRef.current = cardHolds;
+  }, [cardHolds]);
 
   useEffect(() => {
     invoke("start_log_watcher").catch(() => {});
@@ -1136,6 +1181,7 @@ export default function DiagnosticsTab() {
       if (Date.now() < postClearUntilRef.current) return; // post-clear cooldown
       try {
         const state = await invoke<DiagnosticState>("get_diagnostic_state");
+        const nowMs = Date.now();
         const now = new Date().toLocaleTimeString();
         const nextCards: Record<string, string> = {
           wifi: JSON.stringify(state.wifi ?? null),
@@ -1161,7 +1207,32 @@ export default function DiagnosticsTab() {
         }
         prevCardsRef.current = nextCards;
         prevSystemRef.current = nextSystem;
-        setDiag(state);
+        setRawDiag(state);
+        setDisplayDiag((prevDisplay) => {
+          const base = prevDisplay ?? state;
+          const next = { ...base };
+          (Object.keys(nextCards) as InterfaceKey[]).forEach((iface) => {
+            const hold = cardHoldsRef.current[iface];
+            if (hold && hold.expiresAt > nowMs) return;
+            (next as any)[iface] = (state as any)?.[iface] ?? null;
+          });
+          next.system = state.system ?? null;
+          next.last_updated = state.last_updated;
+          next.session_has_data = state.session_has_data;
+          return next;
+        });
+        setCardHolds((prev) => {
+          let changed = false;
+          const next = { ...prev };
+          (Object.keys(prev) as InterfaceKey[]).forEach((iface) => {
+            const hold = prev[iface];
+            if (hold && hold.expiresAt <= nowMs) {
+              delete next[iface];
+              changed = true;
+            }
+          });
+          return changed ? next : prev;
+        });
         setLastUpdated(state.last_updated ?? null);
       } catch {
         // best effort
@@ -1171,15 +1242,15 @@ export default function DiagnosticsTab() {
     return () => clearInterval(id);
   }, []);
 
-  const showNoSessionBanner = useMemo(() => !diag?.session_has_data, [diag]);
+  const showNoSessionBanner = useMemo(() => !displayDiag?.session_has_data, [displayDiag]);
 
-  const wifi = diag?.wifi;
-  const cellular = diag?.cellular;
-  const satellite = diag?.satellite;
-  const ethernet = diag?.ethernet;
-  const pressure = diag?.pressure;
-  const system = diag?.system;
-  const simPicker = diag?.sim_picker;
+  const wifi = displayDiag?.wifi;
+  const cellular = displayDiag?.cellular;
+  const satellite = displayDiag?.satellite;
+  const ethernet = displayDiag?.ethernet;
+  const pressure = displayDiag?.pressure;
+  const system = displayDiag?.system;
+  const simPicker = displayDiag?.sim_picker;
   const wifiSummary = summarizeWifi(wifi);
   const cellularSummary = summarizeCellular(cellular);
   const satelliteSummary = summarizeSatellite(satellite);
@@ -1193,16 +1264,19 @@ export default function DiagnosticsTab() {
   async function clearCards() {
     await invoke("stop_log_watcher").catch(() => {});
     postClearUntilRef.current = Date.now() + 3000;
-    setDiag({
+    const emptyState: DiagnosticState = {
       wifi: null,
       cellular: null,
       satellite: null,
       ethernet: null,
       pressure: null,
       system: null,
+      sim_picker: null,
       last_updated: null,
       session_has_data: false,
-    });
+    };
+    setRawDiag(emptyState);
+    setDisplayDiag(emptyState);
     setLastUpdated(null);
     setSystemUpdatedAt(null);
     setCardUpdatedAt({ wifi: null, cellular: null, satellite: null, ethernet: null, pressure: null, sim_picker: null });
@@ -1210,6 +1284,7 @@ export default function DiagnosticsTab() {
     prevSystemRef.current = "";
     setCopiedCommandId(null);
     setSentCommandId(null);
+    setCardHolds({});
   }
 
   async function copyDiagnosticBlock(blockId: string) {
@@ -1228,6 +1303,21 @@ export default function DiagnosticsTab() {
     const script = resolveBlockScript(block, "heavy");
     if (!script) return;
     try {
+      const now = Date.now();
+      const touchedInterfaces = inferInterfacesFromScript(script);
+      setCardHolds((prev) => {
+        const next = { ...prev };
+        touchedInterfaces.forEach((iface) => {
+          next[iface] = {
+            startedAt: now,
+            expiresAt: now + holdTimeoutMsForInterface(iface, script),
+            reason: iface === "satellite" && script.toLowerCase().includes("satellite-check -t")
+              ? "Satellite loopback in progress"
+              : "Diagnostics command in progress",
+          };
+        });
+        return next;
+      });
       await invoke("send_external_input", { text: script });
       setSentCommandId(blockId);
       setTimeout(() => setSentCommandId((prev) => (prev === blockId ? null : prev)), 1400);
@@ -1249,6 +1339,20 @@ export default function DiagnosticsTab() {
     : globalDiagTier === "no-satellite"
       ? "full-diags-no-sat"
       : "networking-all";
+
+  function releaseCardHold(iface: InterfaceKey) {
+    setCardHolds((prev) => {
+      if (!prev[iface]) return prev;
+      const next = { ...prev };
+      delete next[iface];
+      return next;
+    });
+    setDisplayDiag((prev) => {
+      if (!prev || !rawDiag) return prev;
+      return { ...prev, [iface]: (rawDiag as any)?.[iface] ?? null };
+    });
+    setCardUpdatedAt((prev) => ({ ...prev, [iface]: new Date().toLocaleTimeString() }));
+  }
 
   return (
     <section className="tab-content diag-page">
@@ -1300,9 +1404,11 @@ export default function DiagnosticsTab() {
           onSendCommand={() => sendDiagnosticBlock("wifi")}
           sent={sentCommandId === "wifi"}
           compact={wifiSummary.health === "neutral"}
+          updating={!!cardHolds.wifi}
+          onForceRelease={() => releaseCardHold("wifi")}
           onClear={async () => {
             await invoke("clear_diagnostic_interface", { interface: "wifi" }).catch(() => {});
-            setDiag(prev => prev ? { ...prev, wifi: null } : prev);
+            setDisplayDiag(prev => prev ? { ...prev, wifi: null } : prev);
             setCardUpdatedAt(prev => ({ ...prev, wifi: null }));
           }}
         />
@@ -1326,9 +1432,11 @@ export default function DiagnosticsTab() {
           onSendCommand={() => sendDiagnosticBlock("cellular")}
           sent={sentCommandId === "cellular"}
           compact={cellularSummary.health === "neutral"}
+          updating={!!cardHolds.cellular}
+          onForceRelease={() => releaseCardHold("cellular")}
           onClear={async () => {
             await invoke("clear_diagnostic_interface", { interface: "cellular" }).catch(() => {});
-            setDiag(prev => prev ? { ...prev, cellular: null } : prev);
+            setDisplayDiag(prev => prev ? { ...prev, cellular: null } : prev);
             setCardUpdatedAt(prev => ({ ...prev, cellular: null }));
           }}
         />
@@ -1352,9 +1460,11 @@ export default function DiagnosticsTab() {
           onSendCommand={() => sendDiagnosticBlock("satellite")}
           sent={sentCommandId === "satellite"}
           compact={satelliteSummary.health === "neutral"}
+          updating={!!cardHolds.satellite}
+          onForceRelease={() => releaseCardHold("satellite")}
           onClear={async () => {
             await invoke("clear_diagnostic_interface", { interface: "satellite" }).catch(() => {});
-            setDiag(prev => prev ? { ...prev, satellite: null } : prev);
+            setDisplayDiag(prev => prev ? { ...prev, satellite: null } : prev);
             setCardUpdatedAt(prev => ({ ...prev, satellite: null }));
           }}
         />
@@ -1378,9 +1488,11 @@ export default function DiagnosticsTab() {
           onSendCommand={() => sendDiagnosticBlock("ethernet")}
           sent={sentCommandId === "ethernet"}
           compact={ethernetSummary.health === "neutral"}
+          updating={!!cardHolds.ethernet}
+          onForceRelease={() => releaseCardHold("ethernet")}
           onClear={async () => {
             await invoke("clear_diagnostic_interface", { interface: "ethernet" }).catch(() => {});
-            setDiag(prev => prev ? { ...prev, ethernet: null } : prev);
+            setDisplayDiag(prev => prev ? { ...prev, ethernet: null } : prev);
             setCardUpdatedAt(prev => ({ ...prev, ethernet: null }));
           }}
         />
@@ -1404,9 +1516,11 @@ export default function DiagnosticsTab() {
           sent={sentCommandId === "pressure"}
           compact={pressureSummary.health === "neutral"}
           emphasizeSecondaryLine
+          updating={!!cardHolds.pressure}
+          onForceRelease={() => releaseCardHold("pressure")}
           onClear={async () => {
             await invoke("clear_diagnostic_interface", { interface: "pressure" }).catch(() => {});
-            setDiag(prev => prev ? { ...prev, pressure: null } : prev);
+            setDisplayDiag(prev => prev ? { ...prev, pressure: null } : prev);
             setCardUpdatedAt(prev => ({ ...prev, pressure: null }));
           }}
         />
@@ -1432,9 +1546,11 @@ export default function DiagnosticsTab() {
           onSendCommand={() => sendDiagnosticBlock("sim-picker")}
           sent={sentCommandId === "sim-picker"}
           compact={!simPicker?.scan_attempted}
+          updating={!!cardHolds.sim_picker}
+          onForceRelease={() => releaseCardHold("sim_picker")}
           onClear={async () => {
             await invoke("clear_diagnostic_interface", { interface: "sim_picker" }).catch(() => {});
-            setDiag(prev => prev ? { ...prev, sim_picker: null } : prev);
+            setDisplayDiag(prev => prev ? { ...prev, sim_picker: null } : prev);
             setCardUpdatedAt(prev => ({ ...prev, sim_picker: null }));
           }}
         />
