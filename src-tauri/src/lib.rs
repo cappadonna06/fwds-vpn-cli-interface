@@ -1301,16 +1301,24 @@ fn send_external_input(text: String, state: State<'_, AppState>) -> Result<(), S
 
     let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
     let script = format!(
-        "tell application \"Terminal\"\nif not (exists window id {window_id}) then error \"Open session first\"\nactivate\nset index of window id {window_id} to 1\nend tell\n\
-delay 0.05\n\
-set payload to {}\n\
+        "set payload to {}\n\
 set oldDelims to AppleScript's text item delimiters\n\
 set AppleScript's text item delimiters to linefeed\n\
 set payloadLines to text items of payload\n\
 set AppleScript's text item delimiters to oldDelims\n\
-set priorClipboard to the clipboard\n\
-tell application \"System Events\"\nrepeat with lineText in payloadLines\nset cmd to contents of lineText\nif cmd is not \"\" then\nset the clipboard to cmd\nkeystroke \"v\" using command down\nkey code 36\nend if\nend repeat\nend tell\n\
-set the clipboard to priorClipboard",
+tell application \"Terminal\"\n\
+if not (exists window id {window_id}) then error \"Open session first\"\n\
+activate\n\
+set targetWindow to window id {window_id}\n\
+set index of targetWindow to 1\n\
+set targetTab to selected tab of targetWindow\n\
+repeat with lineText in payloadLines\n\
+set cmd to contents of lineText\n\
+if cmd is not \"\" then\n\
+do script cmd in targetTab\n\
+end if\n\
+end repeat\n\
+end tell",
         applescript_string_literal(&normalized)
     );
     let out = Command::new("osascript")
@@ -1322,7 +1330,7 @@ set the clipboard to priorClipboard",
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
         if stderr.contains("Not authorized to send Apple events") {
-            return Err("Enable Accessibility + Automation permissions for command send.".into());
+            return Err("Enable Terminal automation permissions for command send.".into());
         }
         return Err(if stderr.is_empty() {
             "Open session first".into()
