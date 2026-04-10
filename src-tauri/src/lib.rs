@@ -1262,7 +1262,9 @@ set oldDelims to AppleScript's text item delimiters\n\
 set AppleScript's text item delimiters to linefeed\n\
 set payloadLines to text items of payload\n\
 set AppleScript's text item delimiters to oldDelims\n\
-tell application \"System Events\"\nrepeat with lineText in payloadLines\nset cmd to contents of lineText\nif cmd is not \"\" then\nkeystroke cmd\nkey code 36\nend if\nend repeat\nend tell",
+set priorClipboard to the clipboard\n\
+tell application \"System Events\"\nrepeat with lineText in payloadLines\nset cmd to contents of lineText\nif cmd is not \"\" then\nset the clipboard to cmd\nkeystroke \"v\" using command down\nkey code 36\nend if\nend repeat\nend tell\n\
+set the clipboard to priorClipboard",
         applescript_string_literal(&normalized)
     );
     let out = Command::new("osascript")
