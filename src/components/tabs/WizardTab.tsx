@@ -20,7 +20,6 @@ export default function WizardTab() {
   const [rawIntake, setRawIntake] = useState("");
   const [config, setConfig] = useState<SystemConfig>(defaultConfig());
   const [warnings, setWarnings] = useState<string[]>([]);
-  const [preflightChecked, setPreflightChecked] = useState<boolean[]>([]);
 
   // Run view state
   const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set());
@@ -35,7 +34,6 @@ export default function WizardTab() {
     const { config: parsed, warnings: w } = parseIntakeRow(rawIntake);
     setConfig(parsed);
     setWarnings(w);
-    setPreflightChecked(new Array(parsed.status_notes.length).fill(false));
     setView("review");
   }
 
@@ -43,7 +41,6 @@ export default function WizardTab() {
     const c = defaultConfig();
     setConfig(c);
     setWarnings([]);
-    setPreflightChecked([]);
     setView("review");
   }
 
@@ -70,9 +67,7 @@ export default function WizardTab() {
     });
   }
 
-  const preflightComplete =
-    preflightChecked.length === 0 || preflightChecked.every(Boolean);
-  const canStartWizard = config.customer_name.trim() && preflightComplete;
+  const canStartWizard = config.customer_name.trim();
   const sections = buildReferenceSections(config);
 
   // Map parse warnings to the section they belong to so they render inline
@@ -166,15 +161,10 @@ export default function WizardTab() {
           </button>
         </div>
 
-        {warnings.length > 0 && (
-          <div className="warning-list">
-            {warnings.map((w, i) => (
-              <div key={i} className="warning-item">⚠ {w}</div>
-            ))}
-          </div>
-        )}
-
         {/* Station */}
+        {sectionWarnings["setup-station"]?.map((w, i) => (
+          <div key={`station-warning-${i}`} className="warning-item">⚠ {w}</div>
+        ))}
         <div className="card">
           <div className="card-title">Station</div>
           <div className="field-row">
@@ -214,6 +204,9 @@ export default function WizardTab() {
         </div>
 
         {/* System */}
+        {sectionWarnings["setup-system"]?.map((w, i) => (
+          <div key={`system-warning-${i}`} className="warning-item">⚠ {w}</div>
+        ))}
         <div className="card">
           <div className="card-title">System</div>
           <div className="field-row">
@@ -268,6 +261,9 @@ export default function WizardTab() {
         </div>
 
         {/* Zone Map */}
+        {sectionWarnings["zone-names"]?.map((w, i) => (
+          <div key={`zone-warning-${i}`} className="warning-item">⚠ {w}</div>
+        ))}
         <div className="card">
           <div className="card-title">Zone Map ({config.zones.length} zones)</div>
           <div className="zone-table">
@@ -338,27 +334,6 @@ export default function WizardTab() {
           </div>
         </div>
 
-        {/* Pre-flight */}
-        {config.status_notes.length > 0 && (
-          <div className="card">
-            <div className="card-title">Pre-flight Checklist</div>
-            {config.status_notes.map((note, i) => (
-              <label key={i} className="preflight-item">
-                <input
-                  type="checkbox"
-                  checked={preflightChecked[i] ?? false}
-                  onChange={(e) => {
-                    const updated = [...preflightChecked];
-                    updated[i] = e.target.checked;
-                    setPreflightChecked(updated);
-                  }}
-                />
-                {note}
-              </label>
-            ))}
-          </div>
-        )}
-
         <div style={{ display: "flex", gap: 8 }}>
           <button
             className="btn btn-primary"
@@ -376,9 +351,6 @@ export default function WizardTab() {
           </button>
           {!config.customer_name && (
             <span className="hint-inline">Customer name required to continue.</span>
-          )}
-          {!preflightComplete && (
-            <span className="hint-inline">Complete pre-flight checklist to continue.</span>
           )}
         </div>
       </div>
@@ -544,6 +516,13 @@ export default function WizardTab() {
                         >
                           {copiedId === row.id ? "✓" : "Copy"}
                         </button>
+                        <button
+                          className="btn btn-secondary ref-copy-btn"
+                          onClick={() => sendValue(copyTarget, `row-send-${row.id}`)}
+                          disabled={!copyTarget}
+                        >
+                          {sentId === `row-send-${row.id}` ? "✓" : "Send"}
+                        </button>
 
                         {/* Split second prompt (zone name after zone type) */}
                         {row.split && (
@@ -558,6 +537,13 @@ export default function WizardTab() {
                               disabled={!row.split.value}
                             >
                               {copiedId === row.split.id ? "✓" : "Copy"}
+                            </button>
+                            <button
+                              className="btn btn-secondary ref-copy-btn"
+                              onClick={() => sendValue(row.split!.value, `row-send-${row.split!.id}`)}
+                              disabled={!row.split.value}
+                            >
+                              {sentId === `row-send-${row.split!.id}` ? "✓" : "Send"}
                             </button>
                           </>
                         )}
