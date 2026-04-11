@@ -989,8 +989,11 @@ echo "===== MODEM / RADIO DIAGNOSTICS ====="
 cell-support --no-ofono --at
 
 echo ""
+echo "===== SATELLITE DIAGNOSTICS START ====="
+echo ""
 echo "===== SATELLITE BASIC ====="
 sat-imei
+echo "===== SATELLITE DIAGNOSTICS END ====="
 
 echo ""
 echo "===== SYSTEM ====="
@@ -1302,6 +1305,8 @@ version
 sid
 
 echo ""
+echo "===== SATELLITE DIAGNOSTICS START ====="
+echo ""
 echo "===== SATELLITE BASIC ====="
 sat-imei
 
@@ -1314,6 +1319,7 @@ connmanctl state
 echo ""
 echo "===== QUICK SATELLITE CHECK ====="
 satellite-check -c 1 -W 1 -w 1
+echo "===== SATELLITE DIAGNOSTICS END ====="
 )`,
     heavy_script: `(
 echo "===== CONTROLLER INFO ====="
@@ -1321,6 +1327,8 @@ date
 version
 sid
 
+echo ""
+echo "===== SATELLITE DIAGNOSTICS START ====="
 echo ""
 echo "===== SATELLITE BASIC ====="
 sat-imei
@@ -1334,6 +1342,7 @@ connmanctl state
 echo ""
 echo "===== SATELLITE LOOPBACK TEST ====="
 satellite-check -t
+echo "===== SATELLITE DIAGNOSTICS END ====="
 )`,
   },
   {
@@ -1522,12 +1531,15 @@ pressure-monitor -v --hhc=mp3 --pressure-sensor=supply -u us --period=500 --wait
 pressure-monitor -v --hhc=mp3 --pressure-sensor=distribution -u us --period=500 --wait=10
 
 echo ""
+echo "===== SATELLITE DIAGNOSTICS START ====="
+echo ""
 echo "===== SATELLITE BASIC ====="
 sat-imei
 
 echo ""
 echo "===== SATELLITE LOOPBACK TEST ====="
 satellite-check -t
+echo "===== SATELLITE DIAGNOSTICS END ====="
 )`,
     time_warning: "Includes satellite loopback diagnostics. Use 'Full Diags (no satellite)' to skip.",
   },
@@ -1684,8 +1696,11 @@ pressure-monitor -v --hhc=mp3 --pressure-sensor=supply -u us --period=500 --wait
 pressure-monitor -v --hhc=mp3 --pressure-sensor=distribution -u us --period=500 --wait=10
 
 echo ""
+echo "===== SATELLITE DIAGNOSTICS START ====="
+echo ""
 echo "===== SATELLITE BASIC ====="
 sat-imei
+echo "===== SATELLITE DIAGNOSTICS END ====="
 )`,
   },
 ];

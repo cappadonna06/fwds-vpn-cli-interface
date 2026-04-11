@@ -228,7 +228,8 @@ fn is_interface_complete(iface: &str, state: &DiagnosticState, lower_log: &str) 
                             || s.light_test_timeout == Some(true)
                             || s.light_test_blocked_in_use == Some(true)))
             })
-            .unwrap_or(false),
+            .unwrap_or(false)
+            || lower_log.contains("===== satellite diagnostics end ====="),
         "pressure" => state
             .pressure
             .as_ref()
@@ -270,6 +271,7 @@ fn update_interface_run_states(log: &str, state: &mut DiagnosticState) {
         (
             "satellite",
             &[
+                "===== satellite diagnostics start =====",
                 "===== satellite basic =====",
                 "===== quick satellite check =====",
                 "===== satellite loopback test =====",
@@ -288,6 +290,7 @@ fn update_interface_run_states(log: &str, state: &mut DiagnosticState) {
             "wifi" => latest_marker_index(&lower, &["===== wifi diagnostics end ====="]),
             "ethernet" => latest_marker_index(&lower, &["===== eth diagnostics end ====="]),
             "sim_picker" => latest_marker_index(&lower, &["===== sim picker end ====="]),
+            "satellite" => latest_marker_index(&lower, &["===== satellite diagnostics end ====="]),
             _ => None,
         };
         let has_active_start = start

@@ -2232,6 +2232,55 @@
   display: none;
 }
 
+.diag-pressure-metric-grid {
+  margin-top: 12px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.diag-pressure-metric-card {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: var(--bg-2);
+}
+
+.diag-pressure-metric-card-healthy {
+  border-color: color-mix(in srgb, var(--success) 38%, var(--border));
+  background: color-mix(in srgb, var(--success) 8%, var(--bg-2));
+}
+
+.diag-pressure-metric-card-warning {
+  border-color: color-mix(in srgb, var(--warning) 45%, var(--border));
+  background: color-mix(in srgb, var(--warning) 10%, var(--bg-2));
+}
+
+.diag-pressure-metric-card-error {
+  border-color: color-mix(in srgb, var(--danger) 42%, var(--border));
+  background: color-mix(in srgb, var(--danger) 8%, var(--bg-2));
+}
+
+.diag-pressure-metric-label {
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.2;
+}
+
+.diag-pressure-metric-value {
+  margin-top: 6px;
+  color: var(--text-primary);
+  font-size: 24px;
+  font-weight: 650;
+  line-height: 1.1;
+}
+
+@media (max-width: 1100px) {
+  .diag-pressure-metric-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 .diag-metric-row {
   display: grid;
   grid-template-columns: 68px 1fr;

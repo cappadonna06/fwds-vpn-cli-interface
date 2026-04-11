@@ -302,6 +302,7 @@ interface DiagCardProps {
   onClear?: () => void;
   updating?: boolean;
   onForceRelease?: () => void;
+  collapsedMetricCards?: Array<{ label: string; value: string; tone: HealthTone }>;
 }
 
 type InterfaceKey = "wifi" | "cellular" | "satellite" | "ethernet" | "pressure" | "sim_picker";
@@ -841,6 +842,42 @@ function buildPressureSecondaryTags(pressure?: PressureDiagnostic | null): strin
   return hasDistribution ? ["P2 Distribution Pressure"] : [];
 }
 
+function pressureMetricTone(pressure: PressureDiagnostic | null | undefined, metric: "source" | "distribution"): HealthTone {
+  if (!pressure) return "neutral";
+  const tokens = metric === "source" ? ["p3", "source"] : ["p2", "distribution"];
+  const matchingIssues = (pressure.issues ?? []).filter((issue) => {
+    const haystack = `${issue.title} ${issue.description}`.toLowerCase();
+    return tokens.some((token) => haystack.includes(token));
+  });
+  if (matchingIssues.some((issue) => issue.severity === "red")) return "error";
+  if (matchingIssues.some((issue) => issue.severity === "orange")) return "warning";
+  return pressure.status === "red" ? "error" : pressure.status === "orange" ? "warning" : "healthy";
+}
+
+function buildPressureMetricCards(pressure?: PressureDiagnostic | null): Array<{ label: string; value: string; tone: HealthTone }> {
+  if (!pressure) return [];
+  const source = pressure.sensors?.source?.latest;
+  const distribution = pressure.sensors?.distribution?.latest;
+  const hasSource = source !== null && source !== undefined && !Number.isNaN(source);
+  const hasDistribution = distribution !== null && distribution !== undefined && !Number.isNaN(distribution);
+  const cards: Array<{ label: string; value: string; tone: HealthTone }> = [];
+  if (hasSource) {
+    cards.push({
+      label: "Source (P3)",
+      value: formatPressureSummaryPsi(source),
+      tone: pressureMetricTone(pressure, "source"),
+    });
+  }
+  if (hasDistribution) {
+    cards.push({
+      label: "Distribution (P2)",
+      value: formatPressureSummaryPsi(distribution),
+      tone: pressureMetricTone(pressure, "distribution"),
+    });
+  }
+  return cards;
+}
+
 type CardSummary = {
   health: HealthTone;
   badgeLabel: string;
@@ -1022,6 +1059,7 @@ function DiagCard({
   onClear,
   updating,
   onForceRelease,
+  collapsedMetricCards,
 }: DiagCardProps) {
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement | null>(null);
@@ -1139,27 +1177,40 @@ function DiagCard({
         </div>
       </div>
 
-      <div className="diag-card-status-row">
-        <div className="diag-card-status-line">{primaryLine}</div>
-        {primaryTags && primaryTags.length > 0 && (
-          <div className="diag-card-primary-tags">
-            {primaryTags.map((tag) => (
-              <span key={`${title}-${tag}`} className="diag-role-pill-inline">{tag}</span>
-            ))}
+      {collapsedMetricCards && !expanded ? (
+        <div className="diag-pressure-metric-grid">
+          {collapsedMetricCards.map((metric) => (
+            <div key={`${title}-${metric.label}`} className={`diag-pressure-metric-card diag-pressure-metric-card-${metric.tone}`}>
+              <div className="diag-pressure-metric-label">{metric.label}</div>
+              <div className="diag-pressure-metric-value">{metric.value}</div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <>
+          <div className="diag-card-status-row">
+            <div className="diag-card-status-line">{primaryLine}</div>
+            {primaryTags && primaryTags.length > 0 && (
+              <div className="diag-card-primary-tags">
+                {primaryTags.map((tag) => (
+                  <span key={`${title}-${tag}`} className="diag-role-pill-inline">{tag}</span>
+                ))}
+              </div>
+            )}
           </div>
-        )}
-      </div>
-      {(secondaryLine || (secondaryTags && secondaryTags.length > 0)) && (
-        <div className="diag-card-secondary-row">
-          {secondaryLine && <div className="diag-card-secondary-line">{secondaryLine}</div>}
-          {secondaryTags && secondaryTags.length > 0 && (
-            <div className="diag-card-secondary-tags">
-              {secondaryTags.map((tag) => (
-                <span key={`${title}-${tag}`} className="diag-role-pill-inline">{tag}</span>
-              ))}
+          {(secondaryLine || (secondaryTags && secondaryTags.length > 0)) && (
+            <div className="diag-card-secondary-row">
+              {secondaryLine && <div className="diag-card-secondary-line">{secondaryLine}</div>}
+              {secondaryTags && secondaryTags.length > 0 && (
+                <div className="diag-card-secondary-tags">
+                  {secondaryTags.map((tag) => (
+                    <span key={`${title}-${tag}`} className="diag-role-pill-inline">{tag}</span>
+                  ))}
+                </div>
+              )}
             </div>
           )}
-        </div>
+        </>
       )}
       {hasSignalInfo && (
         <div className="diag-card-subline">
@@ -1581,6 +1632,7 @@ export default function DiagnosticsTab() {
           statusLabel={pressureSummary.badgeLabel}
           primaryTags={buildPressurePrimaryTags(pressure)}
           secondaryTags={buildPressureSecondaryTags(pressure)}
+          collapsedMetricCards={buildPressureMetricCards(pressure)}
           primaryLine={pressureSummary.primaryLine}
           secondaryLine={pressureSummary.secondaryLine}
           sections={buildPressureSections(pressure)}
