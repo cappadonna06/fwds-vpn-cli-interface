@@ -805,6 +805,7 @@ export interface DiagnosticBlock {
   label: string;
   icon: string;
   description: string;
+  affected_interfaces: Array<"wifi" | "cellular" | "satellite" | "ethernet" | "pressure" | "sim_picker" | "system">;
   when_to_run?: string;
   light_command_ids: string[];
   heavy_command_ids: string[];
@@ -819,6 +820,7 @@ export const DIAGNOSTIC_BLOCKS: DiagnosticBlock[] = [
     label: "Quick Diags",
     icon: "⚡",
     description: "All subsystems, no satellite loopback — runs in ~2 minutes",
+    affected_interfaces: ["ethernet", "wifi", "cellular", "satellite", "system"],
     light_command_ids: [],
     heavy_command_ids: [
       // ETH
@@ -955,6 +957,7 @@ echo ""
 echo "===== WIFI DIAGNOSTICS END ====="
 
 echo ""
+echo "===== CELLULAR DIAGNOSTICS START ====="
 echo "===== CELLULAR CONNECTIVITY TEST ====="
 cellular-check
 
@@ -985,10 +988,14 @@ cat /proc/net/dev
 echo ""
 echo "===== MODEM / RADIO DIAGNOSTICS ====="
 cell-support --no-ofono --at
+echo "===== CELLULAR DIAGNOSTICS END ====="
 
+echo ""
+echo "===== SATELLITE DIAGNOSTICS START ====="
 echo ""
 echo "===== SATELLITE BASIC ====="
 sat-imei
+echo "===== SATELLITE DIAGNOSTICS END ====="
 
 echo ""
 echo "===== SYSTEM ====="
@@ -1004,6 +1011,7 @@ release
     label: "Ethernet",
     icon: "🌐",
     description: "Physical link, IP assignment, DNS, and internet reachability. Tests that the cable is connected, an IP is assigned via DHCP, DNS resolves, and the internet is reachable.",
+    affected_interfaces: ["ethernet", "system"],
     when_to_run: "After setup-ethernet, after any network change, or when the site reports connectivity issues.",
     light_command_ids: ["ethernet-check"],
     heavy_command_ids: ["ethernet-check", "ethtool-eth0", "ifconfig-eth0"],
@@ -1057,6 +1065,7 @@ echo "===== ETH DIAGNOSTICS END ====="
     label: "Wi-Fi",
     icon: "📶",
     description: "Full Wi-Fi diagnostic suite — wrapper, association, interface, routing, ConnMan, and stats",
+    affected_interfaces: ["wifi", "system"],
     light_command_ids: ["wifi-check", "wifi-signal"],
     heavy_command_ids: [
       "wifi-check",
@@ -1126,6 +1135,7 @@ echo "===== WIFI DIAGNOSTICS END ====="
     label: "Cellular",
     icon: "📡",
     description: "Full cellular diagnostic suite — controller info, SIM/modem status, routing, ConnMan, connectivity, and AT diagnostics",
+    affected_interfaces: ["cellular", "system"],
     light_command_ids: ["cellular-check", "cell-status", "cell-signal"],
     heavy_command_ids: [
       "date",
@@ -1156,6 +1166,7 @@ version
 sid
 
 echo ""
+echo "===== CELLULAR DIAGNOSTICS START ====="
 echo "===== CELLULAR CONNECTIVITY TEST ====="
 cellular-check
 
@@ -1186,6 +1197,7 @@ cat /proc/net/dev
 echo ""
 echo "===== MODEM / RADIO DIAGNOSTICS ====="
 cell-support --no-ofono --at
+echo "===== CELLULAR DIAGNOSTICS END ====="
 )`,
   },
   {
@@ -1193,6 +1205,7 @@ cell-support --no-ofono --at
     label: "SIM Picker",
     icon: "📶",
     description: "Full cellular diagnostics + carrier scan. Populates both Cellular and SIM Picker cards (~3 min).",
+    affected_interfaces: ["cellular", "sim_picker", "system"],
     when_to_run: "When cellular has no service or weak signal and you want to know if a different carrier SIM would work better.",
     time_warning: "Carrier scan takes approximately 3 minutes.",
     light_command_ids: [],
@@ -1204,6 +1217,7 @@ version
 sid
 
 echo ""
+echo "===== CELLULAR DIAGNOSTICS START ====="
 echo "===== CELLULAR CONNECTIVITY TEST ====="
 cellular-check
 
@@ -1234,6 +1248,7 @@ cat /proc/net/dev
 echo ""
 echo "===== MODEM / RADIO DIAGNOSTICS ====="
 cell-support --no-ofono --at --scan
+echo "===== CELLULAR DIAGNOSTICS END ====="
 
 echo ""
 echo "===== SIM PICKER END ====="
@@ -1244,6 +1259,7 @@ echo "===== SIM PICKER END ====="
     label: "Pressure",
     icon: "💧",
     description: "Pressure diagnostics — snapshot and live readings for source, supply, and distribution sensors.",
+    affected_interfaces: ["pressure", "system"],
     when_to_run: "When validating hydraulic pressure sensor behavior or troubleshooting readings.",
     light_command_ids: ["pressure-monitor"],
     heavy_command_ids: ["date", "version", "sid", "pressure-monitor"],
@@ -1271,6 +1287,7 @@ pressure-monitor -v --hhc=mp3 --pressure-sensor=distribution -u us --period=500 
     label: "Satellite",
     icon: "🛰️",
     description: "Satellite diagnostics — quick sanity and full loopback validation",
+    affected_interfaces: ["satellite", "system"],
     light_command_ids: [
       "sat-imei",
       "satellite-check-light",
@@ -1294,6 +1311,8 @@ version
 sid
 
 echo ""
+echo "===== SATELLITE DIAGNOSTICS START ====="
+echo ""
 echo "===== SATELLITE BASIC ====="
 sat-imei
 
@@ -1306,6 +1325,7 @@ connmanctl state
 echo ""
 echo "===== QUICK SATELLITE CHECK ====="
 satellite-check -c 1 -W 1 -w 1
+echo "===== SATELLITE DIAGNOSTICS END ====="
 )`,
     heavy_script: `(
 echo "===== CONTROLLER INFO ====="
@@ -1313,6 +1333,8 @@ date
 version
 sid
 
+echo ""
+echo "===== SATELLITE DIAGNOSTICS START ====="
 echo ""
 echo "===== SATELLITE BASIC ====="
 sat-imei
@@ -1326,6 +1348,7 @@ connmanctl state
 echo ""
 echo "===== SATELLITE LOOPBACK TEST ====="
 satellite-check -t
+echo "===== SATELLITE DIAGNOSTICS END ====="
 )`,
   },
   {
@@ -1333,6 +1356,7 @@ satellite-check -t
     label: "System",
     icon: "🖥",
     description: "Firmware version, controller serial number, and release metadata. Use at the start of any session to confirm which controller you are connected to and whether the firmware is current.",
+    affected_interfaces: ["system"],
     when_to_run: "At the start of any session to confirm controller identity and firmware version.",
     light_command_ids: ["version", "sid", "release", "cat-station-info", "cat-system-info"],
     heavy_command_ids: ["version", "sid", "release", "cat-station-info", "cat-system-info"],
@@ -1342,6 +1366,7 @@ satellite-check -t
     label: "All Networking",
     icon: "⚡",
     description: "Runs a quick first-pass check across Ethernet, Wi-Fi, and cellular in a single wrapped block so parser-driven cards update cleanly in real time.",
+    affected_interfaces: ["ethernet", "wifi", "cellular"],
     when_to_run: "First-pass network check after install or when multiple interfaces need a quick status sweep (~45 seconds total).",
     light_command_ids: ["ethernet-check", "wifi-check", "wifi-signal", "cellular-check"],
     heavy_command_ids: ["ethernet-check", "wifi-check", "wifi-signal", "cellular-check"],
@@ -1355,8 +1380,10 @@ wifi-check
 wifi-signal
 echo "===== WIFI DIAGNOSTICS END ====="
 
+echo "===== CELLULAR DIAGNOSTICS START ====="
 echo "===== CELLULAR CONNECTIVITY TEST ====="
 cellular-check
+echo "===== CELLULAR DIAGNOSTICS END ====="
 )`,
   },
   {
@@ -1364,6 +1391,7 @@ cellular-check
     label: "Full Diags + Satellite",
     icon: "🔬",
     description: "Complete suite including satellite loopback (~12 min total)",
+    affected_interfaces: ["ethernet", "wifi", "cellular", "satellite", "pressure", "system"],
     when_to_run: "New install sign-off, post-repair baseline, or when a site has intermittent issues and you need a full picture.",
     light_command_ids: [],
     heavy_command_ids: [
@@ -1459,6 +1487,7 @@ echo ""
 echo "===== WIFI DIAGNOSTICS END ====="
 
 echo ""
+echo "===== CELLULAR DIAGNOSTICS START ====="
 echo "===== CELLULAR CONNECTIVITY TEST ====="
 cellular-check
 
@@ -1489,6 +1518,7 @@ cat /proc/net/dev
 echo ""
 echo "===== MODEM / RADIO DIAGNOSTICS ====="
 cell-support --no-ofono --at
+echo "===== CELLULAR DIAGNOSTICS END ====="
 
 echo ""
 echo "===== SYSTEM ====="
@@ -1511,12 +1541,15 @@ pressure-monitor -v --hhc=mp3 --pressure-sensor=supply -u us --period=500 --wait
 pressure-monitor -v --hhc=mp3 --pressure-sensor=distribution -u us --period=500 --wait=10
 
 echo ""
+echo "===== SATELLITE DIAGNOSTICS START ====="
+echo ""
 echo "===== SATELLITE BASIC ====="
 sat-imei
 
 echo ""
 echo "===== SATELLITE LOOPBACK TEST ====="
 satellite-check -t
+echo "===== SATELLITE DIAGNOSTICS END ====="
 )`,
     time_warning: "Includes satellite loopback diagnostics. Use 'Full Diags (no satellite)' to skip.",
   },
@@ -1525,6 +1558,7 @@ satellite-check -t
     label: "Full Diags (no loopback)",
     icon: "🔬",
     description: "Complete diagnostics without satellite loopback. Includes satellite IMEI verification plus Ethernet, Wi-Fi, cellular, and system checks.",
+    affected_interfaces: ["ethernet", "wifi", "cellular", "satellite", "pressure", "system"],
     when_to_run: "Use when you want full network/system coverage but need to skip the long satellite loopback test.",
     light_command_ids: [],
     heavy_command_ids: [
@@ -1620,6 +1654,7 @@ echo ""
 echo "===== WIFI DIAGNOSTICS END ====="
 
 echo ""
+echo "===== CELLULAR DIAGNOSTICS START ====="
 echo "===== CELLULAR CONNECTIVITY TEST ====="
 cellular-check
 
@@ -1650,6 +1685,7 @@ cat /proc/net/dev
 echo ""
 echo "===== MODEM / RADIO DIAGNOSTICS ====="
 cell-support --no-ofono --at
+echo "===== CELLULAR DIAGNOSTICS END ====="
 
 echo ""
 echo "===== SYSTEM ====="
@@ -1672,8 +1708,11 @@ pressure-monitor -v --hhc=mp3 --pressure-sensor=supply -u us --period=500 --wait
 pressure-monitor -v --hhc=mp3 --pressure-sensor=distribution -u us --period=500 --wait=10
 
 echo ""
+echo "===== SATELLITE DIAGNOSTICS START ====="
+echo ""
 echo "===== SATELLITE BASIC ====="
 sat-imei
+echo "===== SATELLITE DIAGNOSTICS END ====="
 )`,
   },
 ];

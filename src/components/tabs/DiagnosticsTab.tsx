@@ -263,8 +263,15 @@ interface DiagnosticState {
   pressure?: PressureDiagnostic | null;
   system?: SystemDiagnostic | null;
   sim_picker?: SimPickerDiagnostic | null;
+  interface_runs?: Partial<Record<InterfaceKey, InterfaceRunState>>;
   last_updated?: string | null;
   session_has_data?: boolean;
+}
+interface InterfaceRunState {
+  in_progress: boolean;
+  started_at?: string | null;
+  completed_at?: string | null;
+  last_marker?: string | null;
 }
 
 type DiagRow = { label: string; value: string };
@@ -295,6 +302,7 @@ interface DiagCardProps {
   onClear?: () => void;
   updating?: boolean;
   onForceRelease?: () => void;
+  collapsedMetricCards?: Array<{ label: string; value: string; tone: HealthTone }>;
 }
 
 type InterfaceKey = "wifi" | "cellular" | "satellite" | "ethernet" | "pressure" | "sim_picker";
@@ -317,6 +325,48 @@ function inferInterfacesFromScript(script: string): InterfaceKey[] {
   if (lower.includes("pressure-monitor")) interfaces.add("pressure");
   if (lower.includes("sim picker") || lower.includes("cell-support --no-ofono --at --scan")) interfaces.add("sim_picker");
   return [...interfaces];
+}
+
+function interfacesForBlock(block: DiagnosticBlock, script: string): InterfaceKey[] {
+  const fromMetadata = (block.affected_interfaces ?? [])
+    .filter((iface): iface is InterfaceKey => iface !== "system");
+  if (fromMetadata.length > 0) return fromMetadata;
+  console.warn(`[Diagnostics] affected_interfaces missing for block "${block.id}", using script inference fallback.`);
+  return inferInterfacesFromScript(script);
+}
+
+function isInterfaceComplete(iface: InterfaceKey, state: DiagnosticState | null | undefined): boolean {
+  if (!state) return false;
+  if (iface === "wifi") {
+    return state.interface_runs?.wifi?.in_progress === false
+      && state.interface_runs?.wifi?.started_at !== undefined;
+  }
+  if (iface === "ethernet") {
+    return state.interface_runs?.ethernet?.in_progress === false
+      && state.interface_runs?.ethernet?.started_at !== undefined;
+  }
+  if (iface === "cellular") {
+    return state.interface_runs?.cellular?.in_progress === false
+      && state.interface_runs?.cellular?.started_at !== undefined;
+  }
+  if (iface === "sim_picker") {
+    return !!state.sim_picker && state.sim_picker.scan_attempted && (
+      state.sim_picker.scan_completed
+      || state.sim_picker.scan_failed
+      || state.sim_picker.scan_empty
+    );
+  }
+  if (iface === "satellite") {
+    return state.interface_runs?.satellite?.in_progress === false
+      && state.interface_runs?.satellite?.started_at !== undefined;
+  }
+  if (iface === "pressure") {
+    const p = state.pressure;
+    if (!p) return false;
+    const readings = [p.sensors?.source, p.sensors?.distribution, p.sensors?.supply].filter(Boolean);
+    return readings.some((sensor) => (sensor?.count ?? 0) > 0) || (p.sensor_errors?.length ?? 0) > 0;
+  }
+  return false;
 }
 
 function holdTimeoutMsForInterface(iface: InterfaceKey, script: string): number {
@@ -751,17 +801,19 @@ function buildPressureSections(pressure?: PressureDiagnostic | null): DiagSectio
     label: issue.title,
     value: `${issue.description} · ${issue.action}`,
   }));
-  if (issues.length === 0) issues.push({ label: "✓ Healthy", value: "All sensors healthy — no anomalies detected" });
 
   return [
     { title: "Details", rows: readings.length ? readings : [{ label: "Readings", value: "No pressure readings captured" }] },
     ...(stats.length ? [{ title: "Live stats", rows: stats }] : []),
-    { title: "Recommended Actions", rows: issues },
+    ...(issues.length ? [{ title: "Recommended Actions", rows: issues }] : []),
   ];
 }
 
 function buildPressurePrimaryTags(pressure?: PressureDiagnostic | null): string[] {
   if (!pressure) return [];
+  const source = pressure.sensors?.source?.latest;
+  const hasSource = source !== null && source !== undefined && !Number.isNaN(source);
+  if (hasSource) return ["P3 Source Pressure"];
   const via = (pressure.via_sensor ?? "").toLowerCase();
   if (via === "distribution") return ["P2 Distribution Pressure"];
   if (via === "source") return ["P3 Source Pressure"];
@@ -771,14 +823,45 @@ function buildPressurePrimaryTags(pressure?: PressureDiagnostic | null): string[
 
 function buildPressureSecondaryTags(pressure?: PressureDiagnostic | null): string[] {
   if (!pressure) return [];
+  const distribution = pressure.sensors?.distribution?.latest;
+  const hasDistribution = distribution !== null && distribution !== undefined && !Number.isNaN(distribution);
+  return hasDistribution ? ["P2 Distribution Pressure"] : [];
+}
+
+function pressureMetricTone(pressure: PressureDiagnostic | null | undefined, metric: "source" | "distribution"): HealthTone {
+  if (!pressure) return "neutral";
+  const tokens = metric === "source" ? ["p3", "source"] : ["p2", "distribution"];
+  const matchingIssues = (pressure.issues ?? []).filter((issue) => {
+    const haystack = `${issue.title} ${issue.description}`.toLowerCase();
+    return tokens.some((token) => haystack.includes(token));
+  });
+  if (matchingIssues.some((issue) => issue.severity === "red")) return "error";
+  if (matchingIssues.some((issue) => issue.severity === "orange")) return "warning";
+  return pressure.status === "red" ? "error" : pressure.status === "orange" ? "warning" : "healthy";
+}
+
+function buildPressureMetricCards(pressure?: PressureDiagnostic | null): Array<{ label: string; value: string; tone: HealthTone }> {
+  if (!pressure) return [];
   const source = pressure.sensors?.source?.latest;
   const distribution = pressure.sensors?.distribution?.latest;
   const hasSource = source !== null && source !== undefined && !Number.isNaN(source);
   const hasDistribution = distribution !== null && distribution !== undefined && !Number.isNaN(distribution);
-  const tags: string[] = [];
-  if (hasSource) tags.push("P3 Source Pressure");
-  if (hasDistribution) tags.push("P2 Distribution Pressure");
-  return tags;
+  const cards: Array<{ label: string; value: string; tone: HealthTone }> = [];
+  if (hasSource) {
+    cards.push({
+      label: "Source (P3)",
+      value: formatPressureSummaryPsi(source),
+      tone: pressureMetricTone(pressure, "source"),
+    });
+  }
+  if (hasDistribution) {
+    cards.push({
+      label: "Distribution (P2)",
+      value: formatPressureSummaryPsi(distribution),
+      tone: pressureMetricTone(pressure, "distribution"),
+    });
+  }
+  return cards;
 }
 
 type CardSummary = {
@@ -887,6 +970,13 @@ function summarizeEthernet(ethernet?: EthernetDiagnostic | null): CardSummary {
   ) {
     return { health: "neutral", badgeLabel: "Inactive", primaryLine: "Ethernet disabled" };
   }
+  if (
+    checkLower.includes("-65554")
+    || checkLower.includes("network technology is not connected")
+    || checkLower.includes("not connected")
+  ) {
+    return { health: "neutral", badgeLabel: "Inactive", primaryLine: "No link detected" };
+  }
   const internetPassed = ethernet.check_result === "Success" && ethernet.internet_reachable === true;
   if (internetPassed) return { health: "healthy", badgeLabel: "Healthy", primaryLine: "Connected", secondaryLine: "Internet reachable" };
   if (ethernet.link_detected === false) return { health: "neutral", badgeLabel: "Inactive", primaryLine: "No link detected" };
@@ -903,14 +993,15 @@ function summarizePressure(pressure?: PressureDiagnostic | null): CardSummary {
   const distribution = pressure.sensors?.distribution?.latest;
   const hasSource = source !== null && source !== undefined && !Number.isNaN(source);
   const hasDistribution = distribution !== null && distribution !== undefined && !Number.isNaN(distribution);
-  const secondaryParts: string[] = [];
-  if (hasSource) secondaryParts.push(`${formatPressureSummaryPsi(source)} P3 Source Pressure`);
-  if (hasDistribution) secondaryParts.push(`${formatPressureSummaryPsi(distribution)} P2 Distribution Pressure`);
   return {
     health,
     badgeLabel,
-    primaryLine: pressure.display_psi !== null && pressure.display_psi !== undefined ? `${pressure.display_psi.toFixed(1)} PSI` : "—",
-    secondaryLine: secondaryParts.length ? secondaryParts.join(" · ") : null,
+    primaryLine: hasSource
+      ? formatPressureSummaryPsi(source)
+      : pressure.display_psi !== null && pressure.display_psi !== undefined
+        ? `${pressure.display_psi.toFixed(1)} PSI`
+        : "—",
+    secondaryLine: hasDistribution ? formatPressureSummaryPsi(distribution) : null,
   };
 }
 
@@ -961,6 +1052,7 @@ function DiagCard({
   onClear,
   updating,
   onForceRelease,
+  collapsedMetricCards,
 }: DiagCardProps) {
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement | null>(null);
@@ -1078,27 +1170,40 @@ function DiagCard({
         </div>
       </div>
 
-      <div className="diag-card-status-row">
-        <div className="diag-card-status-line">{primaryLine}</div>
-        {primaryTags && primaryTags.length > 0 && (
-          <div className="diag-card-primary-tags">
-            {primaryTags.map((tag) => (
-              <span key={`${title}-${tag}`} className="diag-role-pill-inline">{tag}</span>
-            ))}
+      {collapsedMetricCards && collapsedMetricCards.length > 0 ? (
+        <div className="diag-pressure-metric-grid">
+          {collapsedMetricCards.map((metric) => (
+            <div key={`${title}-${metric.label}`} className={`diag-pressure-metric-card diag-pressure-metric-card-${metric.tone}`}>
+              <div className="diag-pressure-metric-label">{metric.label}</div>
+              <div className="diag-pressure-metric-value">{metric.value}</div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <>
+          <div className="diag-card-status-row">
+            <div className="diag-card-status-line">{primaryLine}</div>
+            {primaryTags && primaryTags.length > 0 && (
+              <div className="diag-card-primary-tags">
+                {primaryTags.map((tag) => (
+                  <span key={`${title}-${tag}`} className="diag-role-pill-inline">{tag}</span>
+                ))}
+              </div>
+            )}
           </div>
-        )}
-      </div>
-      {(secondaryLine || (secondaryTags && secondaryTags.length > 0)) && (
-        <div className="diag-card-secondary-row">
-          {secondaryLine && <div className="diag-card-secondary-line">{secondaryLine}</div>}
-          {secondaryTags && secondaryTags.length > 0 && (
-            <div className="diag-card-secondary-tags">
-              {secondaryTags.map((tag) => (
-                <span key={`${title}-${tag}`} className="diag-role-pill-inline">{tag}</span>
-              ))}
+          {(secondaryLine || (secondaryTags && secondaryTags.length > 0)) && (
+            <div className="diag-card-secondary-row">
+              {secondaryLine && <div className="diag-card-secondary-line">{secondaryLine}</div>}
+              {secondaryTags && secondaryTags.length > 0 && (
+                <div className="diag-card-secondary-tags">
+                  {secondaryTags.map((tag) => (
+                    <span key={`${title}-${tag}`} className="diag-role-pill-inline">{tag}</span>
+                  ))}
+                </div>
+              )}
             </div>
           )}
-        </div>
+        </>
       )}
       {hasSignalInfo && (
         <div className="diag-card-subline">
@@ -1226,6 +1331,7 @@ export default function DiagnosticsTab() {
             if (hold && hold.expiresAt > nowMs) return;
             (next as any)[iface] = (state as any)?.[iface] ?? null;
           });
+          next.interface_runs = state.interface_runs ?? {};
           next.system = state.system ?? null;
           next.last_updated = state.last_updated;
           next.session_has_data = state.session_has_data;
@@ -1236,7 +1342,9 @@ export default function DiagnosticsTab() {
           const next = { ...prev };
           (Object.keys(prev) as InterfaceKey[]).forEach((iface) => {
             const hold = prev[iface];
-            if (hold && hold.expiresAt <= nowMs) {
+            const backendInProgress = state.interface_runs?.[iface]?.in_progress === true;
+            const complete = isInterfaceComplete(iface, state);
+            if (hold && (complete || !backendInProgress || hold.expiresAt <= nowMs)) {
               delete next[iface];
               changed = true;
             }
@@ -1270,6 +1378,8 @@ export default function DiagnosticsTab() {
   const wifiRole = resolveRole("wifi", primaryNetwork, !!(wifi?.connected || wifi?.connman_wifi_connected));
   const cellularRole = resolveRole("cellular", primaryNetwork, !!(cellular?.connman_cell_connected || cellular?.internet_reachable));
   const ethernetRole = resolveRole("ethernet", primaryNetwork, !!(ethernet?.link_detected || ethernet?.internet_reachable));
+  const isUpdating = (iface: InterfaceKey) =>
+    (displayDiag?.interface_runs?.[iface]?.in_progress === true) || !!cardHolds[iface];
 
   async function clearCards() {
     await invoke("stop_log_watcher").catch(() => {});
@@ -1282,6 +1392,7 @@ export default function DiagnosticsTab() {
       pressure: null,
       system: null,
       sim_picker: null,
+      interface_runs: {},
       last_updated: null,
       session_has_data: false,
     };
@@ -1314,7 +1425,7 @@ export default function DiagnosticsTab() {
     if (!script) return;
     try {
       const now = Date.now();
-      const touchedInterfaces = inferInterfacesFromScript(script);
+      const touchedInterfaces = interfacesForBlock(block, script);
       setCardHolds((prev) => {
         const next = { ...prev };
         touchedInterfaces.forEach((iface) => {
@@ -1414,7 +1525,7 @@ export default function DiagnosticsTab() {
           onSendCommand={() => sendDiagnosticBlock("wifi")}
           sent={sentCommandId === "wifi"}
           compact={wifiSummary.health === "neutral"}
-          updating={!!cardHolds.wifi}
+          updating={isUpdating("wifi")}
           onForceRelease={() => releaseCardHold("wifi")}
           onClear={async () => {
             await invoke("clear_diagnostic_interface", { interface: "wifi" }).catch(() => {});
@@ -1442,7 +1553,7 @@ export default function DiagnosticsTab() {
           onSendCommand={() => sendDiagnosticBlock("cellular")}
           sent={sentCommandId === "cellular"}
           compact={cellularSummary.health === "neutral"}
-          updating={!!cardHolds.cellular}
+          updating={isUpdating("cellular")}
           onForceRelease={() => releaseCardHold("cellular")}
           onClear={async () => {
             await invoke("clear_diagnostic_interface", { interface: "cellular" }).catch(() => {});
@@ -1470,7 +1581,7 @@ export default function DiagnosticsTab() {
           onSendCommand={() => sendDiagnosticBlock("satellite")}
           sent={sentCommandId === "satellite"}
           compact={satelliteSummary.health === "neutral"}
-          updating={!!cardHolds.satellite}
+          updating={isUpdating("satellite")}
           onForceRelease={() => releaseCardHold("satellite")}
           onClear={async () => {
             await invoke("clear_diagnostic_interface", { interface: "satellite" }).catch(() => {});
@@ -1498,7 +1609,7 @@ export default function DiagnosticsTab() {
           onSendCommand={() => sendDiagnosticBlock("ethernet")}
           sent={sentCommandId === "ethernet"}
           compact={ethernetSummary.health === "neutral"}
-          updating={!!cardHolds.ethernet}
+          updating={isUpdating("ethernet")}
           onForceRelease={() => releaseCardHold("ethernet")}
           onClear={async () => {
             await invoke("clear_diagnostic_interface", { interface: "ethernet" }).catch(() => {});
@@ -1514,6 +1625,7 @@ export default function DiagnosticsTab() {
           statusLabel={pressureSummary.badgeLabel}
           primaryTags={buildPressurePrimaryTags(pressure)}
           secondaryTags={buildPressureSecondaryTags(pressure)}
+          collapsedMetricCards={buildPressureMetricCards(pressure)}
           primaryLine={pressureSummary.primaryLine}
           secondaryLine={pressureSummary.secondaryLine}
           sections={buildPressureSections(pressure)}
@@ -1525,8 +1637,7 @@ export default function DiagnosticsTab() {
           onSendCommand={() => sendDiagnosticBlock("pressure")}
           sent={sentCommandId === "pressure"}
           compact={pressureSummary.health === "neutral"}
-          emphasizeSecondaryLine
-          updating={!!cardHolds.pressure}
+          updating={isUpdating("pressure")}
           onForceRelease={() => releaseCardHold("pressure")}
           onClear={async () => {
             await invoke("clear_diagnostic_interface", { interface: "pressure" }).catch(() => {});
@@ -1556,7 +1667,7 @@ export default function DiagnosticsTab() {
           onSendCommand={() => sendDiagnosticBlock("sim-picker")}
           sent={sentCommandId === "sim-picker"}
           compact={!simPicker?.scan_attempted}
-          updating={!!cardHolds.sim_picker}
+          updating={isUpdating("sim_picker")}
           onForceRelease={() => releaseCardHold("sim_picker")}
           onClear={async () => {
             await invoke("clear_diagnostic_interface", { interface: "sim_picker" }).catch(() => {});
