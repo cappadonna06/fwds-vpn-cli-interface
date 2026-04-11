@@ -97,9 +97,6 @@ export default function App() {
           return;
         }
         allowClose = true;
-        void invoke("stop_log_watcher").catch(() => {});
-        void invoke("disconnect_controller").catch(() => {});
-        void invoke("disconnect_local_controller").catch(() => {});
         await invoke("quit_app").catch(async () => {
           await appWindow.close().catch(() => {});
         });
