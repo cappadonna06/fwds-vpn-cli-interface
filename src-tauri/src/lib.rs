@@ -1615,6 +1615,12 @@ fn stop_log_watcher(state: State<'_, AppState>) -> Result<(), String> {
     Ok(())
 }
 
+#[tauri::command]
+fn quit_app(app: tauri::AppHandle) -> Result<(), String> {
+    app.exit(0);
+    Ok(())
+}
+
 fn stop_log_watcher_internal(state: &AppState) -> Result<(), String> {
     if let Ok(mut watcher) = state.log_watcher_kill.lock() {
         if let Some(existing) = watcher.take() {
@@ -2435,6 +2441,7 @@ pub fn run() {
             clear_diagnostic_state,
             clear_diagnostic_interface,
             stop_log_watcher,
+            quit_app,
         ])
         .setup(|_app| Ok(()))
         .run(tauri::generate_context!())

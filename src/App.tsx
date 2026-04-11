@@ -100,7 +100,9 @@ export default function App() {
         void invoke("stop_log_watcher").catch(() => {});
         void invoke("disconnect_controller").catch(() => {});
         void invoke("disconnect_local_controller").catch(() => {});
-        await appWindow.destroy();
+        await invoke("quit_app").catch(async () => {
+          await appWindow.close().catch(() => {});
+        });
       })
       .then((fn) => {
         unlisten = fn;
