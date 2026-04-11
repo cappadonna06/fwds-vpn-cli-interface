@@ -814,17 +814,19 @@ function buildPressureSections(pressure?: PressureDiagnostic | null): DiagSectio
     label: issue.title,
     value: `${issue.description} · ${issue.action}`,
   }));
-  if (issues.length === 0) issues.push({ label: "✓ Healthy", value: "All sensors healthy — no anomalies detected" });
 
   return [
     { title: "Details", rows: readings.length ? readings : [{ label: "Readings", value: "No pressure readings captured" }] },
     ...(stats.length ? [{ title: "Live stats", rows: stats }] : []),
-    { title: "Recommended Actions", rows: issues },
+    ...(issues.length ? [{ title: "Recommended Actions", rows: issues }] : []),
   ];
 }
 
 function buildPressurePrimaryTags(pressure?: PressureDiagnostic | null): string[] {
   if (!pressure) return [];
+  const source = pressure.sensors?.source?.latest;
+  const hasSource = source !== null && source !== undefined && !Number.isNaN(source);
+  if (hasSource) return ["P3 Source Pressure"];
   const via = (pressure.via_sensor ?? "").toLowerCase();
   if (via === "distribution") return ["P2 Distribution Pressure"];
   if (via === "source") return ["P3 Source Pressure"];
@@ -834,14 +836,9 @@ function buildPressurePrimaryTags(pressure?: PressureDiagnostic | null): string[
 
 function buildPressureSecondaryTags(pressure?: PressureDiagnostic | null): string[] {
   if (!pressure) return [];
-  const source = pressure.sensors?.source?.latest;
   const distribution = pressure.sensors?.distribution?.latest;
-  const hasSource = source !== null && source !== undefined && !Number.isNaN(source);
   const hasDistribution = distribution !== null && distribution !== undefined && !Number.isNaN(distribution);
-  const tags: string[] = [];
-  if (hasSource) tags.push("P3 Source Pressure");
-  if (hasDistribution) tags.push("P2 Distribution Pressure");
-  return tags;
+  return hasDistribution ? ["P2 Distribution Pressure"] : [];
 }
 
 type CardSummary = {
@@ -966,14 +963,15 @@ function summarizePressure(pressure?: PressureDiagnostic | null): CardSummary {
   const distribution = pressure.sensors?.distribution?.latest;
   const hasSource = source !== null && source !== undefined && !Number.isNaN(source);
   const hasDistribution = distribution !== null && distribution !== undefined && !Number.isNaN(distribution);
-  const secondaryParts: string[] = [];
-  if (hasSource) secondaryParts.push(`${formatPressureSummaryPsi(source)} P3 Source Pressure`);
-  if (hasDistribution) secondaryParts.push(`${formatPressureSummaryPsi(distribution)} P2 Distribution Pressure`);
   return {
     health,
     badgeLabel,
-    primaryLine: pressure.display_psi !== null && pressure.display_psi !== undefined ? `${pressure.display_psi.toFixed(1)} PSI` : "—",
-    secondaryLine: secondaryParts.length ? secondaryParts.join(" · ") : null,
+    primaryLine: hasSource
+      ? formatPressureSummaryPsi(source)
+      : pressure.display_psi !== null && pressure.display_psi !== undefined
+        ? `${pressure.display_psi.toFixed(1)} PSI`
+        : "—",
+    secondaryLine: hasDistribution ? formatPressureSummaryPsi(distribution) : null,
   };
 }
 
@@ -1302,7 +1300,7 @@ export default function DiagnosticsTab() {
             const hold = prev[iface];
             const backendInProgress = state.interface_runs?.[iface]?.in_progress === true;
             const complete = isInterfaceComplete(iface, state);
-            if (hold && (complete || (!backendInProgress && hold.expiresAt <= nowMs))) {
+            if (hold && (complete || !backendInProgress || hold.expiresAt <= nowMs)) {
               delete next[iface];
               changed = true;
             }
@@ -1594,7 +1592,6 @@ export default function DiagnosticsTab() {
           onSendCommand={() => sendDiagnosticBlock("pressure")}
           sent={sentCommandId === "pressure"}
           compact={pressureSummary.health === "neutral"}
-          emphasizeSecondaryLine
           updating={isUpdating("pressure")}
           onForceRelease={() => releaseCardHold("pressure")}
           onClear={async () => {
