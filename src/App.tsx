@@ -96,11 +96,11 @@ export default function App() {
         if (!shouldQuit) {
           return;
         }
-        await invoke("stop_log_watcher").catch(() => {});
-        await invoke("disconnect_controller").catch(() => {});
-        await invoke("disconnect_local_controller").catch(() => {});
         allowClose = true;
-        await appWindow.close();
+        void invoke("stop_log_watcher").catch(() => {});
+        void invoke("disconnect_controller").catch(() => {});
+        void invoke("disconnect_local_controller").catch(() => {});
+        await appWindow.destroy();
       })
       .then((fn) => {
         unlisten = fn;
