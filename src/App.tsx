@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { confirm } from "@tauri-apps/plugin-dialog";
@@ -75,15 +75,15 @@ export default function App() {
     sid: null,
     version: null,
   });
+  const closingRef = useRef(false);
 
   useEffect(() => {
     const appWindow = getCurrentWindow();
     let unlisten: (() => void) | undefined;
-    let allowClose = false;
 
     appWindow
       .onCloseRequested(async (event) => {
-        if (allowClose) {
+        if (closingRef.current) {
           return;
         }
         event.preventDefault();
@@ -96,7 +96,11 @@ export default function App() {
         if (!shouldQuit) {
           return;
         }
-        allowClose = true;
+        closingRef.current = true;
+        if (unlisten) {
+          unlisten();
+          unlisten = undefined;
+        }
         await invoke("quit_app").catch(async () => {
           await appWindow.close().catch(() => {});
         });
