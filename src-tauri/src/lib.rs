@@ -464,14 +464,21 @@ pub struct PressureIssue {
 #[serde(default)]
 pub struct SystemDiagnostic {
     pub sid: Option<String>,
+    pub imei: Option<String>,
     pub version: Option<String>,
     pub release_date: Option<String>,
+    pub display_name: Option<String>,
+    pub location: Option<String>,
     pub system_name: Option<String>,
     pub preferred_network: Option<String>,
+    pub preferred_network_service_type: Option<String>,
     pub install_date: Option<String>,
     pub system_type: Option<String>,
+    pub hydraulic_hardware_configuration: Option<String>,
     pub foam_module: Option<bool>,
+    pub no_foam_system: Option<bool>,
     pub drain_cycle: Option<bool>,
+    pub drain_during_deactivation: Option<bool>,
     pub initiation_cycles: Option<u32>,
     pub water_use_mode: Option<String>,
     pub zone_count: Option<u32>,
@@ -484,6 +491,7 @@ pub struct SystemZone {
     pub number: Option<u32>,
     pub zone_type: Option<String>,
     pub name: Option<String>,
+    pub motor_driver: Option<String>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Default)]
@@ -1569,6 +1577,7 @@ fn clear_diagnostic_interface(state: State<'_, AppState>, interface: String) -> 
         "ethernet" => diag.ethernet = None,
         "pressure" => diag.pressure = None,
         "sim_picker" => diag.sim_picker = None,
+        "system" => diag.system = None,
         _ => {}
     }
     Ok(())

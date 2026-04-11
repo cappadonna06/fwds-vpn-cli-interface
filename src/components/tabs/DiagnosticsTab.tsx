@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { DIAGNOSTIC_BLOCKS, DiagnosticBlock } from "../../types/commands";
+import { sendCommandText } from "../../lib/commandActions";
 
 type DiagStatus = "grey" | "green" | "orange" | "red" | "unknown";
 type HealthTone = "healthy" | "warning" | "error" | "neutral";
@@ -1439,7 +1440,7 @@ export default function DiagnosticsTab() {
         });
         return next;
       });
-      await invoke("send_external_input", { text: script });
+      await sendCommandText(script);
       setSentCommandId(blockId);
       setTimeout(() => setSentCommandId((prev) => (prev === blockId ? null : prev)), 1400);
       setSendError(null);

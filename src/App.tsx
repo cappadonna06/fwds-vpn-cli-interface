@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { confirm } from "@tauri-apps/plugin-dialog";
 import SessionTab from "./components/tabs/SessionTab";
 import CommandsTab from "./components/tabs/CommandsTab";
 import WizardTab from "./components/tabs/WizardTab";
@@ -78,10 +79,28 @@ export default function App() {
   useEffect(() => {
     const appWindow = getCurrentWindow();
     let unlisten: (() => void) | undefined;
+    let allowClose = false;
 
     appWindow
-      .onCloseRequested(async () => {
+      .onCloseRequested(async (event) => {
+        if (allowClose) {
+          return;
+        }
+        event.preventDefault();
+        const shouldQuit = await confirm("Quit application?", {
+          title: "FWDS Controller Console",
+          kind: "warning",
+          okLabel: "Quit",
+          cancelLabel: "Cancel",
+        });
+        if (!shouldQuit) {
+          return;
+        }
         await invoke("stop_log_watcher").catch(() => {});
+        await invoke("disconnect_controller").catch(() => {});
+        await invoke("disconnect_local_controller").catch(() => {});
+        allowClose = true;
+        await appWindow.close();
       })
       .then((fn) => {
         unlisten = fn;

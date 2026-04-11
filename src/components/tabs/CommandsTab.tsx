@@ -1,5 +1,4 @@
 import { useState, useEffect, useRef, useCallback, ReactNode } from "react";
-import { invoke } from "@tauri-apps/api/core";
 import {
   COMMANDS,
   FAVORITE_COMMAND_IDS,
@@ -8,6 +7,7 @@ import {
   CommandCategory,
   DiagnosticBlock,
 } from "../../types/commands";
+import { sendCommandText } from "../../lib/commandActions";
 
 // TODO: wire to session log watcher
 let _addRecentExternal: ((id: string) => void) | null = null;
@@ -857,7 +857,7 @@ export default function CommandsTab() {
 
   async function doSend(text: string, id: string) {
     try {
-      await invoke("send_external_input", { text });
+      await sendCommandText(text);
       setSentId(id);
       setTimeout(() => setSentId((prev: string | null) => (prev === id ? null : prev)), 1500);
       setSendError(null);
@@ -868,7 +868,7 @@ export default function CommandsTab() {
 
   async function doSendBlock(text: string, key: string) {
     try {
-      await invoke("send_external_input", { text });
+      await sendCommandText(text);
       setSentBlockId(key);
       setTimeout(() => setSentBlockId((prev: string | null) => (prev === key ? null : prev)), 1500);
       setSendError(null);

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { copyCommandText, sendCommandText } from "../../lib/commandActions";
 
 const COMMAND_PAYLOAD = "cat /var/etc/fwds/station_info\ncat /var/etc/fwds/system_info";
 
@@ -7,18 +8,26 @@ interface SystemZone {
   number?: number | null;
   zone_type?: string | null;
   name?: string | null;
+  motor_driver?: string | null;
 }
 
 interface SystemDiagnostic {
   sid?: string | null;
+  imei?: string | null;
   version?: string | null;
   release_date?: string | null;
+  display_name?: string | null;
+  location?: string | null;
   system_name?: string | null;
   preferred_network?: string | null;
+  preferred_network_service_type?: string | null;
   install_date?: string | null;
   system_type?: string | null;
+  hydraulic_hardware_configuration?: string | null;
   foam_module?: boolean | null;
+  no_foam_system?: boolean | null;
   drain_cycle?: boolean | null;
+  drain_during_deactivation?: boolean | null;
   initiation_cycles?: number | null;
   water_use_mode?: string | null;
   zone_count?: number | null;
@@ -75,31 +84,43 @@ export default function SystemConfigurationTab() {
   const zones = data?.zones ?? [];
   const hasData = Boolean(
     data &&
-      (data.system_name ||
+      (data.sid ||
+        data.imei ||
+        data.display_name ||
+        data.system_name ||
+        data.location ||
         data.system_type ||
+        data.hydraulic_hardware_configuration ||
         data.preferred_network ||
+        data.preferred_network_service_type ||
         data.initiation_cycles != null ||
         data.water_use_mode ||
+        data.zone_count != null ||
         zones.length > 0)
   );
 
   const hasPartialWarning = Boolean(diagState?.system && !hasData);
 
   async function copyPayload() {
-    await navigator.clipboard.writeText(COMMAND_PAYLOAD);
+    await copyCommandText(COMMAND_PAYLOAD);
     setCopied(true);
     setTimeout(() => setCopied(false), 1500);
   }
 
   async function sendPayload() {
     try {
-      await invoke("send_external_input", { text: COMMAND_PAYLOAD });
+      await sendCommandText(COMMAND_PAYLOAD);
       setSent(true);
       setTimeout(() => setSent(false), 1500);
       setError(null);
     } catch {
       setError("Could not send commands. Connect to a controller terminal first.");
     }
+  }
+
+  async function clearSystemConfig() {
+    await invoke("clear_diagnostic_interface", { interface: "system" }).catch(() => {});
+    setDiagState((prev) => (prev ? { ...prev, system: null } : prev));
   }
 
   return (
@@ -112,6 +133,9 @@ export default function SystemConfigurationTab() {
       <div className="diag-header-toolbar system-config-request-toolbar">
         <div className="system-config-request-title">System Configuration Request</div>
         <div className="btn-group">
+          <button className="btn btn-secondary" onClick={clearSystemConfig}>
+            Clear
+          </button>
           <button className="btn btn-secondary" onClick={copyPayload}>
             {copied ? "Copied" : "Copy"}
           </button>
@@ -141,7 +165,10 @@ export default function SystemConfigurationTab() {
         <div className="system-config-grid">
           <div className="card">
             <div className="card-title">Customer</div>
-            <div className="system-config-kv"><span>System Name</span><strong>{data?.system_name || "—"}</strong></div>
+            <div className="system-config-kv"><span>SID</span><strong>{data?.sid || "—"}</strong></div>
+            <div className="system-config-kv"><span>IMEI</span><strong>{data?.imei || "—"}</strong></div>
+            <div className="system-config-kv"><span>Display Name</span><strong>{data?.display_name || data?.system_name || "—"}</strong></div>
+            <div className="system-config-kv"><span>Location</span><strong>{data?.location || "—"}</strong></div>
             {data?.install_date && (
               <div className="system-config-kv"><span>Install Date</span><strong>{data.install_date}</strong></div>
             )}
@@ -149,10 +176,11 @@ export default function SystemConfigurationTab() {
 
           <div className="card">
             <div className="card-title">System</div>
-            <div className="system-config-kv"><span>System Type</span><strong>{data?.system_type || "—"}</strong></div>
+            <div className="system-config-kv"><span>Preferred Network</span><strong>{titleCase(data?.preferred_network_service_type || data?.preferred_network)}</strong></div>
+            <div className="system-config-kv"><span>Hydraulic Hardware</span><strong>{titleCase(data?.hydraulic_hardware_configuration) || data?.system_type || "—"}</strong></div>
             <div className="system-config-kv"><span>Foam Module</span><strong>{yesNo(data?.foam_module)}</strong></div>
-            <div className="system-config-kv"><span>Preferred Network</span><strong>{titleCase(data?.preferred_network)}</strong></div>
-            <div className="system-config-kv"><span>Drain Cycle</span><strong>{yesNo(data?.drain_cycle)}</strong></div>
+            <div className="system-config-kv"><span>No Foam System</span><strong>{yesNo(data?.no_foam_system)}</strong></div>
+            <div className="system-config-kv"><span>Drain During Deactivation</span><strong>{yesNo(data?.drain_during_deactivation ?? data?.drain_cycle)}</strong></div>
             <div className="system-config-kv"><span>Init Cycles</span><strong>{data?.initiation_cycles ?? "—"}</strong></div>
             <div className="system-config-kv"><span>Water Use Mode</span><strong>{titleCase(data?.water_use_mode)}</strong></div>
           </div>
@@ -170,12 +198,14 @@ export default function SystemConfigurationTab() {
                   <span>Number</span>
                   <span>Type</span>
                   <span>Name</span>
+                  <span>Motor Driver</span>
                 </div>
                 {zones.map((zone, idx) => (
                   <div key={`${zone.number ?? "n"}-${idx}`} className="system-zone-row">
                     <span>{zone.number ?? idx + 1}</span>
                     <span>{titleCase(zone.zone_type)}</span>
                     <span>{zone.name || "—"}</span>
+                    <span>{zone.motor_driver || "—"}</span>
                   </div>
                 ))}
               </div>

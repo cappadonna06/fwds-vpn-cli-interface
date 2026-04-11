@@ -2,6 +2,7 @@ import { useState } from "react";
 import { SystemConfig, defaultConfig, ZoneType, HHCType, WaterUseMode } from "../../types/config";
 import { parseIntakeRow } from "../../lib/parseIntake";
 import { buildReferenceSections } from "../../lib/buildReferenceRows";
+import { copyCommandText, sendCommandText } from "../../lib/commandActions";
 
 type WizardView = "import" | "review" | "run";
 
@@ -27,6 +28,8 @@ export default function WizardTab() {
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [wifiMode, setWifiMode] = useState<"add" | "replace">("add");
   const [showPassword, setShowPassword] = useState(false);
+  const [sentId, setSentId] = useState<string | null>(null);
+  const [sendError, setSendError] = useState<string | null>(null);
 
   function handleImport() {
     const { config: parsed, warnings: w } = parseIntakeRow(rawIntake);
@@ -86,9 +89,20 @@ export default function WizardTab() {
   }
 
   function copyValue(value: string, id: string) {
-    navigator.clipboard.writeText(value);
+    copyCommandText(value).catch(() => {});
     setCopiedId(id);
     setTimeout(() => setCopiedId(null), 1500);
+  }
+
+  async function sendValue(value: string, id: string) {
+    try {
+      await sendCommandText(value);
+      setSentId(id);
+      setTimeout(() => setSentId((prev) => (prev === id ? null : prev)), 1500);
+      setSendError(null);
+    } catch {
+      setSendError("Could not send command. Connect to a controller terminal first.");
+    }
   }
 
   function toggleRow(id: string) {
@@ -401,6 +415,7 @@ export default function WizardTab() {
       {/* ── Scrollable body ── */}
       <div className="ref-body">
       <div className="ref-body-inner">
+        {sendError && <div className="warning-item">⚠ {sendError}</div>}
         {sections.map(section => (
           <div key={section.id} className="ref-section">
 
@@ -408,12 +423,20 @@ export default function WizardTab() {
             <div className="ref-section-header">
               <code className="ref-section-title">{section.title}</code>
               {section.command && (
-                <button
-                  className="btn btn-secondary ref-section-copy"
-                  onClick={() => copyValue(section.command!, `section-cmd-${section.id}`)}
-                >
-                  {copiedId === `section-cmd-${section.id}` ? "✓ Copied" : "Copy command"}
-                </button>
+                <div className="btn-group">
+                  <button
+                    className="btn btn-secondary ref-section-copy"
+                    onClick={() => copyValue(section.command!, `section-cmd-${section.id}`)}
+                  >
+                    {copiedId === `section-cmd-${section.id}` ? "✓ Copied" : "Copy command"}
+                  </button>
+                  <button
+                    className="btn btn-secondary ref-section-copy"
+                    onClick={() => sendValue(section.command!, `section-send-${section.id}`)}
+                  >
+                    {sentId === `section-send-${section.id}` ? "✓ Sent" : "Send command"}
+                  </button>
+                </div>
               )}
             </div>
 

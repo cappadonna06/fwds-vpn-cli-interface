@@ -168,8 +168,11 @@ pub fn parse_log_into_state(log: &str, state: &mut DiagnosticState) {
     if system.sid.is_some()
         || system.version.is_some()
         || system.release_date.is_some()
+        || system.display_name.is_some()
+        || system.location.is_some()
         || system.system_name.is_some()
         || system.system_type.is_some()
+        || system.hydraulic_hardware_configuration.is_some()
         || system.preferred_network.is_some()
         || !system.zones.is_empty()
     {
@@ -766,9 +769,11 @@ mod tests {
         let mut state = DiagnosticState::default();
         let log = r#"2026-04-08T21:06:44-0600 [18230967]# cat /var/etc/fwds/station_info
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<station>
+        <station>
   <sid>18230967</sid>
+  <imei>867530900000001</imei>
   <displayname>Aguilar ADU</displayname>
+  <location>Riverside</location>
   <preferred_network_service_type>wifi</preferred_network_service_type>
   <mfgdate>1756188000</mfgdate>
 </station>
@@ -783,6 +788,7 @@ mod tests {
         <number>1</number>
         <type>roof</type>
         <name>Roof Zone 1</name>
+        <motor_driver>A</motor_driver>
     </zone>
     <zone>
         <number>2</number>
@@ -796,14 +802,58 @@ mod tests {
 
         parse_log_into_state(log, &mut state);
         let system = state.system.expect("expected system diagnostics");
+        assert_eq!(system.sid.as_deref(), Some("18230967"));
+        assert_eq!(system.imei.as_deref(), Some("867530900000001"));
+        assert_eq!(system.display_name.as_deref(), Some("Aguilar ADU"));
+        assert_eq!(system.location.as_deref(), Some("Riverside"));
         assert_eq!(system.system_name.as_deref(), Some("Aguilar ADU"));
         assert_eq!(system.preferred_network.as_deref(), Some("wifi"));
+        assert_eq!(
+            system.preferred_network_service_type.as_deref(),
+            Some("wifi")
+        );
+        assert_eq!(
+            system.hydraulic_hardware_configuration.as_deref(),
+            Some("mp3")
+        );
         assert_eq!(system.system_type.as_deref(), Some("MP3"));
         assert_eq!(system.foam_module, Some(true));
+        assert_eq!(system.no_foam_system, Some(false));
+        assert_eq!(system.drain_during_deactivation, Some(true));
         assert_eq!(system.zone_count, Some(2));
         assert_eq!(system.zones.len(), 2);
         assert_eq!(system.zones[0].number, Some(1));
         assert_eq!(system.zones[0].zone_type.as_deref(), Some("roof"));
+        assert_eq!(system.zones[0].motor_driver.as_deref(), Some("A"));
+    }
+
+    #[test]
+    fn parse_log_extracts_zone_count_seven_and_hhc() {
+        let mut state = DiagnosticState::default();
+        let log = r#"2026-04-08T21:06:44-0600 [24250062]# cat /var/etc/fwds/station_info
+<station>
+  <sid>24250062</sid>
+  <displayname>Demo Property</displayname>
+  <preferred_network_service_type>wifi</preferred_network_service_type>
+</station>
+2026-04-08T21:07:44-0600 [24250062]# cat /var/etc/fwds/system_info
+<system>
+    <hydraulic_hardware_configuration>mp3</hydraulic_hardware_configuration>
+    <zone_count>7</zone_count>
+</system>
+"#;
+        parse_log_into_state(log, &mut state);
+        let system = state.system.expect("expected system diagnostics");
+        assert_eq!(system.sid.as_deref(), Some("24250062"));
+        assert_eq!(
+            system.preferred_network_service_type.as_deref(),
+            Some("wifi")
+        );
+        assert_eq!(
+            system.hydraulic_hardware_configuration.as_deref(),
+            Some("mp3")
+        );
+        assert_eq!(system.zone_count, Some(7));
     }
 
     #[test]
@@ -3217,27 +3267,45 @@ fn parse_system(
     station_info_block: Option<&str>,
     system_info_block: Option<&str>,
 ) -> SystemDiagnostic {
-    let sid = parse_single_value(sid_block).and_then(|v| sanitize_sid(&v));
-    let version = parse_single_value(version_block).and_then(|v| sanitize_version(&v));
-    let release_date = release_block.and_then(|b| capture_after(b, "Date:"));
-    let system_name = station_info_block
+    let xml_sid = station_info_block
+        .and_then(|b| extract_xml_value(b, "sid"))
+        .and_then(|v| sanitize_sid(&v));
+    let sid = parse_single_value(sid_block)
+        .and_then(|v| sanitize_sid(&v))
+        .or(xml_sid);
+    let imei = station_info_block
+        .and_then(|b| extract_xml_value(b, "imei"))
+        .filter(|v| !v.is_empty());
+    let display_name = station_info_block
         .and_then(|b| extract_xml_value(b, "displayname"))
         .filter(|v| !v.is_empty());
+    let location = station_info_block
+        .and_then(|b| extract_xml_value(b, "location"))
+        .filter(|v| !v.is_empty());
+    let version = parse_single_value(version_block).and_then(|v| sanitize_version(&v));
+    let release_date = release_block.and_then(|b| capture_after(b, "Date:"));
+    let system_name = display_name.clone();
     let preferred_network = station_info_block
         .and_then(|b| extract_xml_value(b, "preferred_network_service_type"))
         .filter(|v| !v.is_empty());
+    let preferred_network_service_type = preferred_network.clone();
     let install_date = station_info_block
         .and_then(|b| extract_xml_value(b, "mfgdate"))
         .and_then(|v| parse_unix_date(&v));
+    let hydraulic_hardware_configuration = system_info_block
+        .and_then(|b| extract_xml_value(b, "hydraulic_hardware_configuration"))
+        .filter(|v| !v.is_empty());
     let system_type = system_info_block
         .and_then(|b| extract_xml_value(b, "hydraulic_hardware_configuration"))
         .map(|v| normalize_system_type(&v));
-    let foam_module = system_info_block
+    let no_foam_system = system_info_block
         .and_then(|b| extract_xml_value(b, "no_foam_system"))
-        .map(|v| !parse_boolish(&v));
-    let drain_cycle = system_info_block
+        .map(|v| parse_boolish(&v));
+    let foam_module = no_foam_system.map(|v| !v);
+    let drain_during_deactivation = system_info_block
         .and_then(|b| extract_xml_value(b, "drain_during_deactivation"))
         .map(|v| parse_boolish(&v));
+    let drain_cycle = drain_during_deactivation;
     let initiation_cycles = system_info_block
         .and_then(|b| extract_xml_value(b, "initiationcycles"))
         .and_then(|v| v.parse::<u32>().ok());
@@ -3251,14 +3319,21 @@ fn parse_system(
 
     SystemDiagnostic {
         sid,
+        imei,
         version,
         release_date,
+        display_name,
+        location,
         system_name,
         preferred_network,
+        preferred_network_service_type,
         install_date,
         system_type,
+        hydraulic_hardware_configuration,
         foam_module,
+        no_foam_system,
         drain_cycle,
+        drain_during_deactivation,
         initiation_cycles,
         water_use_mode,
         zone_count,
@@ -3309,6 +3384,7 @@ fn parse_zones(xml: &str) -> Vec<SystemZone> {
             number: extract_xml_value(zone_block, "number").and_then(|v| v.parse::<u32>().ok()),
             zone_type: extract_xml_value(zone_block, "type"),
             name: extract_xml_value(zone_block, "name"),
+            motor_driver: extract_xml_value(zone_block, "motor_driver"),
         })
         .collect()
 }
