@@ -720,19 +720,19 @@ function buildPressureSections(pressure?: PressureDiagnostic | null): DiagSectio
   if (distribution) {
     const inactiveExpected = pressure.is_active === false && distribution.latest < 1.0;
     readings.push({
-      label: "Distribution (P2)",
+      label: "P2 Distribution Pressure",
       value: inactiveExpected
         ? `${formatPsi(distribution.latest)} (inactive — expected)`
         : `${formatPsi(distribution.latest)}${distribution.voltage !== null && distribution.voltage !== undefined ? ` · ${distribution.voltage.toFixed(2)}V` : ""}`,
     });
   }
-  if (source) readings.push({ label: "Source (P3)", value: `${formatPsi(source.latest)}${source.voltage !== null && source.voltage !== undefined ? ` · ${source.voltage.toFixed(2)}V` : ""}` });
-  if (supply) readings.push({ label: "Supply (P1)", value: `${formatPsi(supply.latest)}${supply.voltage !== null && supply.voltage !== undefined ? ` · ${supply.voltage.toFixed(2)}V` : ""}` });
+  if (source) readings.push({ label: "P3 Source Pressure", value: `${formatPsi(source.latest)}${source.voltage !== null && source.voltage !== undefined ? ` · ${source.voltage.toFixed(2)}V` : ""}` });
+  if (supply) readings.push({ label: "P1 Supply Pressure", value: `${formatPsi(supply.latest)}${supply.voltage !== null && supply.voltage !== undefined ? ` · ${supply.voltage.toFixed(2)}V` : ""}` });
 
   if (!supply) {
     const missingP1 = (pressure.sensor_errors ?? []).find((e) => e.sensor_index === 0 && e.errno === -2);
     if (missingP1 && /mp3|lv2|cds/i.test(pressure.system_type ?? "")) {
-      readings.push({ label: "Supply (P1)", value: "not installed (expected)" });
+      readings.push({ label: "P1 Supply Pressure", value: "not installed (expected)" });
     }
   }
   for (const err of pressure.sensor_errors ?? []) {
@@ -763,17 +763,22 @@ function buildPressureSections(pressure?: PressureDiagnostic | null): DiagSectio
 function buildPressurePrimaryTags(pressure?: PressureDiagnostic | null): string[] {
   if (!pressure) return [];
   const via = (pressure.via_sensor ?? "").toLowerCase();
-  if (via === "distribution") return ["Distribution (P2)"];
-  if (via === "source") return ["Source (P3)"];
-  if (via === "supply") return ["Supply (P1)"];
+  if (via === "distribution") return ["P2 Distribution Pressure"];
+  if (via === "source") return ["P3 Source Pressure"];
+  if (via === "supply") return ["P1 Supply Pressure"];
   return [];
 }
 
 function buildPressureSecondaryTags(pressure?: PressureDiagnostic | null): string[] {
   if (!pressure) return [];
+  const source = pressure.sensors?.source?.latest;
   const distribution = pressure.sensors?.distribution?.latest;
+  const hasSource = source !== null && source !== undefined && !Number.isNaN(source);
   const hasDistribution = distribution !== null && distribution !== undefined && !Number.isNaN(distribution);
-  return hasDistribution ? ["Distribution (P2)"] : [];
+  const tags: string[] = [];
+  if (hasSource) tags.push("P3 Source Pressure");
+  if (hasDistribution) tags.push("P2 Distribution Pressure");
+  return tags;
 }
 
 type CardSummary = {
@@ -894,13 +899,18 @@ function summarizePressure(pressure?: PressureDiagnostic | null): CardSummary {
   if (!pressure) return { health: "neutral", badgeLabel: "No data", primaryLine: "No data yet" };
   const health = pressure.status === "red" ? "error" : pressure.status === "orange" ? "warning" : "healthy";
   const badgeLabel = pressure.status === "red" ? "Error" : pressure.status === "orange" ? "Warning" : "Healthy";
+  const source = pressure.sensors?.source?.latest;
   const distribution = pressure.sensors?.distribution?.latest;
+  const hasSource = source !== null && source !== undefined && !Number.isNaN(source);
   const hasDistribution = distribution !== null && distribution !== undefined && !Number.isNaN(distribution);
+  const secondaryParts: string[] = [];
+  if (hasSource) secondaryParts.push(`${formatPressureSummaryPsi(source)} P3 Source Pressure`);
+  if (hasDistribution) secondaryParts.push(`${formatPressureSummaryPsi(distribution)} P2 Distribution Pressure`);
   return {
     health,
     badgeLabel,
     primaryLine: pressure.display_psi !== null && pressure.display_psi !== undefined ? `${pressure.display_psi.toFixed(1)} PSI` : "—",
-    secondaryLine: hasDistribution ? formatPressureSummaryPsi(distribution) : null,
+    secondaryLine: secondaryParts.length ? secondaryParts.join(" · ") : null,
   };
 }
 

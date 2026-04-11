@@ -261,8 +261,8 @@ export function generatePressureRows(diag: DiagnosticState): PressureStatusRow[]
   const formatDistribution = (v: number) =>
     Math.abs(v) < PRESSURE_NEAR_ZERO_DISPLAY_THRESHOLD ? "~0.0 PSI" : `${v.toFixed(2)} PSI`;
   const readingParts: string[] = [];
-  if (hasValidSource(source)) readingParts.push(`Source (P3) ${source!.toFixed(2)} PSI`);
-  if (hasReportableDistribution(distribution)) readingParts.push(`Distribution (P2) ${formatDistribution(distribution!)}`);
+  if (hasValidSource(source)) readingParts.push(`P3 Source Pressure ${source!.toFixed(2)} PSI`);
+  if (hasReportableDistribution(distribution)) readingParts.push(`P2 Distribution Pressure ${formatDistribution(distribution!)}`);
   const issueTitles = (pressure?.issues ?? []).map((i) => i.title).join(", ");
   const summary = readingParts.length > 0
     ? `${issueTitles ? `${issueTitles} · ` : ""}${readingParts.join(" · ")}`

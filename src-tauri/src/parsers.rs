@@ -1182,7 +1182,7 @@ INFO: 1 Distribution 0.00 PSI
         assert!(pressure
             .issues
             .iter()
-            .any(|i| i.id == "ERR_SOURCE_NEGATIVE" && i.severity == DiagStatus::Red));
+            .any(|i| i.id == "ERR_P3_INVALID" && i.severity == DiagStatus::Red));
     }
 
     #[test]
@@ -1201,7 +1201,7 @@ INFO: 0 Supply -0.75 PSI
         assert!(warning_pressure
             .issues
             .iter()
-            .any(|i| i.id == "WARN_SUPPLY_NEGATIVE" && i.severity == DiagStatus::Orange));
+            .any(|i| i.id == "WARN_P1_NEAR_ZERO" && i.severity == DiagStatus::Orange));
 
         let red_text = r#"
 INFO: 2 Source 74.00 PSI
@@ -1212,7 +1212,7 @@ INFO: 0 Supply -2.10 PSI
         assert!(red_pressure
             .issues
             .iter()
-            .any(|i| i.id == "ERR_SUPPLY_NEGATIVE" && i.severity == DiagStatus::Red));
+            .any(|i| i.id == "ERR_P1_INVALID" && i.severity == DiagStatus::Red));
     }
 
     #[test]
@@ -1234,10 +1234,18 @@ pressure-monitor -v --hhc=mp3 --pressure-sensor=supply -u us
             .sensor_errors
             .iter()
             .any(|e| e.sensor_index == 1 && e.message.contains("No P2 detected")));
-        assert!(pressure.sensor_errors.iter().any(|e| e.sensor_index == 2 && e.message.contains("No P3 detected")));
+        assert!(pressure
+            .sensor_errors
+            .iter()
+            .any(|e| e.sensor_index == 2 && e.message.contains("No P3 detected")));
         assert!(pressure
             .issues
-            .iter().any(|issue| issue.id == "ERR_PRIMARY_SENSORS_MISSING" && issue.description.contains("P2 / P3")));
+            .iter()
+            .any(|issue| issue.id == "ERR_P2_INVALID"));
+        assert!(pressure
+            .issues
+            .iter()
+            .any(|issue| issue.id == "ERR_P3_INVALID"));
     }
 
     #[test]
@@ -2543,11 +2551,12 @@ fn extract_eth_diagnostics_section(text: &str) -> &str {
 
 const PRESSURE_VALID_MIN: f64 = 1.0;
 const PRESSURE_VALID_MAX: f64 = 218.0;
-const PRESSURE_LOW_SOURCE_MIN: f64 = 30.0;
-const PRESSURE_STDEV_WARN: f64 = 5.0;
-const PRESSURE_NEAR_ZERO_OFFSET_MAX: f64 = 0.5;
-const PRESSURE_UNEXPECTED_NEGATIVE_RED: f64 = -2.0;
-const PRESSURE_UNEXPECTED_NEGATIVE_WARN_MAX: f64 = -0.5;
+const PRESSURE_SENSOR_HIGH_AMBER_MIN: f64 = 180.0;
+const PRESSURE_SENSOR_HIGH_AMBER_MAX: f64 = 219.0;
+const PRESSURE_SENSOR_HIGH_RED_MIN: f64 = 220.0;
+const PRESSURE_SENSOR_LOW_AMBER_MAX: f64 = 49.0;
+const PRESSURE_NEAR_ZERO_MAX: f64 = 2.0;
+const PRESSURE_NORMALIZATION_NA_MIN: f64 = -2.0;
 
 fn parse_pressure(
     blocks: &[CommandBlock],
@@ -2707,267 +2716,202 @@ fn build_pressure_from_text(text: &str, system: &SystemDiagnostic) -> Option<Pre
     }
 
     let mut issues: Vec<PressureIssue> = Vec::new();
-    let miswire_candidate = !is_active
-        && matches!((&distribution_sensor, &source_sensor), (Some(dist), Some(src)) if dist.latest > PRESSURE_VALID_MIN && dist.latest > src.latest);
-    for err in &sensor_errors {
-        if err.sensor_index == 0 && err.errno == -2 && is_mp3_or_lv2 {
-            continue;
-        }
-        issues.push(PressureIssue {
-            id: "ERR_SENSOR_MISSING".into(),
-            severity: DiagStatus::Red,
-            title: format!("Sensor {} missing", err.sensor_index),
-            description: format!(
-                "Pressure sensor {} is unavailable: {}",
-                err.sensor_index, err.message
-            ),
-            action: "Check sensor wiring · replace sensor if fault persists".into(),
-        });
-    }
-    let missing_supply = sensor_errors.iter().any(|e| e.sensor_index == 0);
-    let missing_distribution = sensor_errors.iter().any(|e| e.sensor_index == 1);
-    let missing_source = sensor_errors.iter().any(|e| e.sensor_index == 2);
-    if missing_supply || missing_distribution || missing_source {
-        let mut missing_labels: Vec<&str> = Vec::new();
-        if missing_supply {
-            missing_labels.push("P1");
-        }
-        if missing_distribution {
-            missing_labels.push("P2");
-        }
-        if missing_source {
-            missing_labels.push("P3");
-        }
-        issues.insert(
-            0,
-            PressureIssue {
-                id: "ERR_PRIMARY_SENSORS_MISSING".into(),
-                severity: DiagStatus::Red,
-                title: "Primary pressure sensors not detected".into(),
-                description: format!(
-                    "No {} detected. Check cabling and pressure sensors.",
-                    missing_labels.join(" / ")
-                ),
-                action: "Check cabling and sensor health; reseat/replace failing sensors, then rerun pressure diagnostics.".into(),
-            },
-        );
-    }
-
-    if !miswire_candidate {
-        if let Some(src) = &source_sensor {
-            if src.latest < 0.0 {
-                let (severity, id, title, action) = if src.latest < PRESSURE_UNEXPECTED_NEGATIVE_RED
-                {
-                    (
-                        DiagStatus::Red,
-                        "ERR_SOURCE_NEGATIVE",
-                        "Source pressure negative",
-                        "Check Source (P3) transducer wiring · verify pressure manifold · replace sensor if reading remains negative",
-                    )
-                } else if src.latest <= PRESSURE_UNEXPECTED_NEGATIVE_WARN_MAX {
-                    (
-                        DiagStatus::Orange,
-                        "WARN_SOURCE_NEGATIVE",
-                        "Source pressure below zero",
-                        "Inspect Source (P3) offset and wiring · re-run pressure-monitor to confirm trend",
-                    )
-                } else {
-                    (
-                        DiagStatus::Orange,
-                        "WARN_SOURCE_NEAR_ZERO_NEGATIVE",
-                        "Source pressure near zero offset",
-                        "Monitor Source (P3) offset drift and re-check after stabilization",
-                    )
-                };
-                issues.push(PressureIssue {
-                    id: id.into(),
-                    severity,
-                    title: title.into(),
-                    description: format!(
-                        "Source (P3) reports {:.2} PSI. Negative source pressure is unexpected.",
-                        src.latest
-                    ),
-                    action: action.into(),
-                });
-            } else if src.latest < PRESSURE_VALID_MIN || src.latest >= 219.0 {
-                issues.push(PressureIssue {
-                    id: "ERR_SOURCE_OUT_OF_BAND".into(),
-                    severity: DiagStatus::Red,
-                    title: "Source pressure invalid".into(),
-                    description: format!(
-                        "Source reading {:.2} PSI is outside valid 1–218 PSI range.",
-                        src.latest
-                    ),
-                    action: "Check sensor wiring · replace sensor".into(),
-                });
-            } else if src.latest < PRESSURE_LOW_SOURCE_MIN {
-                issues.push(PressureIssue {
-                    id: "ERR_SOURCE_LOW".into(),
-                    severity: DiagStatus::Red,
-                    title: "Source pressure low".into(),
-                    description: format!(
-                        "Source pressure {:.2} PSI is below {} PSI minimum.",
-                        src.latest, PRESSURE_LOW_SOURCE_MIN
-                    ),
-                    action: "Check supply shutoff valve · check booster pump · verify water main"
-                        .into(),
-                });
+    let sensor_missing = |sensor_index: u8| -> bool {
+        sensor_errors.iter().any(|e| {
+            if sensor_index == 0 && is_mp3_or_lv2 && e.errno == -2 {
+                return false;
             }
+            e.sensor_index == sensor_index
+        })
+    };
+    let normalized_value = |sensor: &Option<PressureSensorReading>, missing: bool| -> Option<f64> {
+        if missing {
+            return None;
         }
-    }
-
-    if let Some(dist) = &distribution_sensor {
-        if is_active && dist.latest < PRESSURE_VALID_MIN {
-            issues.push(PressureIssue {
-                id: "ERR_DIST_ACTIVE_INVALID".into(),
-                severity: DiagStatus::Red,
-                title: "Distribution pressure invalid while active".into(),
-                description: format!(
-                    "Distribution reading {:.2} PSI is invalid during active flow.",
-                    dist.latest
-                ),
-                action: "Check P2 sensor wiring · check manifold connection".into(),
-            });
+        let value = sensor.as_ref().map(|s| s.latest)?;
+        if value < PRESSURE_NORMALIZATION_NA_MIN {
+            None
+        } else {
+            Some(value)
         }
-    }
+    };
+    let is_near_zero = |value: f64| value.abs() <= PRESSURE_NEAR_ZERO_MAX;
 
-    if let Some(supply) = &supply_sensor {
-        if supply.latest < 0.0 {
-            let (severity, id, title, action) = if supply.latest < PRESSURE_UNEXPECTED_NEGATIVE_RED
-            {
-                (
-                    DiagStatus::Red,
-                    "ERR_SUPPLY_NEGATIVE",
-                    "Supply pressure negative",
-                    "Check Supply (P1) transducer wiring · verify pressure input plumbing · replace sensor if reading remains negative",
-                )
-            } else if supply.latest <= PRESSURE_UNEXPECTED_NEGATIVE_WARN_MAX {
-                (
-                    DiagStatus::Orange,
-                    "WARN_SUPPLY_NEGATIVE",
-                    "Supply pressure below zero",
-                    "Inspect Supply (P1) offset and wiring · re-run pressure-monitor to confirm trend",
-                )
-            } else {
-                (
-                    DiagStatus::Orange,
-                    "WARN_SUPPLY_NEAR_ZERO_NEGATIVE",
-                    "Supply pressure near zero offset",
-                    "Monitor Supply (P1) offset drift and verify sensor zero calibration",
-                )
-            };
+    let p1_missing = sensor_missing(0);
+    let p2_missing = sensor_missing(1);
+    let p3_missing = sensor_missing(2);
+    let p1 = normalized_value(&supply_sensor, p1_missing);
+    let p2 = normalized_value(&distribution_sensor, p2_missing);
+    let p3 = normalized_value(&source_sensor, p3_missing);
+
+    if p1.is_none() && !is_mp3_or_lv2 {
+        issues.push(PressureIssue {
+            id: "ERR_P1_INVALID".into(),
+            severity: DiagStatus::Red,
+            title: "Potential bad P1 Supply Pressure sensor reading".into(),
+            description: "P1 Supply Pressure is missing or below -2 PSI after normalization."
+                .into(),
+            action: "Check P1 Supply Pressure sensor wiring and replace sensor if fault persists."
+                .into(),
+        });
+    } else if let Some(p1_value) = p1 {
+        if p1_value >= PRESSURE_SENSOR_HIGH_RED_MIN {
             issues.push(PressureIssue {
-                id: id.into(),
-                severity,
-                title: title.into(),
-                description: format!(
-                    "Supply (P1) reports {:.2} PSI. Negative supply pressure is unexpected.",
-                    supply.latest
-                ),
-                action: action.into(),
-            });
-        } else if supply.latest > PRESSURE_VALID_MAX {
-            issues.push(PressureIssue {
-                id: "ERR_SUPPLY_OUT_OF_BAND".into(),
+                id: "ERR_P1_HIGH_INVALID".into(),
                 severity: DiagStatus::Red,
-                title: "Supply pressure invalid".into(),
-                description: format!(
-                    "Supply reading {:.2} PSI is outside valid 1–218 PSI range.",
-                    supply.latest
-                ),
-                action: "Check Supply (P1) sensor wiring · verify transducer scaling".into(),
+                title: "Potential bad P1 Supply Pressure sensor reading".into(),
+                description: format!("P1 Supply Pressure is {:.2} PSI (>= 220 PSI).", p1_value),
+                action: "Verify transducer scaling and P1 Supply Pressure wiring.".into(),
             });
-        } else if supply.latest < PRESSURE_VALID_MIN
-            && supply.latest >= PRESSURE_NEAR_ZERO_OFFSET_MAX
+        } else if p1_value >= PRESSURE_SENSOR_HIGH_AMBER_MIN
+            && p1_value <= PRESSURE_SENSOR_HIGH_AMBER_MAX
         {
             issues.push(PressureIssue {
-                id: "WARN_SUPPLY_LOW".into(),
+                id: "WARN_P1_HIGH".into(),
                 severity: DiagStatus::Orange,
-                title: "Supply pressure low".into(),
-                description: format!(
-                    "Supply (P1) is {:.2} PSI, below the expected minimum of {:.1} PSI.",
-                    supply.latest, PRESSURE_VALID_MIN
-                ),
-                action: "Check upstream supply valve position and verify P1 sensor calibration"
-                    .into(),
+                title: "P1 Supply Pressure high".into(),
+                description: format!("P1 Supply Pressure is {:.2} PSI.", p1_value),
+                action: "Inspect regulator setpoint and upstream pressure source.".into(),
             });
-        }
-    }
-
-    let all_sensors_invalid = [
-        source_sensor.as_ref(),
-        distribution_sensor.as_ref(),
-        supply_sensor.as_ref(),
-    ]
-    .iter()
-    .filter_map(|s| *s)
-    .all(|s| s.latest < PRESSURE_VALID_MIN || s.latest > PRESSURE_VALID_MAX);
-    if all_sensors_invalid
-        && (source_sensor.is_some() || distribution_sensor.is_some() || supply_sensor.is_some())
-        && sensor_errors.is_empty()
-    {
-        issues.push(PressureIssue {
-            id: "ERR_ALL_SENSORS_INVALID".into(),
-            severity: DiagStatus::Red,
-            title: "All pressure sensors invalid".into(),
-            description: "No valid reading was detected from source, distribution, or supply sensors.".into(),
-            action: "Check controller power · check all sensor wiring · restart controller".into(),
-        });
-    }
-
-    if !is_active {
-        if let (Some(dist), Some(src)) = (&distribution_sensor, &source_sensor) {
-            if dist.latest > PRESSURE_VALID_MIN && dist.latest > src.latest {
-                issues.push(PressureIssue {
-                    id: "WARN_MISWIRED".into(),
-                    severity: DiagStatus::Orange,
-                    title: "Possible P2/P3 miswire".into(),
-                    description: format!(
-                        "Distribution {:.2} PSI is above source {:.2} PSI while inactive.",
-                        dist.latest, src.latest
-                    ),
-                    action: "Swap P2 ↔ P3 sensor leads and re-test".into(),
-                });
-            }
-        }
-    }
-    if is_mp3_or_lv2 && !miswire_candidate {
-        if let Some(dist) = &distribution_sensor {
-            if dist.latest > PRESSURE_VALID_MIN {
-                issues.push(PressureIssue {
-                    id: "WARN_MP3_LV2_P2_PRESENT".into(),
-                    severity: DiagStatus::Orange,
-                    title: "Unexpected distribution pressure on MP3/LV2".into(),
-                    description: format!(
-                        "Distribution (P2) is {:.2} PSI on an MP3/LV2 system.",
-                        dist.latest
-                    ),
-                    action: "Check P2/P3 wiring and re-test pressure sensors".into(),
-                });
-            }
-        }
-    }
-
-    for sensor in [
-        source_sensor.as_ref(),
-        distribution_sensor.as_ref(),
-        supply_sensor.as_ref(),
-    ]
-    .iter()
-    .filter_map(|s| *s)
-    {
-        if sensor.stdev > PRESSURE_STDEV_WARN {
+        } else if is_near_zero(p1_value) {
             issues.push(PressureIssue {
-                id: "WARN_HIGH_VARIATION".into(),
+                id: "WARN_P1_NEAR_ZERO".into(),
                 severity: DiagStatus::Orange,
-                title: format!("{} pressure variation high", sensor.name),
-                description: format!(
-                    "{} variation is high (σ {:.2} PSI).",
-                    sensor.name, sensor.stdev
-                ),
-                action: "Check for water hammer · inspect PRV · verify supply stability".into(),
+                title: "P1 Supply Pressure near zero".into(),
+                description: format!("P1 Supply Pressure is {:.2} PSI.", p1_value),
+                action: "Check P1 sensor or shut-off valve position.".into(),
+            });
+        } else if p1_value < PRESSURE_SENSOR_LOW_AMBER_MAX {
+            issues.push(PressureIssue {
+                id: "WARN_P1_LOW".into(),
+                severity: DiagStatus::Orange,
+                title: "P1 Supply Pressure low".into(),
+                description: format!("P1 Supply Pressure is {:.2} PSI.", p1_value),
+                action: "Check upstream supply valve and verify inlet pressure.".into(),
             });
         }
+    }
+
+    if p2.is_none() {
+        issues.push(PressureIssue {
+            id: "ERR_P2_INVALID".into(),
+            severity: DiagStatus::Red,
+            title: "Potential bad P2 Distribution Pressure sensor reading".into(),
+            description: "P2 Distribution Pressure is missing or below -2 PSI after normalization."
+                .into(),
+            action:
+                "Check P2 Distribution Pressure sensor wiring and replace sensor if fault persists."
+                    .into(),
+        });
+    } else if let Some(p2_value) = p2 {
+        if p2_value >= PRESSURE_SENSOR_HIGH_RED_MIN {
+            issues.push(PressureIssue {
+                id: "ERR_P2_HIGH_INVALID".into(),
+                severity: DiagStatus::Red,
+                title: "Potential bad P2 Distribution Pressure sensor reading".into(),
+                description: format!(
+                    "P2 Distribution Pressure is {:.2} PSI (>= 220 PSI).",
+                    p2_value
+                ),
+                action: "Verify P2 transducer scaling and wiring.".into(),
+            });
+        } else if p2_value > 20.0 {
+            issues.push(PressureIssue {
+                id: "WARN_P2_PRESSURIZED".into(),
+                severity: DiagStatus::Orange,
+                title: "P2 Distribution Pressure pressurized".into(),
+                description: format!("P2 Distribution Pressure is {:.2} PSI.", p2_value),
+                action: "Distribution should be near zero while inactive; check valves or active flow state.".into(),
+            });
+        }
+    }
+
+    if p3.is_none() {
+        issues.push(PressureIssue {
+            id: "ERR_P3_INVALID".into(),
+            severity: DiagStatus::Red,
+            title: "Potential bad P3 Source Pressure sensor reading".into(),
+            description: "P3 Source Pressure is missing or below -2 PSI after normalization."
+                .into(),
+            action: "Check P3 Source Pressure sensor wiring and replace sensor if fault persists."
+                .into(),
+        });
+    } else if let Some(p3_value) = p3 {
+        if p3_value >= PRESSURE_SENSOR_HIGH_RED_MIN {
+            issues.push(PressureIssue {
+                id: "ERR_P3_HIGH_INVALID".into(),
+                severity: DiagStatus::Red,
+                title: "Potential bad P3 Source Pressure sensor reading".into(),
+                description: format!("P3 Source Pressure is {:.2} PSI (>= 220 PSI).", p3_value),
+                action: "Verify transducer scaling and P3 Source Pressure wiring.".into(),
+            });
+        } else if p3_value >= PRESSURE_SENSOR_HIGH_AMBER_MIN
+            && p3_value <= PRESSURE_SENSOR_HIGH_AMBER_MAX
+        {
+            issues.push(PressureIssue {
+                id: "WARN_P3_HIGH".into(),
+                severity: DiagStatus::Orange,
+                title: "P3 Source Pressure high".into(),
+                description: format!("P3 Source Pressure is {:.2} PSI.", p3_value),
+                action: "Inspect regulator setpoint and upstream pressure source.".into(),
+            });
+        } else if is_near_zero(p3_value) {
+            issues.push(PressureIssue {
+                id: "WARN_P3_NEAR_ZERO".into(),
+                severity: DiagStatus::Orange,
+                title: "P3 Source Pressure near zero".into(),
+                description: format!("P3 Source Pressure is {:.2} PSI.", p3_value),
+                action: "Check P3 sensor or shut-off valve position.".into(),
+            });
+        } else if p3_value < PRESSURE_SENSOR_LOW_AMBER_MAX {
+            issues.push(PressureIssue {
+                id: "WARN_P3_LOW".into(),
+                severity: DiagStatus::Orange,
+                title: "P3 Source Pressure low".into(),
+                description: format!("P3 Source Pressure is {:.2} PSI.", p3_value),
+                action: "Check source valve, booster pump, and upstream water main.".into(),
+            });
+        }
+    }
+
+    if let (Some(p2_value), Some(p1_value)) = (p2, p1) {
+        if p2_value > p1_value {
+            issues.push(PressureIssue {
+            id: "WARN_P2_GT_P1".into(),
+            severity: DiagStatus::Orange,
+            title: "P1/P2 likely miswired".into(),
+            description: format!(
+                "P2 Distribution Pressure ({:.2} PSI) is higher than P1 Supply Pressure ({:.2} PSI).",
+                p2_value, p1_value
+            ),
+            action: "Verify P1 and P2 wiring order at the controller terminal.".into(),
+        });
+        }
+    }
+    if let (Some(p2_value), Some(p3_value)) = (p2, p3) {
+        if p2_value > p3_value {
+            issues.push(PressureIssue {
+            id: "WARN_P2_GT_P3".into(),
+            severity: DiagStatus::Orange,
+            title: "P2/P3 likely miswired".into(),
+            description: format!(
+                "P2 Distribution Pressure ({:.2} PSI) is higher than P3 Source Pressure ({:.2} PSI).",
+                p2_value, p3_value
+            ),
+            action: "Verify P2 and P3 wiring order at the controller terminal.".into(),
+        });
+        }
+    }
+    if is_mp3_or_lv2 && p1.is_some() {
+        issues.push(PressureIssue {
+            id: "WARN_P1_PRESENT_ON_MP3_LV2".into(),
+            severity: DiagStatus::Orange,
+            title: "Unexpected P1 Supply Pressure wiring".into(),
+            description: "P1 Supply Pressure is present on an MP3/LV2/CDS system.".into(),
+            action:
+                "P1 Supply Pressure should not be wired on MP3/LV2/CDS systems; inspect wiring."
+                    .into(),
+        });
     }
 
     let (via_sensor, display_psi) = select_pressure_display(
