@@ -263,8 +263,15 @@ interface DiagnosticState {
   pressure?: PressureDiagnostic | null;
   system?: SystemDiagnostic | null;
   sim_picker?: SimPickerDiagnostic | null;
+  interface_runs?: Partial<Record<InterfaceKey, InterfaceRunState>>;
   last_updated?: string | null;
   session_has_data?: boolean;
+}
+interface InterfaceRunState {
+  in_progress: boolean;
+  started_at?: string | null;
+  completed_at?: string | null;
+  last_marker?: string | null;
 }
 
 type DiagRow = { label: string; value: string };
@@ -317,6 +324,62 @@ function inferInterfacesFromScript(script: string): InterfaceKey[] {
   if (lower.includes("pressure-monitor")) interfaces.add("pressure");
   if (lower.includes("sim picker") || lower.includes("cell-support --no-ofono --at --scan")) interfaces.add("sim_picker");
   return [...interfaces];
+}
+
+function interfacesForBlock(block: DiagnosticBlock, script: string): InterfaceKey[] {
+  const fromMetadata = (block.affected_interfaces ?? [])
+    .filter((iface): iface is InterfaceKey => iface !== "system");
+  if (fromMetadata.length > 0) return fromMetadata;
+  console.warn(`[Diagnostics] affected_interfaces missing for block "${block.id}", using script inference fallback.`);
+  return inferInterfacesFromScript(script);
+}
+
+function isInterfaceComplete(iface: InterfaceKey, state: DiagnosticState | null | undefined): boolean {
+  if (!state) return false;
+  if (iface === "wifi") {
+    return !!state.wifi && state.wifi.check_result !== "Unknown";
+  }
+  if (iface === "ethernet") {
+    return !!state.ethernet && state.ethernet.check_result !== "Unknown";
+  }
+  if (iface === "cellular") {
+    return !!state.cellular && (
+      state.cellular.check_result !== "Unknown"
+      || !!state.cellular.imei
+      || !!state.cellular.basic_status
+    );
+  }
+  if (iface === "sim_picker") {
+    return !!state.sim_picker && state.sim_picker.scan_attempted && (
+      state.sim_picker.scan_completed
+      || state.sim_picker.scan_failed
+      || state.sim_picker.scan_empty
+    );
+  }
+  if (iface === "satellite") {
+    if (!state.satellite) return false;
+    const sat = state.satellite;
+    const loopbackTerminal = sat.loopback_test_ran && (
+      sat.loopback_test_success !== null && sat.loopback_test_success !== undefined
+      || sat.loopback_test_timeout === true
+      || sat.loopback_test_blocked_in_use === true
+      || !!sat.loopback_test_error
+    );
+    const lightTerminal = sat.light_test_ran && (
+      sat.light_test_success !== null && sat.light_test_success !== undefined
+      || sat.light_test_timeout === true
+      || sat.light_test_blocked_in_use === true
+      || !!sat.light_test_error
+    );
+    return loopbackTerminal || lightTerminal;
+  }
+  if (iface === "pressure") {
+    const p = state.pressure;
+    if (!p) return false;
+    const readings = [p.sensors?.source, p.sensors?.distribution, p.sensors?.supply].filter(Boolean);
+    return readings.some((sensor) => (sensor?.count ?? 0) > 0) || (p.sensor_errors?.length ?? 0) > 0;
+  }
+  return false;
 }
 
 function holdTimeoutMsForInterface(iface: InterfaceKey, script: string): number {
@@ -1226,6 +1289,7 @@ export default function DiagnosticsTab() {
             if (hold && hold.expiresAt > nowMs) return;
             (next as any)[iface] = (state as any)?.[iface] ?? null;
           });
+          next.interface_runs = state.interface_runs ?? {};
           next.system = state.system ?? null;
           next.last_updated = state.last_updated;
           next.session_has_data = state.session_has_data;
@@ -1236,7 +1300,9 @@ export default function DiagnosticsTab() {
           const next = { ...prev };
           (Object.keys(prev) as InterfaceKey[]).forEach((iface) => {
             const hold = prev[iface];
-            if (hold && hold.expiresAt <= nowMs) {
+            const backendInProgress = state.interface_runs?.[iface]?.in_progress === true;
+            const complete = isInterfaceComplete(iface, state);
+            if (hold && (complete || (!backendInProgress && hold.expiresAt <= nowMs))) {
               delete next[iface];
               changed = true;
             }
@@ -1270,6 +1336,8 @@ export default function DiagnosticsTab() {
   const wifiRole = resolveRole("wifi", primaryNetwork, !!(wifi?.connected || wifi?.connman_wifi_connected));
   const cellularRole = resolveRole("cellular", primaryNetwork, !!(cellular?.connman_cell_connected || cellular?.internet_reachable));
   const ethernetRole = resolveRole("ethernet", primaryNetwork, !!(ethernet?.link_detected || ethernet?.internet_reachable));
+  const isUpdating = (iface: InterfaceKey) =>
+    (displayDiag?.interface_runs?.[iface]?.in_progress === true) || !!cardHolds[iface];
 
   async function clearCards() {
     await invoke("stop_log_watcher").catch(() => {});
@@ -1282,6 +1350,7 @@ export default function DiagnosticsTab() {
       pressure: null,
       system: null,
       sim_picker: null,
+      interface_runs: {},
       last_updated: null,
       session_has_data: false,
     };
@@ -1314,7 +1383,7 @@ export default function DiagnosticsTab() {
     if (!script) return;
     try {
       const now = Date.now();
-      const touchedInterfaces = inferInterfacesFromScript(script);
+      const touchedInterfaces = interfacesForBlock(block, script);
       setCardHolds((prev) => {
         const next = { ...prev };
         touchedInterfaces.forEach((iface) => {
@@ -1414,7 +1483,7 @@ export default function DiagnosticsTab() {
           onSendCommand={() => sendDiagnosticBlock("wifi")}
           sent={sentCommandId === "wifi"}
           compact={wifiSummary.health === "neutral"}
-          updating={!!cardHolds.wifi}
+          updating={isUpdating("wifi")}
           onForceRelease={() => releaseCardHold("wifi")}
           onClear={async () => {
             await invoke("clear_diagnostic_interface", { interface: "wifi" }).catch(() => {});
@@ -1442,7 +1511,7 @@ export default function DiagnosticsTab() {
           onSendCommand={() => sendDiagnosticBlock("cellular")}
           sent={sentCommandId === "cellular"}
           compact={cellularSummary.health === "neutral"}
-          updating={!!cardHolds.cellular}
+          updating={isUpdating("cellular")}
           onForceRelease={() => releaseCardHold("cellular")}
           onClear={async () => {
             await invoke("clear_diagnostic_interface", { interface: "cellular" }).catch(() => {});
@@ -1470,7 +1539,7 @@ export default function DiagnosticsTab() {
           onSendCommand={() => sendDiagnosticBlock("satellite")}
           sent={sentCommandId === "satellite"}
           compact={satelliteSummary.health === "neutral"}
-          updating={!!cardHolds.satellite}
+          updating={isUpdating("satellite")}
           onForceRelease={() => releaseCardHold("satellite")}
           onClear={async () => {
             await invoke("clear_diagnostic_interface", { interface: "satellite" }).catch(() => {});
@@ -1498,7 +1567,7 @@ export default function DiagnosticsTab() {
           onSendCommand={() => sendDiagnosticBlock("ethernet")}
           sent={sentCommandId === "ethernet"}
           compact={ethernetSummary.health === "neutral"}
-          updating={!!cardHolds.ethernet}
+          updating={isUpdating("ethernet")}
           onForceRelease={() => releaseCardHold("ethernet")}
           onClear={async () => {
             await invoke("clear_diagnostic_interface", { interface: "ethernet" }).catch(() => {});
@@ -1526,7 +1595,7 @@ export default function DiagnosticsTab() {
           sent={sentCommandId === "pressure"}
           compact={pressureSummary.health === "neutral"}
           emphasizeSecondaryLine
-          updating={!!cardHolds.pressure}
+          updating={isUpdating("pressure")}
           onForceRelease={() => releaseCardHold("pressure")}
           onClear={async () => {
             await invoke("clear_diagnostic_interface", { interface: "pressure" }).catch(() => {});
@@ -1556,7 +1625,7 @@ export default function DiagnosticsTab() {
           onSendCommand={() => sendDiagnosticBlock("sim-picker")}
           sent={sentCommandId === "sim-picker"}
           compact={!simPicker?.scan_attempted}
-          updating={!!cardHolds.sim_picker}
+          updating={isUpdating("sim_picker")}
           onForceRelease={() => releaseCardHold("sim_picker")}
           onClear={async () => {
             await invoke("clear_diagnostic_interface", { interface: "sim_picker" }).catch(() => {});

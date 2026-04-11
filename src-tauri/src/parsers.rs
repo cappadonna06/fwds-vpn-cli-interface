@@ -175,6 +175,141 @@ pub fn parse_log_into_state(log: &str, state: &mut DiagnosticState) {
     {
         state.system = Some(system);
     }
+
+    update_interface_run_states(log, state);
+}
+
+fn latest_marker_index(lower_log: &str, markers: &[&str]) -> Option<usize> {
+    markers
+        .iter()
+        .filter_map(|marker| lower_log.rfind(&marker.to_ascii_lowercase()))
+        .max()
+}
+
+fn is_interface_complete(iface: &str, state: &DiagnosticState, lower_log: &str) -> bool {
+    match iface {
+        "wifi" => {
+            lower_log.contains("===== wifi diagnostics end =====")
+                || state
+                    .wifi
+                    .as_ref()
+                    .map(|w| w.check_result != "Unknown")
+                    .unwrap_or(false)
+        }
+        "ethernet" => {
+            lower_log.contains("===== eth diagnostics end =====")
+                || state
+                    .ethernet
+                    .as_ref()
+                    .map(|e| e.check_result != "Unknown")
+                    .unwrap_or(false)
+        }
+        "cellular" => state
+            .cellular
+            .as_ref()
+            .map(|c| c.check_result != "Unknown" || c.imei.is_some() || c.basic_status.is_some())
+            .unwrap_or(false),
+        "sim_picker" => state
+            .sim_picker
+            .as_ref()
+            .map(|sp| sp.scan_attempted && (sp.scan_completed || sp.scan_failed || sp.scan_empty))
+            .unwrap_or(false)
+            || lower_log.contains("===== sim picker end ====="),
+        "satellite" => state
+            .satellite
+            .as_ref()
+            .map(|s| {
+                (s.loopback_test_ran
+                    && (s.loopback_test_success.is_some()
+                        || s.loopback_test_timeout == Some(true)
+                        || s.loopback_test_blocked_in_use == Some(true)))
+                    || (s.light_test_ran
+                        && (s.light_test_success.is_some()
+                            || s.light_test_timeout == Some(true)
+                            || s.light_test_blocked_in_use == Some(true)))
+            })
+            .unwrap_or(false),
+        "pressure" => state
+            .pressure
+            .as_ref()
+            .map(|p| {
+                p.sensors
+                    .source
+                    .as_ref()
+                    .map(|s| s.count > 0)
+                    .unwrap_or(false)
+                    || p.sensors
+                        .distribution
+                        .as_ref()
+                        .map(|s| s.count > 0)
+                        .unwrap_or(false)
+                    || p.sensors
+                        .supply
+                        .as_ref()
+                        .map(|s| s.count > 0)
+                        .unwrap_or(false)
+            })
+            .unwrap_or(false),
+        _ => false,
+    }
+}
+
+fn update_interface_run_states(log: &str, state: &mut DiagnosticState) {
+    let now = chrono::Local::now().format("%H:%M:%S").to_string();
+    let lower = log.to_ascii_lowercase();
+    let interfaces: [(&str, &[&str]); 6] = [
+        ("wifi", &["===== wifi diagnostics start ====="]),
+        ("ethernet", &["===== eth diagnostics start ====="]),
+        (
+            "cellular",
+            &[
+                "===== cellular connectivity test =====",
+                "===== basic cell info =====",
+            ],
+        ),
+        (
+            "satellite",
+            &[
+                "===== satellite basic =====",
+                "===== quick satellite check =====",
+                "===== satellite loopback test =====",
+            ],
+        ),
+        (
+            "pressure",
+            &["===== pressure snapshot =====", "===== pressure live ====="],
+        ),
+        ("sim_picker", &["===== sim picker start ====="]),
+    ];
+
+    for (iface, start_markers) in interfaces {
+        let start = latest_marker_index(&lower, start_markers);
+        let end = match iface {
+            "wifi" => latest_marker_index(&lower, &["===== wifi diagnostics end ====="]),
+            "ethernet" => latest_marker_index(&lower, &["===== eth diagnostics end ====="]),
+            "sim_picker" => latest_marker_index(&lower, &["===== sim picker end ====="]),
+            _ => None,
+        };
+        let has_active_start = start
+            .map(|start_pos| end.map(|end_pos| end_pos < start_pos).unwrap_or(true))
+            .unwrap_or(false);
+        let complete = is_interface_complete(iface, state, &lower);
+        let in_progress = has_active_start && !complete;
+        let marker_text = start_markers.first().map(|m| (*m).to_string());
+
+        let entry = state.interface_runs.entry(iface.to_string()).or_default();
+        if in_progress {
+            if entry.started_at.is_none() {
+                entry.started_at = Some(now.clone());
+            }
+            entry.in_progress = true;
+            entry.last_marker = marker_text;
+            entry.completed_at = None;
+        } else if entry.in_progress {
+            entry.in_progress = false;
+            entry.completed_at = Some(now.clone());
+        }
+    }
 }
 
 fn wifi_has_authoritative_check(diag: &WifiDiagnostic) -> bool {

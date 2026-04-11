@@ -83,8 +83,17 @@ pub struct DiagnosticState {
     pub pressure: Option<PressureDiagnostic>,
     pub system: Option<SystemDiagnostic>,
     pub sim_picker: Option<SimPickerDiagnostic>,
+    pub interface_runs: HashMap<String, InterfaceRunState>,
     pub last_updated: Option<String>,
     pub session_has_data: bool,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone, Default)]
+pub struct InterfaceRunState {
+    pub in_progress: bool,
+    pub started_at: Option<String>,
+    pub completed_at: Option<String>,
+    pub last_marker: Option<String>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Default)]
