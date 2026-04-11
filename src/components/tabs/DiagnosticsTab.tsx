@@ -970,6 +970,13 @@ function summarizeEthernet(ethernet?: EthernetDiagnostic | null): CardSummary {
   ) {
     return { health: "neutral", badgeLabel: "Inactive", primaryLine: "Ethernet disabled" };
   }
+  if (
+    checkLower.includes("-65554")
+    || checkLower.includes("network technology is not connected")
+    || checkLower.includes("not connected")
+  ) {
+    return { health: "neutral", badgeLabel: "Inactive", primaryLine: "No link detected" };
+  }
   const internetPassed = ethernet.check_result === "Success" && ethernet.internet_reachable === true;
   if (internetPassed) return { health: "healthy", badgeLabel: "Healthy", primaryLine: "Connected", secondaryLine: "Internet reachable" };
   if (ethernet.link_detected === false) return { health: "neutral", badgeLabel: "Inactive", primaryLine: "No link detected" };
