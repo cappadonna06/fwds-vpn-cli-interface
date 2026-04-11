@@ -342,7 +342,8 @@ function isInterfaceComplete(iface: InterfaceKey, state: DiagnosticState | null 
       && state.interface_runs?.wifi?.started_at !== undefined;
   }
   if (iface === "ethernet") {
-    return !!state.ethernet && state.ethernet.check_result !== "Unknown";
+    return state.interface_runs?.ethernet?.in_progress === false
+      && state.interface_runs?.ethernet?.started_at !== undefined;
   }
   if (iface === "cellular") {
     return state.interface_runs?.cellular?.in_progress === false
@@ -356,21 +357,8 @@ function isInterfaceComplete(iface: InterfaceKey, state: DiagnosticState | null 
     );
   }
   if (iface === "satellite") {
-    if (!state.satellite) return false;
-    const sat = state.satellite;
-    const loopbackTerminal = sat.loopback_test_ran && (
-      sat.loopback_test_success !== null && sat.loopback_test_success !== undefined
-      || sat.loopback_test_timeout === true
-      || sat.loopback_test_blocked_in_use === true
-      || !!sat.loopback_test_error
-    );
-    const lightTerminal = sat.light_test_ran && (
-      sat.light_test_success !== null && sat.light_test_success !== undefined
-      || sat.light_test_timeout === true
-      || sat.light_test_blocked_in_use === true
-      || !!sat.light_test_error
-    );
-    return loopbackTerminal || lightTerminal;
+    return state.interface_runs?.satellite?.in_progress === false
+      && state.interface_runs?.satellite?.started_at !== undefined;
   }
   if (iface === "pressure") {
     const p = state.pressure;

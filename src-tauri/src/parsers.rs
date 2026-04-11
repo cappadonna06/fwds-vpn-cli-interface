@@ -201,12 +201,16 @@ fn is_interface_complete(iface: &str, state: &DiagnosticState, lower_log: &str) 
             }
         }
         "ethernet" => {
-            lower_log.contains("===== eth diagnostics end =====")
-                || state
+            let has_eth_start = lower_log.contains("===== eth diagnostics start =====");
+            if has_eth_start {
+                lower_log.contains("===== eth diagnostics end =====")
+            } else {
+                state
                     .ethernet
                     .as_ref()
                     .map(|e| e.check_result != "Unknown")
                     .unwrap_or(false)
+            }
         }
         "cellular" => {
             let has_cell_start = lower_log.contains("===== cellular diagnostics start =====")
@@ -228,21 +232,29 @@ fn is_interface_complete(iface: &str, state: &DiagnosticState, lower_log: &str) 
             .map(|sp| sp.scan_attempted && (sp.scan_completed || sp.scan_failed || sp.scan_empty))
             .unwrap_or(false)
             || lower_log.contains("===== sim picker end ====="),
-        "satellite" => state
-            .satellite
-            .as_ref()
-            .map(|s| {
-                (s.loopback_test_ran
-                    && (s.loopback_test_success.is_some()
-                        || s.loopback_test_timeout == Some(true)
-                        || s.loopback_test_blocked_in_use == Some(true)))
-                    || (s.light_test_ran
-                        && (s.light_test_success.is_some()
-                            || s.light_test_timeout == Some(true)
-                            || s.light_test_blocked_in_use == Some(true)))
-            })
-            .unwrap_or(false)
-            || lower_log.contains("===== satellite diagnostics end ====="),
+        "satellite" => {
+            let has_sat_start = lower_log.contains("===== satellite diagnostics start =====")
+                || lower_log.contains("===== satellite basic =====")
+                || lower_log.contains("===== satellite loopback test =====");
+            if has_sat_start {
+                lower_log.contains("===== satellite diagnostics end =====")
+            } else {
+                state
+                    .satellite
+                    .as_ref()
+                    .map(|s| {
+                        (s.loopback_test_ran
+                            && (s.loopback_test_success.is_some()
+                                || s.loopback_test_timeout == Some(true)
+                                || s.loopback_test_blocked_in_use == Some(true)))
+                            || (s.light_test_ran
+                                && (s.light_test_success.is_some()
+                                    || s.light_test_timeout == Some(true)
+                                    || s.light_test_blocked_in_use == Some(true)))
+                    })
+                    .unwrap_or(false)
+            }
+        }
         "pressure" => state
             .pressure
             .as_ref()
