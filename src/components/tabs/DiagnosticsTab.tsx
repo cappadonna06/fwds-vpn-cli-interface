@@ -338,17 +338,15 @@ function interfacesForBlock(block: DiagnosticBlock, script: string): InterfaceKe
 function isInterfaceComplete(iface: InterfaceKey, state: DiagnosticState | null | undefined): boolean {
   if (!state) return false;
   if (iface === "wifi") {
-    return !!state.wifi && state.wifi.check_result !== "Unknown";
+    return state.interface_runs?.wifi?.in_progress === false
+      && state.interface_runs?.wifi?.started_at !== undefined;
   }
   if (iface === "ethernet") {
     return !!state.ethernet && state.ethernet.check_result !== "Unknown";
   }
   if (iface === "cellular") {
-    return !!state.cellular && (
-      state.cellular.check_result !== "Unknown"
-      || !!state.cellular.imei
-      || !!state.cellular.basic_status
-    );
+    return state.interface_runs?.cellular?.in_progress === false
+      && state.interface_runs?.cellular?.started_at !== undefined;
   }
   if (iface === "sim_picker") {
     return !!state.sim_picker && state.sim_picker.scan_attempted && (
@@ -1177,7 +1175,7 @@ function DiagCard({
         </div>
       </div>
 
-      {collapsedMetricCards && !expanded ? (
+      {collapsedMetricCards && collapsedMetricCards.length > 0 ? (
         <div className="diag-pressure-metric-grid">
           {collapsedMetricCards.map((metric) => (
             <div key={`${title}-${metric.label}`} className={`diag-pressure-metric-card diag-pressure-metric-card-${metric.tone}`}>

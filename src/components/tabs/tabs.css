@@ -2242,7 +2242,7 @@
 .diag-pressure-metric-card {
   border: 1px solid var(--border);
   border-radius: 10px;
-  padding: 10px 12px;
+  padding: 8px 10px;
   background: var(--bg-2);
 }
 
@@ -2268,10 +2268,10 @@
 }
 
 .diag-pressure-metric-value {
-  margin-top: 6px;
+  margin-top: 4px;
   color: var(--text-primary);
-  font-size: 24px;
-  font-weight: 650;
+  font-size: 16px;
+  font-weight: 620;
   line-height: 1.1;
 }
 

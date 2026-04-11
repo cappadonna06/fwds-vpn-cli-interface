@@ -189,12 +189,16 @@ fn latest_marker_index(lower_log: &str, markers: &[&str]) -> Option<usize> {
 fn is_interface_complete(iface: &str, state: &DiagnosticState, lower_log: &str) -> bool {
     match iface {
         "wifi" => {
-            lower_log.contains("===== wifi diagnostics end =====")
-                || state
+            let has_wifi_start = lower_log.contains("===== wifi diagnostics start =====");
+            if has_wifi_start {
+                lower_log.contains("===== wifi diagnostics end =====")
+            } else {
+                state
                     .wifi
                     .as_ref()
                     .map(|w| w.check_result != "Unknown")
                     .unwrap_or(false)
+            }
         }
         "ethernet" => {
             lower_log.contains("===== eth diagnostics end =====")
@@ -204,11 +208,20 @@ fn is_interface_complete(iface: &str, state: &DiagnosticState, lower_log: &str) 
                     .map(|e| e.check_result != "Unknown")
                     .unwrap_or(false)
         }
-        "cellular" => state
-            .cellular
-            .as_ref()
-            .map(|c| c.check_result != "Unknown" || c.imei.is_some() || c.basic_status.is_some())
-            .unwrap_or(false),
+        "cellular" => {
+            let has_cell_start = lower_log.contains("===== cellular diagnostics start =====")
+                || lower_log.contains("===== cellular connectivity test =====");
+            if has_cell_start {
+                lower_log.contains("===== cellular diagnostics end =====")
+                    || lower_log.contains("===== sim picker end =====")
+            } else {
+                state
+                    .cellular
+                    .as_ref()
+                    .map(|c| c.check_result != "Unknown" || c.imei.is_some() || c.basic_status.is_some())
+                    .unwrap_or(false)
+            }
+        }
         "sim_picker" => state
             .sim_picker
             .as_ref()
@@ -266,6 +279,7 @@ fn update_interface_run_states(log: &str, state: &mut DiagnosticState) {
             &[
                 "===== cellular connectivity test =====",
                 "===== basic cell info =====",
+                "===== cellular diagnostics start =====",
             ],
         ),
         (
@@ -290,6 +304,7 @@ fn update_interface_run_states(log: &str, state: &mut DiagnosticState) {
             "wifi" => latest_marker_index(&lower, &["===== wifi diagnostics end ====="]),
             "ethernet" => latest_marker_index(&lower, &["===== eth diagnostics end ====="]),
             "sim_picker" => latest_marker_index(&lower, &["===== sim picker end ====="]),
+            "cellular" => latest_marker_index(&lower, &["===== cellular diagnostics end ====="]),
             "satellite" => latest_marker_index(&lower, &["===== satellite diagnostics end ====="]),
             _ => None,
         };

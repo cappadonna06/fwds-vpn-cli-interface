@@ -957,6 +957,7 @@ echo ""
 echo "===== WIFI DIAGNOSTICS END ====="
 
 echo ""
+echo "===== CELLULAR DIAGNOSTICS START ====="
 echo "===== CELLULAR CONNECTIVITY TEST ====="
 cellular-check
 
@@ -987,6 +988,7 @@ cat /proc/net/dev
 echo ""
 echo "===== MODEM / RADIO DIAGNOSTICS ====="
 cell-support --no-ofono --at
+echo "===== CELLULAR DIAGNOSTICS END ====="
 
 echo ""
 echo "===== SATELLITE DIAGNOSTICS START ====="
@@ -1164,6 +1166,7 @@ version
 sid
 
 echo ""
+echo "===== CELLULAR DIAGNOSTICS START ====="
 echo "===== CELLULAR CONNECTIVITY TEST ====="
 cellular-check
 
@@ -1194,6 +1197,7 @@ cat /proc/net/dev
 echo ""
 echo "===== MODEM / RADIO DIAGNOSTICS ====="
 cell-support --no-ofono --at
+echo "===== CELLULAR DIAGNOSTICS END ====="
 )`,
   },
   {
@@ -1213,6 +1217,7 @@ version
 sid
 
 echo ""
+echo "===== CELLULAR DIAGNOSTICS START ====="
 echo "===== CELLULAR CONNECTIVITY TEST ====="
 cellular-check
 
@@ -1243,6 +1248,7 @@ cat /proc/net/dev
 echo ""
 echo "===== MODEM / RADIO DIAGNOSTICS ====="
 cell-support --no-ofono --at --scan
+echo "===== CELLULAR DIAGNOSTICS END ====="
 
 echo ""
 echo "===== SIM PICKER END ====="
@@ -1374,8 +1380,10 @@ wifi-check
 wifi-signal
 echo "===== WIFI DIAGNOSTICS END ====="
 
+echo "===== CELLULAR DIAGNOSTICS START ====="
 echo "===== CELLULAR CONNECTIVITY TEST ====="
 cellular-check
+echo "===== CELLULAR DIAGNOSTICS END ====="
 )`,
   },
   {
@@ -1479,6 +1487,7 @@ echo ""
 echo "===== WIFI DIAGNOSTICS END ====="
 
 echo ""
+echo "===== CELLULAR DIAGNOSTICS START ====="
 echo "===== CELLULAR CONNECTIVITY TEST ====="
 cellular-check
 
@@ -1509,6 +1518,7 @@ cat /proc/net/dev
 echo ""
 echo "===== MODEM / RADIO DIAGNOSTICS ====="
 cell-support --no-ofono --at
+echo "===== CELLULAR DIAGNOSTICS END ====="
 
 echo ""
 echo "===== SYSTEM ====="
@@ -1644,6 +1654,7 @@ echo ""
 echo "===== WIFI DIAGNOSTICS END ====="
 
 echo ""
+echo "===== CELLULAR DIAGNOSTICS START ====="
 echo "===== CELLULAR CONNECTIVITY TEST ====="
 cellular-check
 
@@ -1674,6 +1685,7 @@ cat /proc/net/dev
 echo ""
 echo "===== MODEM / RADIO DIAGNOSTICS ====="
 cell-support --no-ofono --at
+echo "===== CELLULAR DIAGNOSTICS END ====="
 
 echo ""
 echo "===== SYSTEM ====="
