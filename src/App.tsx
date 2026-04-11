@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { confirm } from "@tauri-apps/plugin-dialog";
@@ -25,6 +25,9 @@ const TABS: { id: Tab; label: string }[] = [
   { id: "diagnostics", label: "Diagnostics" },
   { id: "report", label: "Report" },
 ];
+
+let closeGuard = false;
+let closeUnlisten: (() => void) | null = null;
 
 interface AppStatus {
   vpn_phase: string;
@@ -75,15 +78,17 @@ export default function App() {
     sid: null,
     version: null,
   });
-  const closingRef = useRef(false);
 
   useEffect(() => {
     const appWindow = getCurrentWindow();
-    let unlisten: (() => void) | undefined;
+    if (closeUnlisten) {
+      closeUnlisten();
+      closeUnlisten = null;
+    }
 
     appWindow
       .onCloseRequested(async (event) => {
-        if (closingRef.current) {
+        if (closeGuard) {
           return;
         }
         event.preventDefault();
@@ -96,23 +101,24 @@ export default function App() {
         if (!shouldQuit) {
           return;
         }
-        closingRef.current = true;
-        if (unlisten) {
-          unlisten();
-          unlisten = undefined;
+        closeGuard = true;
+        if (closeUnlisten) {
+          closeUnlisten();
+          closeUnlisten = null;
         }
         await invoke("quit_app").catch(async () => {
           await appWindow.close().catch(() => {});
         });
       })
       .then((fn) => {
-        unlisten = fn;
+        closeUnlisten = fn;
       })
       .catch(() => {});
 
     return () => {
-      if (unlisten) {
-        unlisten();
+      if (closeUnlisten) {
+        closeUnlisten();
+        closeUnlisten = null;
       }
     };
   }, []);
