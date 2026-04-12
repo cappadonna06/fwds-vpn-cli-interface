@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { confirm } from "@tauri-apps/plugin-dialog";
 import SessionTab from "./components/tabs/SessionTab";
 import CommandsTab from "./components/tabs/CommandsTab";
 import WizardTab from "./components/tabs/WizardTab";
@@ -24,6 +25,9 @@ const TABS: { id: Tab; label: string }[] = [
   { id: "diagnostics", label: "Diagnostics" },
   { id: "report", label: "Report" },
 ];
+
+let closeGuard = false;
+let closeUnlisten: (() => void) | null = null;
 
 interface AppStatus {
   vpn_phase: string;
@@ -77,20 +81,44 @@ export default function App() {
 
   useEffect(() => {
     const appWindow = getCurrentWindow();
-    let unlisten: (() => void) | undefined;
+    if (closeUnlisten) {
+      closeUnlisten();
+      closeUnlisten = null;
+    }
 
     appWindow
-      .onCloseRequested(async () => {
-        await invoke("stop_log_watcher").catch(() => {});
+      .onCloseRequested(async (event) => {
+        if (closeGuard) {
+          return;
+        }
+        event.preventDefault();
+        const shouldQuit = await confirm("Quit application?", {
+          title: "FWDS Controller Console",
+          kind: "warning",
+          okLabel: "Quit",
+          cancelLabel: "Cancel",
+        });
+        if (!shouldQuit) {
+          return;
+        }
+        closeGuard = true;
+        if (closeUnlisten) {
+          closeUnlisten();
+          closeUnlisten = null;
+        }
+        await invoke("quit_app").catch(async () => {
+          await appWindow.close().catch(() => {});
+        });
       })
       .then((fn) => {
-        unlisten = fn;
+        closeUnlisten = fn;
       })
       .catch(() => {});
 
     return () => {
-      if (unlisten) {
-        unlisten();
+      if (closeUnlisten) {
+        closeUnlisten();
+        closeUnlisten = null;
       }
     };
   }, []);

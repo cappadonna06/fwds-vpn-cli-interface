@@ -48,6 +48,7 @@ export interface SessionReport {
   networkNotes: Record<string, string>;
   /** User-edited overrides for network status rows — suppresses auto-population for edited fields. */
   networkOverrides: Record<string, NetworkOverride>;
+  pressureOverrides: Record<string, NetworkOverride>;
   recommendedActions: ReportRecommendedAction[];
   notes: string;
   outcome: Outcome;
@@ -64,6 +65,7 @@ export const emptyReport = (): SessionReport => ({
   pressureRows: [],
   networkNotes: { Ethernet: "", "Wi-Fi": "", Cellular: "", Satellite: "" },
   networkOverrides: {},
+  pressureOverrides: {},
   recommendedActions: [],
   notes: "",
   outcome: "complete",

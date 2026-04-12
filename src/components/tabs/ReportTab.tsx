@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo, useDeferredValue } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
   SessionReport,
@@ -159,9 +159,9 @@ function slackToHtml(text: string): string {
 
 // ── Quick-select action templates ─────────────────────────────────────────────
 
-const QUICK_ACTIONS = (version: string) => [
+const QUICK_ACTIONS = (version: string, zoneCount?: number | null) => [
   { label: "Upgraded firmware", text: `Upgraded firmware to ${version || "(x.x)"}` },
-  { label: "Configured zones",  text: "Configured system (x) zones" },
+  { label: "Configured zones",  text: `System configured: ${zoneCount ?? "(x)"} zones` },
   { label: "Set primary network", text: "Set primary network to (x)" },
   { label: "Configured network",  text: "Configured (x) network" },
 ];
@@ -233,16 +233,100 @@ function NetworkNoteInput({ value, onChange }: { value: string; onChange: (v: st
   );
 }
 
+function ActionTextInput({ value, onCommit, placeholder }: { value: string; onCommit: (v: string) => void; placeholder: string }) {
+  const [local, setLocal] = useState(value);
+  const focused = useRef(false);
+  useEffect(() => { if (!focused.current) setLocal(value); }, [value]);
+  return (
+    <input
+      className="report-action-input"
+      type="text"
+      value={local}
+      placeholder={placeholder}
+      onChange={e => setLocal(e.target.value)}
+      onFocus={() => { focused.current = true; }}
+      onBlur={() => { focused.current = false; onCommit(local); }}
+    />
+  );
+}
+
+function NotesInput({ value, onCommit }: { value: string; onCommit: (v: string) => void }) {
+  const [local, setLocal] = useState(value);
+  const focused = useRef(false);
+  useEffect(() => { if (!focused.current) setLocal(value); }, [value]);
+  return (
+    <textarea
+      className="report-notes"
+      rows={3}
+      placeholder="Add session notes, observations, or context…"
+      value={local}
+      onChange={e => setLocal(e.target.value)}
+      onFocus={() => { focused.current = true; }}
+      onBlur={() => { focused.current = false; onCommit(local); }}
+    />
+  );
+}
+
+const STATUS_OPTIONS: Array<{ value: NetworkStatusRow["status"]; label: string }> = [
+  { value: "green", label: "Green" },
+  { value: "orange", label: "Amber" },
+  { value: "red", label: "Red" },
+  { value: "unknown", label: "Gray" },
+];
+
+function StatusPicker({
+  value,
+  onChange,
+}: {
+  value: NetworkStatusRow["status"];
+  onChange: (next: NetworkStatusRow["status"]) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="report-status-picker">
+      <button
+        className={`report-status-dot report-status-dot-${value} report-status-dot-btn`}
+        title="Choose status color"
+        onClick={() => setOpen((v) => !v)}
+      />
+      {open && (
+        <div className="report-status-menu">
+          {STATUS_OPTIONS.map((opt) => (
+            <button
+              key={opt.value}
+              className="report-status-menu-item"
+              title={opt.label}
+              aria-label={opt.label}
+              onClick={() => {
+                onChange(opt.value);
+                setOpen(false);
+              }}
+            >
+              <span className={`report-status-dot report-status-dot-${opt.value}`} />
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── ReportTab ─────────────────────────────────────────────────────────────────
 
 export default function ReportTab() {
   const [report, setReport] = useState<SessionReport>(emptyReport());
+  const [diagSnapshot, setDiagSnapshot] = useState<any>(null);
   const [copiedSlack, setCopiedSlack] = useState(false);
   const [copiedJira, setCopiedJira] = useState(false);
+  const lastEditAtRef = useRef(0);
+  const previewReport = useDeferredValue(report);
   const reportRef = useRef(report);
   reportRef.current = report;
 
   async function fetchAndUpdate() {
+    if (Date.now() - lastEditAtRef.current < 1200) {
+      return;
+    }
     try {
       const [diagState, appState] = await Promise.all([
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -256,6 +340,7 @@ export default function ReportTab() {
       const pressureRows = generatePressureRows(diagState);
       const recommendedActions = generateRecommendedActions(diagState);
 
+      setDiagSnapshot(diagState);
       setReport(prev => {
         // Merge actions: for auto-generated ones match by stable key so dismissal persists.
         const mergedActions = [
@@ -291,6 +376,16 @@ export default function ReportTab() {
           };
         });
 
+        const mergedPressureRows = pressureRows.map(row => {
+          const ov = prev.pressureOverrides[row.label];
+          if (!ov) return row;
+          return {
+            ...row,
+            ...(ov.status !== undefined ? { status: ov.status } : {}),
+            ...(ov.summary !== undefined ? { summary: ov.summary } : {}),
+          };
+        });
+
         return {
           ...prev,
           sid: diagState.system?.sid ?? appState.controller_ip ?? "",
@@ -300,7 +395,7 @@ export default function ReportTab() {
           generated: true,
           actions: mergedActions,
           networkRows: mergedNetworkRows,
-          pressureRows,
+          pressureRows: mergedPressureRows,
           // networkNotes, networkOverrides, notes, outcome preserved from prev via spread
           recommendedActions: mergedRecs,
         };
@@ -318,6 +413,7 @@ export default function ReportTab() {
   }, []);
 
   function addAction() {
+    lastEditAtRef.current = Date.now();
     setReport(r => ({
       ...r,
       actions: [...r.actions, { id: Date.now().toString(), text: "", dismissed: false }],
@@ -325,6 +421,7 @@ export default function ReportTab() {
   }
 
   function addRec() {
+    lastEditAtRef.current = Date.now();
     setReport(r => ({
       ...r,
       recommendedActions: [...r.recommendedActions, {
@@ -340,6 +437,7 @@ export default function ReportTab() {
   }
 
   function dismissAction(id: string) {
+    lastEditAtRef.current = Date.now();
     setReport(r => ({
       ...r,
       actions: r.actions.map(a => a.id === id ? { ...a, dismissed: true } : a),
@@ -347,6 +445,7 @@ export default function ReportTab() {
   }
 
   function dismissRec(id: string) {
+    lastEditAtRef.current = Date.now();
     setReport(r => ({
       ...r,
       recommendedActions: r.recommendedActions.map(a => a.id === id ? { ...a, dismissed: true } : a),
@@ -354,6 +453,7 @@ export default function ReportTab() {
   }
 
   function updateActionText(id: string, text: string) {
+    lastEditAtRef.current = Date.now();
     setReport(r => ({
       ...r,
       actions: r.actions.map(a => a.id === id ? { ...a, text } : a),
@@ -361,16 +461,15 @@ export default function ReportTab() {
   }
 
   function updateRec(id: string, patch: Partial<ReportRecommendedAction>) {
+    lastEditAtRef.current = Date.now();
     setReport(r => ({
       ...r,
       recommendedActions: r.recommendedActions.map(a => a.id === id ? { ...a, ...patch } : a),
     }));
   }
 
-  const STATUS_CYCLE: NetworkStatusRow["status"][] = ["unknown", "green", "orange", "red"];
-
-  function cycleNetworkStatus(iface: string, current: NetworkStatusRow["status"]) {
-    const next = STATUS_CYCLE[(STATUS_CYCLE.indexOf(current) + 1) % STATUS_CYCLE.length];
+  function setNetworkStatus(iface: string, next: NetworkStatusRow["status"]) {
+    lastEditAtRef.current = Date.now();
     setReport(r => ({
       ...r,
       networkOverrides: { ...r.networkOverrides, [iface]: { ...r.networkOverrides[iface], status: next } },
@@ -378,6 +477,7 @@ export default function ReportTab() {
   }
 
   function overrideNetworkSummary(iface: string, summary: string) {
+    lastEditAtRef.current = Date.now();
     setReport(r => ({
       ...r,
       networkOverrides: { ...r.networkOverrides, [iface]: { ...r.networkOverrides[iface], summary } },
@@ -385,6 +485,7 @@ export default function ReportTab() {
   }
 
   function applyNetworkPreset(iface: string, preset: IfacePreset) {
+    lastEditAtRef.current = Date.now();
     setReport(r => {
       let recs = r.recommendedActions;
       if (preset.recommendedAction) {
@@ -411,12 +512,43 @@ export default function ReportTab() {
   }
 
   function clearNetworkOverride(iface: string) {
+    lastEditAtRef.current = Date.now();
     setReport(r => {
       // eslint-disable-next-line @typescript-eslint/no-unused-vars
       const { [iface]: _removed, ...rest } = r.networkOverrides;
       return { ...r, networkOverrides: rest };
     });
   }
+
+  function setPressureStatus(label: string, next: NetworkStatusRow["status"]) {
+    lastEditAtRef.current = Date.now();
+    setReport(r => ({
+      ...r,
+      pressureOverrides: { ...r.pressureOverrides, [label]: { ...r.pressureOverrides[label], status: next } },
+    }));
+  }
+
+  function overridePressureSummary(label: string, summary: string) {
+    lastEditAtRef.current = Date.now();
+    setReport(r => ({
+      ...r,
+      pressureOverrides: { ...r.pressureOverrides, [label]: { ...r.pressureOverrides[label], summary } },
+    }));
+  }
+
+  function clearPressureOverride(label: string) {
+    lastEditAtRef.current = Date.now();
+    setReport(r => {
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      const { [label]: _removed, ...rest } = r.pressureOverrides;
+      return { ...r, pressureOverrides: rest };
+    });
+  }
+
+  const quickActions = useMemo(
+    () => QUICK_ACTIONS(report.version, diagSnapshot?.system?.zone_count),
+    [report.version, diagSnapshot?.system?.zone_count]
+  );
 
   return (
     <div className="report-page">
@@ -457,18 +589,16 @@ export default function ReportTab() {
               {report.actions.map(action => !action.dismissed && (
                 <div key={action.id} className="report-action-row">
                   <span className="report-action-bullet">•</span>
-                  <input
-                    className="report-action-input"
-                    type="text"
+                  <ActionTextInput
                     value={action.text}
                     placeholder="Describe action…"
-                    onChange={e => updateActionText(action.id, e.target.value)}
+                    onCommit={(v) => updateActionText(action.id, v)}
                   />
                   <button className="report-dismiss-btn" onClick={() => dismissAction(action.id)}>✕</button>
                 </div>
               ))}
               <div className="report-quick-actions">
-                {QUICK_ACTIONS(report.version).map(qa => (
+                {quickActions.map(qa => (
                   <button
                     key={qa.label}
                     className="report-quick-action-pill"
@@ -496,10 +626,9 @@ export default function ReportTab() {
                     className={`report-network-block report-network-block-${row.status}`}
                   >
                     <div className="report-network-row">
-                      <button
-                        className={`report-status-dot report-status-dot-${row.status} report-status-dot-btn`}
-                        title="Click to change status"
-                        onClick={() => cycleNetworkStatus(row.interface, row.status)}
+                      <StatusPicker
+                        value={row.status}
+                        onChange={(next) => setNetworkStatus(row.interface, next)}
                       />
                       <span className="report-network-iface">
                         {IFACE_ICON[row.interface]} {row.interface}
@@ -533,7 +662,10 @@ export default function ReportTab() {
                     )}
                     <NetworkNoteInput
                       value={report.networkNotes[row.interface] ?? ""}
-                      onChange={v => setReport(r => ({ ...r, networkNotes: { ...r.networkNotes, [row.interface]: v } }))}
+                      onChange={v => {
+                        lastEditAtRef.current = Date.now();
+                        setReport(r => ({ ...r, networkNotes: { ...r.networkNotes, [row.interface]: v } }));
+                      }}
                     />
                   </div>
                 );
@@ -547,9 +679,24 @@ export default function ReportTab() {
               {report.pressureRows.map(row => (
                 <div key={row.label} className={`report-network-block report-network-block-${row.status}`}>
                   <div className="report-network-row">
-                    <span className={`report-status-dot report-status-dot-${row.status}`} />
+                    <StatusPicker
+                      value={row.status}
+                      onChange={(next) => setPressureStatus(row.label, next)}
+                    />
                     <span className="report-network-iface">💧 {row.label}</span>
-                    <span className="report-network-summary">{row.summary}</span>
+                    <NetworkSummaryInput
+                      value={row.summary}
+                      onChange={v => overridePressureSummary(row.label, v)}
+                    />
+                    {!!report.pressureOverrides[row.label] && (
+                      <button
+                        className="report-network-reset"
+                        title="Reset to auto-populated"
+                        onClick={() => clearPressureOverride(row.label)}
+                      >
+                        ↺
+                      </button>
+                    )}
                   </div>
                 </div>
               ))}
@@ -601,13 +748,7 @@ export default function ReportTab() {
               <div className="report-section-header">
                 <span className="report-section-label">📝 NOTES</span>
               </div>
-              <textarea
-                className="report-notes"
-                rows={3}
-                placeholder="Add session notes, observations, or context…"
-                value={report.notes}
-                onChange={e => setReport(r => ({ ...r, notes: e.target.value }))}
-              />
+              <NotesInput value={report.notes} onCommit={(v) => setReport(r => ({ ...r, notes: v }))} />
             </div>
 
             {/* OUTCOME */}
@@ -637,7 +778,7 @@ export default function ReportTab() {
             <div className="report-preview-label">
               <span>📨</span> Slack Preview
             </div>
-            <SlackPreview report={report} />
+            <SlackPreview report={previewReport} />
           </div>
 
         </div>
