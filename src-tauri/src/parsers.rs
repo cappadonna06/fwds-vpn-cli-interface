@@ -547,9 +547,14 @@ fn find_latest_body_contains_any<'a>(
 }
 
 fn parse_sid_from_prompt(log: &str) -> Option<String> {
+    // Strip ANSI escape codes first. Many controller SSH prompts emit color codes
+    // between the closing bracket and the '#' (e.g. `[24250062]\x1b[0m#`), which
+    // would break a simple `\[digits\]#` regex on the raw log.
+    let ansi_re = Regex::new(r"\x1B\[[0-?]*[ -/]*[@-~]").ok()?;
+    let clean = ansi_re.replace_all(log, "");
     let sid_re = Regex::new(r"\[(\d{6,10})\]#").ok()?;
     sid_re
-        .captures_iter(log)
+        .captures_iter(clean.as_ref())
         .filter_map(|caps| caps.get(1).map(|m| m.as_str().to_string()))
         .last()
 }
@@ -744,7 +749,10 @@ fn split_blocks(log: &str) -> Vec<CommandBlock> {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_pressure_from_text, parse_cellular, parse_log_into_state, split_blocks};
+    use super::{
+        build_pressure_from_text, parse_cellular, parse_log_into_state, parse_sid_from_prompt,
+        sanitize_version, split_blocks,
+    };
     use crate::{DiagStatus, DiagnosticState, SystemDiagnostic};
 
     #[test]
@@ -1563,6 +1571,54 @@ Done: Failure: -65553: Network technology is not enabled
             eth.check_result,
             "Failure: -65553: Network technology is not enabled"
         );
+    }
+
+    #[test]
+    fn parse_sid_from_prompt_handles_ansi_codes() {
+        // Controller SSH prompts often emit ANSI color codes between ']' and '#'.
+        // Without stripping them the regex would fail to find the SID.
+        let log = "2026-04-12T10:00:00-0600 \x1b[01;32m[24250062]\x1b[0m\x1b[01;32m#\x1b[0m \n";
+        let sid = parse_sid_from_prompt(log);
+        assert_eq!(sid.as_deref(), Some("24250062"));
+    }
+
+    #[test]
+    fn parse_sid_from_prompt_plain_prompt() {
+        let log = "2026-04-12T10:00:00-0600 [24250062]# \n";
+        let sid = parse_sid_from_prompt(log);
+        assert_eq!(sid.as_deref(), Some("24250062"));
+    }
+
+    #[test]
+    fn parse_sid_from_prompt_returns_last_when_multiple_prompts() {
+        // Log file grows — many prompt lines appear; we want the last SID seen.
+        let log = "2026-04-01T10:18:37-0600 [22611067]# sid\n22611067\n\
+                   2026-04-01T10:18:43-0600 [22611067]# \n";
+        let sid = parse_sid_from_prompt(log);
+        assert_eq!(sid.as_deref(), Some("22611067"));
+    }
+
+    #[test]
+    fn sanitize_version_exact_match() {
+        assert_eq!(sanitize_version("r3.3.1").as_deref(), Some("r3.3.1"));
+        assert_eq!(sanitize_version("r3.3.1-r3").as_deref(), Some("r3.3.1-r3"));
+        assert_eq!(sanitize_version("r3.3").as_deref(), Some("r3.3"));
+    }
+
+    #[test]
+    fn sanitize_version_embedded_in_banner_line() {
+        // "version" command on some controllers outputs the full banner instead of just
+        // the version string. Embedded extraction should still find the version token.
+        let line = "FWDS controller r3.3.1-r3 (build date Sun Feb  2 21:05:07 UTC 2025)";
+        assert_eq!(sanitize_version(line).as_deref(), Some("r3.3.1-r3"));
+    }
+
+    #[test]
+    fn sanitize_version_rejects_non_version_lines() {
+        assert!(sanitize_version("24250062").is_none());
+        assert!(sanitize_version("Testing Wi-Fi...").is_none());
+        assert!(sanitize_version("Done: Success").is_none());
+        assert!(sanitize_version("").is_none());
     }
 }
 
@@ -3455,11 +3511,21 @@ fn sanitize_sid(input: &str) -> Option<String> {
 fn sanitize_version(input: &str) -> Option<String> {
     let clean = input.trim();
     let re = Regex::new(r"^r\d+\.\d+(?:\.\d+)?(?:[-+][A-Za-z0-9._-]+)?$").ok()?;
+    // Exact match: the entire (trimmed) input is a version string.
     if re.is_match(clean) {
-        Some(clean.to_string())
-    } else {
-        None
+        return Some(clean.to_string());
     }
+    // Embedded match: find a version token within a longer line such as
+    // "FWDS controller r3.3.1-r3 (build date Sun Feb 2 21:05:07 UTC 2025)".
+    // Split on whitespace and check each word after stripping trailing punctuation.
+    clean.split_whitespace().find_map(|word| {
+        let w = word.trim_end_matches(|c: char| matches!(c, '(' | ')' | ',' | '.'));
+        if re.is_match(w) {
+            Some(w.to_string())
+        } else {
+            None
+        }
+    })
 }
 
 fn parse_strength_line(line: Option<String>) -> (u8, String) {
