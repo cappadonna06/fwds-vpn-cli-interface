@@ -1080,7 +1080,7 @@ function DiagCard({
     : null;
 
   return (
-    <article className={`diag-card diag-card-${health} ${expanded ? "diag-card-open" : "diag-card-collapsed"} ${compact ? "diag-card-compact" : ""} ${emphasizeSecondaryLine ? "diag-card-equal-lines" : ""}`}>
+    <article className={`diag-card diag-card-${updating ? "neutral" : health} ${expanded ? "diag-card-open" : "diag-card-collapsed"} ${compact ? "diag-card-compact" : ""} ${emphasizeSecondaryLine ? "diag-card-equal-lines" : ""}`}>
       <div className="diag-card-head">
         <div className="diag-card-title-wrap">
           <span className="diag-card-icon" aria-hidden>{icon}</span>
@@ -1091,7 +1091,7 @@ function DiagCard({
         </div>
         <div className="diag-card-head-right">
           <span className="diag-status-label">
-            <span className={`diag-status-dot diag-status-${health}`} />
+            <span className={`diag-status-dot diag-status-${updating ? "neutral" : health}`} />
             <span>{updating ? "Updating…" : statusLabel}</span>
           </span>
           {onClear && (
@@ -1330,6 +1330,7 @@ export default function DiagnosticsTab() {
           (Object.keys(nextCards) as InterfaceKey[]).forEach((iface) => {
             const hold = cardHoldsRef.current[iface];
             if (hold && hold.expiresAt > nowMs) return;
+            if (state.interface_runs?.[iface]?.in_progress === true) return;
             (next as any)[iface] = (state as any)?.[iface] ?? null;
           });
           next.interface_runs = state.interface_runs ?? {};
