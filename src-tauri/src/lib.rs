@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::Duration;
-use tauri::State;
+use tauri::{Emitter, Manager, State};
 
 mod parsers;
 
@@ -72,6 +72,7 @@ struct AppState {
     watcher_pause_offset: Arc<Mutex<u64>>,
     diagnostic_store: Arc<Mutex<DiagnosticStore>>,
     current_controller_key: Arc<Mutex<Option<String>>>,
+    app_handle: Arc<Mutex<Option<tauri::AppHandle>>>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Default)]
@@ -1412,6 +1413,7 @@ fn start_log_watcher_internal(state: &AppState, start_from_end: bool) -> Result<
     let key_arc = state.current_controller_key.clone();
     let watcher_paused = state.watcher_paused.clone();
     let watcher_pause_offset = state.watcher_pause_offset.clone();
+    let app_handle_arc = state.app_handle.clone();
 
     if let Ok(mut key) = state.current_controller_key.lock() {
         *key = Some(controller_key.clone());
@@ -1466,6 +1468,7 @@ fn start_log_watcher_internal(state: &AppState, start_from_end: bool) -> Result<
             file.seek(SeekFrom::Start(0))
         };
 
+        let mut prev_sid: Option<String> = None;
         let mut buffer = String::new();
         loop {
             if kill_flag.load(Ordering::Relaxed) {
@@ -1497,6 +1500,17 @@ fn start_log_watcher_internal(state: &AppState, start_from_end: bool) -> Result<
                         diag.last_updated =
                             Some(chrono::Local::now().format("%H:%M:%S").to_string());
                         diag.session_has_data = has_any_diag_data(&diag);
+
+                        // Notify frontend immediately when SID first appears in the log.
+                        let current_sid = diag.system.as_ref().and_then(|s| s.sid.clone());
+                        if prev_sid.is_none() && current_sid.is_some() {
+                            if let Ok(h) = app_handle_arc.lock() {
+                                if let Some(handle) = h.as_ref() {
+                                    let _ = handle.emit("controller-sid-detected", current_sid.clone());
+                                }
+                            }
+                        }
+                        prev_sid = current_sid;
 
                         let mut migrated_from: Option<String> = None;
                         if let Some(sid) = diag
@@ -2415,6 +2429,7 @@ pub fn run() {
             watcher_pause_offset: Arc::new(Mutex::new(0)),
             diagnostic_store: Arc::new(Mutex::new(load_diagnostic_store())),
             current_controller_key: Arc::new(Mutex::new(None)),
+            app_handle: Arc::new(Mutex::new(None)),
         })
         .invoke_handler(tauri::generate_handler![
             select_vpn_folder,
@@ -2443,7 +2458,13 @@ pub fn run() {
             stop_log_watcher,
             quit_app,
         ])
-        .setup(|_app| Ok(()))
+        .setup(|app| {
+            let state: tauri::State<AppState> = app.state();
+            if let Ok(mut h) = state.app_handle.lock() {
+                *h = Some(app.handle().clone());
+            }
+            Ok(())
+        })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

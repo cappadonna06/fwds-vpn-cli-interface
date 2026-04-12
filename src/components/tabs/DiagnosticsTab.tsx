@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { DIAGNOSTIC_BLOCKS, DiagnosticBlock } from "../../types/commands";
 import { sendCommandText } from "../../lib/commandActions";
 
@@ -1508,7 +1509,24 @@ export default function DiagnosticsTab() {
       }
     }, 2000);
 
-    return () => clearInterval(id);
+    const unlistenSid = listen("controller-sid-detected", async () => {
+      try {
+        const state = await invoke<DiagnosticState>("get_diagnostic_state");
+        setRawDiag(state);
+        setDisplayDiag((prev) => {
+          const next = { ...(prev ?? state) };
+          next.system = state.system ?? null;
+          next.interface_runs = state.interface_runs ?? {};
+          next.session_has_data = state.session_has_data;
+          return next;
+        });
+      } catch { /* best effort */ }
+    });
+
+    return () => {
+      clearInterval(id);
+      unlistenSid.then((fn) => fn());
+    };
   }, []);
 
   const showNoSessionBanner = useMemo(() => !displayDiag?.session_has_data, [displayDiag]);

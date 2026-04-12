@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { copyCommandText, sendCommandText } from "../../lib/commandActions";
 
 const COMMAND_PAYLOAD = "cat /var/etc/fwds/station_info\ncat /var/etc/fwds/system_info";
@@ -80,9 +81,11 @@ export default function SystemConfigurationTab() {
 
     refresh();
     const id = setInterval(refresh, 2000);
+    const unlistenSid = listen("controller-sid-detected", () => { refresh(); });
     return () => {
       alive = false;
       clearInterval(id);
+      unlistenSid.then((fn) => fn());
     };
   }, []);
 

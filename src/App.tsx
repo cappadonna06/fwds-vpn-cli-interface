@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { confirm } from "@tauri-apps/plugin-dialog";
 import SessionTab from "./components/tabs/SessionTab";
@@ -143,7 +144,11 @@ export default function App() {
     }
     fetchStatus();
     const id = setInterval(fetchStatus, 2000);
-    return () => clearInterval(id);
+    const unlistenSid = listen("controller-sid-detected", () => { fetchStatus(); });
+    return () => {
+      clearInterval(id);
+      unlistenSid.then((fn) => fn());
+    };
   }, []);
 
   const showVpn = appStatus.vpn_phase !== "disconnected";
