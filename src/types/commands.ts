@@ -1255,12 +1255,12 @@ echo "===== SIM PICKER END ====="
 )`,
   },
   {
-    id: "pressure",
-    label: "Pressure",
+    id: "pressure-mp3",
+    label: "Pressure (MP3 / CDS)",
     icon: "💧",
-    description: "Pressure diagnostics — snapshot and live readings for source, supply, and distribution sensors.",
+    description: "Pressure diagnostics for MP3 and CDS systems — source and distribution sensors (P1 supply not wired on these platforms).",
     affected_interfaces: ["pressure", "system"],
-    when_to_run: "When validating hydraulic pressure sensor behavior or troubleshooting readings.",
+    when_to_run: "When validating hydraulic pressure sensor behavior on MP3 or CDS controllers.",
     light_command_ids: ["pressure-monitor"],
     heavy_command_ids: ["date", "version", "sid", "pressure-monitor"],
     heavy_script: `(
@@ -1272,14 +1272,40 @@ sid
 echo ""
 echo "===== PRESSURE SNAPSHOT ====="
 pressure-monitor -v --hhc=mp3 --pressure-sensor=source -u us
-pressure-monitor -v --hhc=mp3 --pressure-sensor=supply -u us
 pressure-monitor -v --hhc=mp3 --pressure-sensor=distribution -u us
 
 echo ""
 echo "===== PRESSURE LIVE ====="
 pressure-monitor -v --hhc=mp3 --pressure-sensor=source -u us --period=500 --wait=10
-pressure-monitor -v --hhc=mp3 --pressure-sensor=supply -u us --period=500 --wait=10
 pressure-monitor -v --hhc=mp3 --pressure-sensor=distribution -u us --period=500 --wait=10
+)`,
+  },
+  {
+    id: "pressure-hp6",
+    label: "Pressure (HP6)",
+    icon: "💧",
+    description: "Pressure diagnostics for HP6 systems — source, supply, and distribution sensors (all three required).",
+    affected_interfaces: ["pressure", "system"],
+    when_to_run: "When validating hydraulic pressure sensor behavior on HP6 controllers.",
+    light_command_ids: ["pressure-monitor"],
+    heavy_command_ids: ["date", "version", "sid", "pressure-monitor"],
+    heavy_script: `(
+echo "===== CONTROLLER INFO ====="
+date
+version
+sid
+
+echo ""
+echo "===== PRESSURE SNAPSHOT ====="
+pressure-monitor -v --hhc=hp6 --pressure-sensor=source -u us
+pressure-monitor -v --hhc=hp6 --pressure-sensor=supply -u us
+pressure-monitor -v --hhc=hp6 --pressure-sensor=distribution -u us
+
+echo ""
+echo "===== PRESSURE LIVE ====="
+pressure-monitor -v --hhc=hp6 --pressure-sensor=source -u us --period=500 --wait=10
+pressure-monitor -v --hhc=hp6 --pressure-sensor=supply -u us --period=500 --wait=10
+pressure-monitor -v --hhc=hp6 --pressure-sensor=distribution -u us --period=500 --wait=10
 )`,
   },
   {

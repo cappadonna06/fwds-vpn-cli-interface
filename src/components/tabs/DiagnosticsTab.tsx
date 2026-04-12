@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { DIAGNOSTIC_BLOCKS, DiagnosticBlock } from "../../types/commands";
 import { sendCommandText } from "../../lib/commandActions";
@@ -304,6 +304,7 @@ interface DiagCardProps {
   updating?: boolean;
   onForceRelease?: () => void;
   collapsedMetricCards?: Array<{ label: string; value: string; tone: HealthTone }>;
+  inlineControls?: ReactNode;
 }
 
 type InterfaceKey = "wifi" | "cellular" | "satellite" | "ethernet" | "pressure" | "sim_picker";
@@ -1054,6 +1055,7 @@ function DiagCard({
   updating,
   onForceRelease,
   collapsedMetricCards,
+  inlineControls,
 }: DiagCardProps) {
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement | null>(null);
@@ -1088,6 +1090,7 @@ function DiagCard({
             {title}
           </span>
           {role ? <span className="diag-role-pill-inline">{role}</span> : null}
+          {inlineControls}
         </div>
         <div className="diag-card-head-right">
           <span className="diag-status-label">
@@ -1283,12 +1286,19 @@ export default function DiagnosticsTab() {
   const [sentCommandId, setSentCommandId] = useState<string | null>(null);
   const [sendError, setSendError] = useState<string | null>(null);
   const [globalDiagTier, setGlobalDiagTier] = useState<"quick" | "full" | "no-satellite">("quick");
+  const [pressureHhc, setPressureHhc] = useState<"mp3" | "hp6">("mp3");
   const [cardHolds, setCardHolds] = useState<Partial<Record<InterfaceKey, HoldState>>>({});
   const cardHoldsRef = useRef<Partial<Record<InterfaceKey, HoldState>>>({});
 
   useEffect(() => {
     cardHoldsRef.current = cardHolds;
   }, [cardHolds]);
+
+  useEffect(() => {
+    const st = displayDiag?.system?.system_type;
+    if (!st) return;
+    setPressureHhc(st.toLowerCase() === "hp6" ? "hp6" : "mp3");
+  }, [displayDiag?.system?.system_type]);
 
   useEffect(() => {
     invoke("start_log_watcher").catch(() => {});
@@ -1456,7 +1466,9 @@ export default function DiagnosticsTab() {
     safeSid ? `SID ${safeSid}` : null,
     safeVersion ? `v${safeVersion}` : null,
     system?.release_date ? system.release_date : null,
+    system?.system_type ? system.system_type : null,
   ].filter(Boolean).join(" · ");
+  const pressureDiagBlockId = pressureHhc === "hp6" ? "pressure-hp6" : "pressure-mp3";
   const globalDiagBlockId = globalDiagTier === "full"
     ? "full-diags"
     : globalDiagTier === "no-satellite"
@@ -1634,13 +1646,27 @@ export default function DiagnosticsTab() {
           expanded={expanded.pressure}
           onToggle={() => setExpanded((p) => ({ ...p, pressure: !p.pressure }))}
           updatedAt={cardUpdatedAt.pressure}
-          onCopyCommand={() => copyDiagnosticBlock("pressure")}
-          copied={copiedCommandId === "pressure"}
-          onSendCommand={() => sendDiagnosticBlock("pressure")}
-          sent={sentCommandId === "pressure"}
+          onCopyCommand={() => copyDiagnosticBlock(pressureDiagBlockId)}
+          copied={copiedCommandId === pressureDiagBlockId}
+          onSendCommand={() => sendDiagnosticBlock(pressureDiagBlockId)}
+          sent={sentCommandId === pressureDiagBlockId}
           compact={pressureSummary.health === "neutral"}
           updating={isUpdating("pressure")}
           onForceRelease={() => releaseCardHold("pressure")}
+          inlineControls={
+            <div className="pressure-hhc-pills" onClick={(e) => e.stopPropagation()}>
+              <button
+                type="button"
+                className={`pressure-hhc-pill${pressureHhc === "mp3" ? " pressure-hhc-pill-active" : ""}`}
+                onClick={() => setPressureHhc("mp3")}
+              >MP3</button>
+              <button
+                type="button"
+                className={`pressure-hhc-pill${pressureHhc === "hp6" ? " pressure-hhc-pill-active" : ""}`}
+                onClick={() => setPressureHhc("hp6")}
+              >HP6</button>
+            </div>
+          }
           onClear={async () => {
             await invoke("clear_diagnostic_interface", { interface: "pressure" }).catch(() => {});
             setDisplayDiag(prev => prev ? { ...prev, pressure: null } : prev);

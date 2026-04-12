@@ -2106,6 +2106,41 @@
   color: var(--text-muted);
 }
 
+.pressure-hhc-pills {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  overflow: hidden;
+  background: var(--bg-2);
+  flex-shrink: 0;
+}
+
+.pressure-hhc-pill {
+  border: none;
+  background: transparent;
+  padding: 2px 8px;
+  font-size: 11px;
+  color: var(--text-muted);
+  cursor: pointer;
+  line-height: 1.4;
+  transition: background 0.12s, color 0.12s;
+}
+
+.pressure-hhc-pill:hover:not(.pressure-hhc-pill-active) {
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  color: var(--text-primary);
+}
+
+.pressure-hhc-pill-active {
+  background: var(--accent);
+  color: #fff;
+}
+
+.pressure-hhc-pill + .pressure-hhc-pill {
+  border-left: 1px solid var(--border);
+}
+
 .diag-card-head-right {
   display: inline-flex;
   align-items: center;
