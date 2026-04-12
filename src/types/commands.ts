@@ -1388,6 +1388,16 @@ echo "===== SATELLITE DIAGNOSTICS END ====="
     heavy_command_ids: ["version", "sid", "release", "cat-station-info", "cat-system-info"],
   },
   {
+    id: "firmware",
+    label: "Firmware",
+    icon: "💾",
+    description: "Check firmware version from the controller.",
+    affected_interfaces: ["system"],
+    when_to_run: "To check current firmware version without running full system diagnostics.",
+    light_command_ids: ["version"],
+    heavy_command_ids: ["version"],
+  },
+  {
     id: "networking-all",
     label: "All Networking",
     icon: "⚡",

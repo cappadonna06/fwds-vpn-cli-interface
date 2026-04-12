@@ -1252,6 +1252,135 @@ function DiagCard({
   );
 }
 
+// ─── Firmware helpers ────────────────────────────────────────────────────────
+
+const DEFAULT_LATEST_FIRMWARE = "r3.3.1";
+
+function parseFirmwareVersion(v: string): [number, number, number] | null {
+  const m = /^r(\d+)\.(\d+)(?:\.(\d+))?/i.exec(v.trim());
+  if (!m) return null;
+  return [parseInt(m[1], 10), parseInt(m[2], 10), parseInt(m[3] ?? "0", 10)];
+}
+
+function compareFirmwareVersions(a: string, b: string): number {
+  const pa = parseFirmwareVersion(a);
+  const pb = parseFirmwareVersion(b);
+  if (!pa || !pb) return 0;
+  for (let i = 0; i < 3; i++) {
+    if (pa[i] !== pb[i]) return pa[i] - pb[i];
+  }
+  return 0;
+}
+
+function buildFirmwareSummary(currentVersion: string | null | undefined, latestVersion: string) {
+  if (!currentVersion) {
+    return {
+      health: "neutral" as HealthTone,
+      statusLabel: "Inactive",
+      primaryLine: "No firmware data",
+      secondaryLine: "Run diagnostics to populate",
+      updateAvailable: null as boolean | null,
+      notes: "—",
+      recommendedAction: "Run version command",
+    };
+  }
+  if (!parseFirmwareVersion(currentVersion)) {
+    return {
+      health: "error" as HealthTone,
+      statusLabel: "Issue",
+      primaryLine: "Firmware issue",
+      secondaryLine: "Version unreadable",
+      updateAvailable: null as boolean | null,
+      notes: "Version string could not be parsed",
+      recommendedAction: "Run version command again",
+    };
+  }
+  if (compareFirmwareVersions(currentVersion, latestVersion) < 0) {
+    return {
+      health: "warning" as HealthTone,
+      statusLabel: "Update available",
+      primaryLine: "Update available",
+      secondaryLine: currentVersion,
+      updateAvailable: true,
+      notes: "Recommended update",
+      recommendedAction: "Update firmware",
+    };
+  }
+  return {
+    health: "healthy" as HealthTone,
+    statusLabel: "Up to date",
+    primaryLine: "Up to date",
+    secondaryLine: currentVersion,
+    updateAvailable: false,
+    notes: "Current release",
+    recommendedAction: null as string | null,
+  };
+}
+
+function buildFirmwareSections(
+  summary: ReturnType<typeof buildFirmwareSummary>,
+  currentVersion: string | null | undefined,
+  latestVersion: string,
+): DiagSection[] {
+  const details: DiagRow[] = [
+    { label: "Version", value: currentVersion ?? "—" },
+    { label: "Latest", value: latestVersion },
+    {
+      label: "Update available",
+      value: summary.updateAvailable === true ? "Yes" : summary.updateAvailable === false ? "No" : "—",
+    },
+    { label: "Notes", value: summary.notes },
+  ];
+  const sections: DiagSection[] = [{ title: "Details", rows: details }];
+  if (summary.recommendedAction) {
+    sections.push({
+      title: "Recommended Actions",
+      rows: [{ label: "Recommended action", value: summary.recommendedAction }],
+    });
+  }
+  return sections;
+}
+
+function FirmwareVersionEditor({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(value);
+
+  const commit = () => {
+    const norm = draft.trim().toLowerCase();
+    if (/^r\d+\.\d+(\.\d+)?$/.test(norm)) onChange(norm);
+    setEditing(false);
+  };
+
+  if (editing) {
+    return (
+      <input
+        className="firmware-version-input"
+        value={draft}
+        size={7}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") commit();
+          if (e.key === "Escape") setEditing(false);
+        }}
+        onClick={(e) => e.stopPropagation()}
+        autoFocus
+      />
+    );
+  }
+  return (
+    <button
+      type="button"
+      className="firmware-version-pill"
+      onClick={(e) => { e.stopPropagation(); setDraft(value); setEditing(true); }}
+    >
+      latest: {value}
+    </button>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 export default function DiagnosticsTab() {
   const [rawDiag, setRawDiag] = useState<DiagnosticState | null>(null);
   const [displayDiag, setDisplayDiag] = useState<DiagnosticState | null>(null);
@@ -1263,6 +1392,7 @@ export default function DiagnosticsTab() {
     ethernet: false,
     pressure: false,
     sim_picker: false,
+    firmware: false,
   });
   const [cardUpdatedAt, setCardUpdatedAt] = useState<Record<string, string | null>>({
     wifi: null,
@@ -1271,6 +1401,9 @@ export default function DiagnosticsTab() {
     ethernet: null,
     pressure: null,
     sim_picker: null,
+  });
+  const [latestFirmwareVersion, setLatestFirmwareVersion] = useState<string>(() => {
+    try { return localStorage.getItem("fwds-latest-firmware") ?? DEFAULT_LATEST_FIRMWARE; } catch { return DEFAULT_LATEST_FIRMWARE; }
   });
   const prevCardsRef = useRef<Record<string, string>>({
     wifi: "",
@@ -1299,6 +1432,10 @@ export default function DiagnosticsTab() {
     if (!st) return;
     setPressureHhc(st.toLowerCase() === "hp6" ? "hp6" : "mp3");
   }, [displayDiag?.system?.system_type]);
+
+  useEffect(() => {
+    try { localStorage.setItem("fwds-latest-firmware", latestFirmwareVersion); } catch {}
+  }, [latestFirmwareVersion]);
 
   useEffect(() => {
     invoke("start_log_watcher").catch(() => {});
@@ -1386,6 +1523,8 @@ export default function DiagnosticsTab() {
   const satelliteSummary = summarizeSatellite(satellite);
   const ethernetSummary = summarizeEthernet(ethernet);
   const pressureSummary = summarizePressure(pressure);
+  const currentFirmware = displayDiag?.system?.version ?? null;
+  const firmwareSummary = buildFirmwareSummary(currentFirmware, latestFirmwareVersion);
   const primaryNetwork = resolvePrimaryNetwork({ wifi, cellular, satellite, ethernet, system });
   const wifiRole = resolveRole("wifi", primaryNetwork, !!(wifi?.connected || wifi?.connman_wifi_connected));
   const cellularRole = resolveRole("cellular", primaryNetwork, !!(cellular?.connman_cell_connected || cellular?.internet_reachable));
@@ -1671,6 +1810,37 @@ export default function DiagnosticsTab() {
             await invoke("clear_diagnostic_interface", { interface: "pressure" }).catch(() => {});
             setDisplayDiag(prev => prev ? { ...prev, pressure: null } : prev);
             setCardUpdatedAt(prev => ({ ...prev, pressure: null }));
+          }}
+        />
+
+        <DiagCard
+          title="Firmware"
+          icon="💾"
+          health={firmwareSummary.health}
+          statusLabel={firmwareSummary.statusLabel}
+          primaryLine={firmwareSummary.primaryLine}
+          secondaryLine={firmwareSummary.secondaryLine}
+          sections={buildFirmwareSections(firmwareSummary, currentFirmware, latestFirmwareVersion)}
+          expanded={expanded.firmware}
+          onToggle={() => setExpanded((p) => ({ ...p, firmware: !p.firmware }))}
+          updatedAt={systemUpdatedAt}
+          onCopyCommand={() => copyDiagnosticBlock("firmware")}
+          copied={copiedCommandId === "firmware"}
+          onSendCommand={() => sendDiagnosticBlock("firmware")}
+          sent={sentCommandId === "firmware"}
+          compact={firmwareSummary.health === "neutral"}
+          updating={displayDiag?.interface_runs?.system?.in_progress === true}
+          inlineControls={
+            <FirmwareVersionEditor
+              value={latestFirmwareVersion}
+              onChange={setLatestFirmwareVersion}
+            />
+          }
+          onClear={async () => {
+            await invoke("clear_diagnostic_interface", { interface: "system" }).catch(() => {});
+            setDisplayDiag(prev =>
+              prev ? { ...prev, system: prev.system ? { ...prev.system, version: null, release_date: null } : null } : prev
+            );
           }}
         />
       </div>
