@@ -34,8 +34,14 @@ interface SystemDiagnostic {
   zones?: SystemZone[] | null;
 }
 
+interface InterfaceRunState {
+  in_progress?: boolean;
+  started_at?: string | null;
+}
+
 interface DiagnosticState {
   system?: SystemDiagnostic | null;
+  interface_runs?: Record<string, InterfaceRunState> | null;
 }
 
 function titleCase(input?: string | null): string {
@@ -82,10 +88,13 @@ export default function SystemConfigurationTab() {
 
   const data = diagState?.system ?? null;
   const zones = data?.zones ?? [];
+  const systemUpdating = diagState?.interface_runs?.system?.in_progress === true;
   const hasData = Boolean(
     data &&
       (data.sid ||
         data.imei ||
+        data.version ||
+        data.release_date ||
         data.display_name ||
         data.system_name ||
         data.location ||
@@ -146,7 +155,12 @@ export default function SystemConfigurationTab() {
         {error && <div className="warning-item">⚠ {error}</div>}
       </div>
 
-      {hasPartialWarning && (
+      {systemUpdating && (
+        <div className="system-config-warning">
+          Collecting system configuration data…
+        </div>
+      )}
+      {hasPartialWarning && !systemUpdating && (
         <div className="system-config-warning">
           ⚠ Some system details are missing. Run the diagnostics block again to refresh data.
         </div>
@@ -172,12 +186,17 @@ export default function SystemConfigurationTab() {
             {data?.install_date && (
               <div className="system-config-kv"><span>Install Date</span><strong>{data.install_date}</strong></div>
             )}
+            <div className="system-config-kv"><span>Firmware Version</span><strong>{data?.version || "—"}</strong></div>
+            {data?.release_date && (
+              <div className="system-config-kv"><span>Release Date</span><strong>{data.release_date}</strong></div>
+            )}
           </div>
 
           <div className="card">
             <div className="card-title">System</div>
+            <div className="system-config-kv"><span>System Type</span><strong>{data?.system_type || "—"}</strong></div>
             <div className="system-config-kv"><span>Preferred Network</span><strong>{titleCase(data?.preferred_network_service_type || data?.preferred_network)}</strong></div>
-            <div className="system-config-kv"><span>Hydraulic Hardware</span><strong>{titleCase(data?.hydraulic_hardware_configuration) || data?.system_type || "—"}</strong></div>
+            <div className="system-config-kv"><span>Hydraulic Hardware</span><strong>{titleCase(data?.hydraulic_hardware_configuration) || "—"}</strong></div>
             <div className="system-config-kv"><span>Foam Module</span><strong>{yesNo(data?.foam_module)}</strong></div>
             <div className="system-config-kv"><span>No Foam System</span><strong>{yesNo(data?.no_foam_system)}</strong></div>
             <div className="system-config-kv"><span>Drain During Deactivation</span><strong>{yesNo(data?.drain_during_deactivation ?? data?.drain_cycle)}</strong></div>

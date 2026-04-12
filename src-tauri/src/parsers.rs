@@ -279,6 +279,15 @@ fn is_interface_complete(iface: &str, state: &DiagnosticState, lower_log: &str) 
                         .unwrap_or(false)
             })
             .unwrap_or(false),
+        "system" => state
+            .system
+            .as_ref()
+            .map(|s| {
+                s.hydraulic_hardware_configuration.is_some()
+                    || s.zone_count.is_some()
+                    || s.preferred_network.is_some()
+            })
+            .unwrap_or(false),
         _ => false,
     }
 }
@@ -286,7 +295,7 @@ fn is_interface_complete(iface: &str, state: &DiagnosticState, lower_log: &str) 
 fn update_interface_run_states(log: &str, state: &mut DiagnosticState) {
     let now = chrono::Local::now().format("%H:%M:%S").to_string();
     let lower = log.to_ascii_lowercase();
-    let interfaces: [(&str, &[&str]); 6] = [
+    let interfaces: [(&str, &[&str]); 7] = [
         ("wifi", &["===== wifi diagnostics start ====="]),
         ("ethernet", &["===== eth diagnostics start ====="]),
         (
@@ -311,6 +320,7 @@ fn update_interface_run_states(log: &str, state: &mut DiagnosticState) {
             &["===== pressure snapshot =====", "===== pressure live ====="],
         ),
         ("sim_picker", &["===== sim picker start ====="]),
+        ("system", &["===== system ====="]),
     ];
 
     for (iface, start_markers) in interfaces {
