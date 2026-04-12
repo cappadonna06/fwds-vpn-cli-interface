@@ -2926,6 +2926,44 @@
 .report-status-dot-red { background: var(--danger); }
 .report-status-dot-unknown { background: var(--text-muted); }
 
+.report-status-picker {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.report-status-menu {
+  position: absolute;
+  top: 16px;
+  left: 0;
+  z-index: 20;
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-2);
+  box-shadow: var(--shadow-sm);
+}
+
+.report-status-menu-item {
+  border: 1px solid var(--border-soft);
+  background: var(--bg-1);
+  color: var(--text-secondary);
+  border-radius: 999px;
+  padding: 2px 7px;
+  font-size: 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+}
+
+.report-status-menu-item:hover {
+  border-color: var(--accent-soft);
+  color: var(--text-primary);
+}
+
 .report-network-iface {
   font-size: 12px;
   font-weight: 600;
