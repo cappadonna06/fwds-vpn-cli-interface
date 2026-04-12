@@ -295,13 +295,14 @@ function StatusPicker({
             <button
               key={opt.value}
               className="report-status-menu-item"
+              title={opt.label}
+              aria-label={opt.label}
               onClick={() => {
                 onChange(opt.value);
                 setOpen(false);
               }}
             >
               <span className={`report-status-dot report-status-dot-${opt.value}`} />
-              {opt.label}
             </button>
           ))}
         </div>
