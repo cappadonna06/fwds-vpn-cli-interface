@@ -96,12 +96,21 @@ pub fn parse_log_into_state(log: &str, state: &mut DiagnosticState) {
         None
     };
 
+    // For compound diagnostic blocks (e.g., full diagnostics), the individual sub-commands
+    // (cat, version, release) appear inside a compound command block. find_latest() uses exact
+    // command-name matching and won't find them. We fall back to the body of the block that
+    // contains the "===== SYSTEM =====" marker, which includes all the station/system XML.
+    // Similarly, we extract the CONTROLLER INFO section to reliably find the firmware version.
+    let system_section_body = find_latest_body_contains(&blocks, &["===== system ====="]);
+    let controller_info_body = find_latest_body_contains(&blocks, &["===== controller info ====="])
+        .and_then(|b| extract_controller_info_section(b));
+
     let mut system = parse_system(
         find_latest(&blocks, &["sid"]),
-        find_latest(&blocks, &["version"]),
+        find_latest(&blocks, &["version"]).or(controller_info_body.as_deref()),
         find_latest(&blocks, &["release"]),
-        find_latest(&blocks, &["cat /var/etc/fwds/station_info"]),
-        find_latest(&blocks, &["cat /var/etc/fwds/system_info"]),
+        find_latest(&blocks, &["cat /var/etc/fwds/station_info"]).or(system_section_body),
+        find_latest(&blocks, &["cat /var/etc/fwds/system_info"]).or(system_section_body),
     );
     if system.sid.is_none() {
         system.sid = parse_sid_from_prompt(log);
@@ -187,6 +196,21 @@ fn latest_marker_index(lower_log: &str, markers: &[&str]) -> Option<usize> {
         .iter()
         .filter_map(|marker| lower_log.rfind(&marker.to_ascii_lowercase()))
         .max()
+}
+
+/// Strip bash continuation-prompt echo lines (`> command`) from the raw log so that
+/// marker detection operates only on real command *output*, not input echo.
+/// Lines that begin with `> ` (after leading whitespace) are the shell's PS2 prompt
+/// and contain the command text as typed, not the actual output.
+fn output_only_lower(log: &str) -> String {
+    log.lines()
+        .filter(|line| {
+            let t = line.trim_start();
+            !t.starts_with("> ")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        .to_ascii_lowercase()
 }
 
 fn is_interface_complete(iface: &str, state: &DiagnosticState, lower_log: &str) -> bool {
@@ -294,7 +318,10 @@ fn is_interface_complete(iface: &str, state: &DiagnosticState, lower_log: &str) 
 
 fn update_interface_run_states(log: &str, state: &mut DiagnosticState) {
     let now = chrono::Local::now().format("%H:%M:%S").to_string();
-    let lower = log.to_ascii_lowercase();
+    // Use only actual output lines (strip bash PS2 echo lines like `> echo "===== MARKER ====="`).
+    // Without this, continuation-line echoes of END markers cause false "complete" detection
+    // before any real output has arrived.
+    let lower = output_only_lower(log);
     let interfaces: [(&str, &[&str]); 7] = [
         ("wifi", &["===== wifi diagnostics start ====="]),
         ("ethernet", &["===== eth diagnostics start ====="]),
@@ -3270,6 +3297,19 @@ fn select_pressure_display(
     }
 }
 
+/// Extract the content between the CONTROLLER INFO section header and the next `=====` marker.
+/// Used to reliably find firmware version in compound diagnostic blocks where individual
+/// `version` command blocks are merged into a single compound block body.
+fn extract_controller_info_section(body: &str) -> Option<String> {
+    let lower = body.to_ascii_lowercase();
+    let header = "===== controller info =====";
+    let header_pos = lower.find(header)?;
+    let after = &body[header_pos + header.len()..];
+    let lower_after = after.to_ascii_lowercase();
+    let end = lower_after.find("=====").unwrap_or(after.len());
+    Some(after[..end].to_string())
+}
+
 fn parse_system(
     sid_block: Option<&str>,
     version_block: Option<&str>,
@@ -3292,7 +3332,11 @@ fn parse_system(
     let location = station_info_block
         .and_then(|b| extract_xml_value(b, "location"))
         .filter(|v| !v.is_empty());
-    let version = parse_single_value(version_block).and_then(|v| sanitize_version(&v));
+    // Scan lines in reverse so that the last valid version string wins.
+    // Using find_map with sanitize_version avoids returning non-version lines (e.g., a SID)
+    // that happen to be the last line of a compound block's version/controller-info section.
+    let version = version_block
+        .and_then(|b| b.lines().rev().find_map(|l| sanitize_version(l.trim())));
     let release_date = release_block.and_then(|b| capture_after(b, "Date:"));
     let system_name = display_name.clone();
     let preferred_network = station_info_block

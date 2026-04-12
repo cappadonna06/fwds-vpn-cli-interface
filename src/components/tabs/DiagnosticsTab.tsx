@@ -1491,9 +1491,11 @@ export default function DiagnosticsTab() {
           const next = { ...prev };
           (Object.keys(prev) as InterfaceKey[]).forEach((iface) => {
             const hold = prev[iface];
-            const backendInProgress = state.interface_runs?.[iface]?.in_progress === true;
             const complete = isInterfaceComplete(iface, state);
-            if (hold && (complete || !backendInProgress || hold.expiresAt <= nowMs)) {
+            // Release only when the backend signals completion or the safety timeout fires.
+            // Do NOT release on !backendInProgress — the backend may not have seen the START
+            // marker yet (first poll after Send), and that would release the hold prematurely.
+            if (hold && (complete || hold.expiresAt <= nowMs)) {
               delete next[iface];
               changed = true;
             }
