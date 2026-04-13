@@ -495,7 +495,7 @@ pub struct SystemZone {
     pub motor_driver: Option<String>,
 }
 
-#[derive(serde::Serialize, serde::Deserialize, Clone, Default)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Default, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum DiagStatus {
     #[default]
