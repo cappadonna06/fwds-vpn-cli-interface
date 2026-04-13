@@ -864,7 +864,8 @@ function buildPressureSections(pressure?: PressureDiagnostic | null): DiagSectio
   }
   for (const err of pressure.sensor_errors ?? []) {
     if (err.sensor_index === 0 && err.errno === -2 && /mp3|lv2|cds/i.test(pressure.system_type ?? "")) continue;
-    readings.push({ label: `Sensor ${err.sensor_index}`, value: `missing — ${err.message}` });
+    const sensorLabel = (["P1 Supply", "P2 Distribution", "P3 Source"] as const)[err.sensor_index] ?? `Sensor ${err.sensor_index}`;
+    readings.push({ label: `${sensorLabel} Pressure`, value: `missing — ${err.message}` });
   }
 
   const stats: DiagRow[] = [];
@@ -1368,12 +1369,12 @@ function buildFirmwareSummary(currentVersion: string | null | undefined, latestV
   if (!currentVersion) {
     return {
       health: "neutral" as HealthTone,
-      statusLabel: "Inactive",
-      primaryLine: "No firmware data",
+      statusLabel: "No data",
+      primaryLine: "No data yet",
       secondaryLine: "Run diagnostics to populate",
       updateAvailable: null as boolean | null,
       notes: "—",
-      recommendedAction: "Run version command",
+      recommendedAction: null as string | null,
     };
   }
   if (!parseFirmwareVersion(currentVersion)) {

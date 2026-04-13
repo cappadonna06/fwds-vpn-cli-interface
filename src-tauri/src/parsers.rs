@@ -282,6 +282,13 @@ fn is_interface_complete(iface: &str, state: &DiagnosticState, lower_log: &str) 
             .pressure
             .as_ref()
             .map(|p| {
+                // Require at least one actual sensor reading (count > 0).
+                // sensor_errors alone is NOT sufficient — CRITICAL:ASSERT lines from
+                // pressure-monitor produce sensor_errors immediately at startup, before
+                // the live pressure readings have been collected. Using sensor_errors as
+                // a completion signal caused the card hold to release within seconds of
+                // the diagnostic command being sent, before any real data arrived.
+                // If all sensors permanently fail, the hold will expire via expiresAt.
                 p.sensors
                     .source
                     .as_ref()
@@ -297,9 +304,6 @@ fn is_interface_complete(iface: &str, state: &DiagnosticState, lower_log: &str) 
                         .as_ref()
                         .map(|s| s.count > 0)
                         .unwrap_or(false)
-                    // Sensor errors (e.g. "could not get sensor") count as complete:
-                    // the commands ran and produced a result, just not a valid reading.
-                    || !p.sensor_errors.is_empty()
             })
             .unwrap_or(false),
         "system" => state
@@ -399,7 +403,15 @@ fn wifi_has_authoritative_check(diag: &WifiDiagnostic) -> bool {
 }
 
 fn cellular_has_authoritative_check(diag: &CellularDiagnostic) -> bool {
-    diag.check_result != "Unknown" || diag.check_error.is_some()
+    // check_result is authoritative when cellular-check ran explicitly.
+    // status != Unknown is also authoritative: determine_cellular_status set a definitive
+    // result (Green/Orange/Red via connman path 7 or any other path). Without this,
+    // a path-7 Green result (check_result = "Unknown") would be overridden by a stale
+    // prev "Failure" state via merge, causing the card to show the old recommended_action
+    // and internet_reachable = false even while displaying a Green badge.
+    diag.check_result != "Unknown"
+        || diag.check_error.is_some()
+        || diag.status != DiagStatus::Unknown
 }
 
 fn ethernet_has_authoritative_check(diag: &EthernetDiagnostic) -> bool {
@@ -2233,8 +2245,19 @@ fn parse_cellular_from_latest(blocks: &[CommandBlock]) -> Option<CellularDiagnos
             diag.controller_sid = parse_single_value(Some(text)).or(diag.controller_sid);
         }
         if let Some(text) = find_latest(blocks, &["cellular-check"]) {
-            parse_cellular_check_text(text, &mut diag);
-            has_cellular_specific = true;
+            // Skip compound block bodies. When a multi-interface subshell runs,
+            // find_latest() matches the compound block key ("( ... cellular-check ...)")
+            // via substring and returns the full body which contains WiFi/Ethernet
+            // "Done: Failure" lines *before* the cellular section arrives. Parsing that
+            // body sets check_result = "Failure" transiently, causing the amber card and
+            // the stale "Run setup-cellular to reconfigure" action on a later green result.
+            // Compound bodies are identified by "=====" section markers; standalone
+            // cellular-check output never contains those. parse_cellular_block() handles
+            // compound bodies correctly once the section marker appears.
+            if !text.contains("=====") {
+                parse_cellular_check_text(text, &mut diag);
+                has_cellular_specific = true;
+            }
         }
         let basic_cmds = [
             "cell-imei",
@@ -4687,6 +4710,14 @@ fn determine_cellular_status(diag: &mut CellularDiagnostic) {
     if diag.connman_cell_connected == Some(true)
         && (diag.full_block_run || diag.check_result != "Unknown")
     {
+        // A live connman connection implies internet is reachable. Setting this ensures
+        // the "Internet test" row in the Details section shows "Passed" and prevents
+        // merge_cellular_diag from overriding with a stale prev.internet_reachable = false.
+        diag.internet_reachable = true;
+        // Clear any stale recommended_action so it doesn't persist through merge.
+        diag.recommended_action = None;
+        diag.other_actions = vec![];
+
         let provider = diag
             .operator_name
             .as_deref()
