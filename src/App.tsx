@@ -18,13 +18,13 @@ import "./components/tabs/tabs.css";
 
 type Tab = "session" | "commands" | "wizard" | "system-configuration" | "report" | "diagnostics";
 
-const TABS: { id: Tab; label: string }[] = [
+const TABS: { id: Tab; label: string; badge?: string }[] = [
   { id: "session", label: "Connect" },
   { id: "commands", label: "Commands" },
   { id: "wizard", label: "Setup Wizard" },
   { id: "system-configuration", label: "System Configuration" },
-  { id: "diagnostics", label: "Diagnostics" },
-  { id: "report", label: "Report" },
+  { id: "diagnostics", label: "Diagnostics", badge: "Beta" },
+  { id: "report", label: "Report", badge: "Beta" },
 ];
 
 let closeGuard = false;
@@ -180,6 +180,7 @@ export default function App() {
                 <SidebarNavItem
                   key={tab.id}
                   label={tab.label}
+                  badge={tab.badge}
                   selected={activeTab === tab.id}
                   onClick={() => setActiveTab(tab.id)}
                 />

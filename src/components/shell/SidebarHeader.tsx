@@ -27,7 +27,7 @@ export default function SidebarHeader({
         <img src="/logo.png" alt="FWDS logo" className="h-10 w-auto object-contain" />
         <div className="top-header-brand-text">
           <span className="top-header-brand-title">FWDS</span>
-          <span className="top-header-brand-subtitle">Controller Console</span>
+          <span className="top-header-brand-subtitle">Controller Console <span className="header-version-pill">v1.0</span></span>
         </div>
       </div>
 

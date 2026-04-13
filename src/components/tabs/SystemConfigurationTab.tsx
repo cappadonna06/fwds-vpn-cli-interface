@@ -189,8 +189,8 @@ export default function SystemConfigurationTab() {
           <div className="card">
             <div className="card-title">Customer</div>
             <div className="system-config-kv"><span>SID</span><strong>{data?.sid || "—"}</strong></div>
-            <div className="system-config-kv"><span>Cellular IMEI</span><strong>{diagState?.cellular?.imei || data?.imei || "—"}</strong></div>
-            <div className="system-config-kv"><span>Satellite IMEI</span><strong>{diagState?.satellite?.sat_imei || "—"}</strong></div>
+            <div className="system-config-kv"><span>Cellular IMEI</span><strong>{diagState?.cellular?.imei || "—"}</strong></div>
+            <div className="system-config-kv"><span>Satellite IMEI</span><strong>{diagState?.satellite?.sat_imei || data?.imei || "—"}</strong></div>
             <div className="system-config-kv"><span>Display Name</span><strong>{data?.display_name || data?.system_name || "—"}</strong></div>
             <div className="system-config-kv"><span>Location</span><strong>{data?.location || "—"}</strong></div>
             {data?.install_date && (

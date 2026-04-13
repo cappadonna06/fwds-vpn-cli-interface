@@ -2273,8 +2273,17 @@ fn parse_cellular_from_latest(blocks: &[CommandBlock]) -> Option<CellularDiagnos
         for cmd in basic_cmds {
             if let Some(text) = find_latest(blocks, &[cmd]) {
                 has_cellular_specific = true;
-                if let Some(v) = parse_single_value(Some(text)) {
-                    basic_lines.push(v);
+                // Skip compound block bodies — they contain "=====" section markers.
+                // parse_single_value iterates in reverse and returns the last non-empty
+                // line, which in a compound body may be a section footer or a bare
+                // command echo from a concurrently-sent script, causing garbage values
+                // to be positionally assigned to IMEI, carrier, APN, etc.
+                // parse_cellular_block() handles compound bodies correctly once the
+                // section markers appear.
+                if !text.contains("=====") {
+                    if let Some(v) = parse_single_value(Some(text)) {
+                        basic_lines.push(v);
+                    }
                 }
             }
         }
