@@ -3563,36 +3563,34 @@
   align-items: stretch;
 }
 
-.system-config-header h1 {
+.system-config-page-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.system-config-page-title {
   margin: 0;
-  font-size: 22px;
+  font-size: 20px;
   font-weight: 680;
   color: var(--text-primary);
 }
 
-.system-config-header p {
-  margin: 6px 0 0;
-  color: var(--text-muted);
-  font-size: 13px;
-}
-
-.system-config-command-card {
-  border-radius: 10px;
-}
-
-.system-config-request-toolbar {
+.system-config-actions {
   display: flex;
   align-items: center;
-  justify-content: flex-start;
-  gap: 12px;
+  gap: 10px;
   flex-wrap: wrap;
 }
 
 .system-config-request-title {
-  font-size: 13px;
-  font-weight: 620;
-  color: var(--text-secondary);
-  margin-right: 2px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
 }
 
 .system-config-warning {
@@ -3639,7 +3637,25 @@
 }
 
 .system-config-zone-card {
-  grid-column: 1 / -1;
+  /* sits naturally in bottom-right of the 2×2 grid */
+}
+
+.system-config-zone-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.system-config-zone-pill {
+  font-size: 11px;
+  font-weight: 500;
+  padding: 1px 7px;
+  border-radius: 10px;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  text-transform: none;
+  letter-spacing: 0;
 }
 
 .system-config-kv {
@@ -3666,11 +3682,6 @@
   text-align: right;
 }
 
-.system-config-zone-count {
-  font-size: 13px;
-  color: var(--text-secondary);
-  margin-bottom: 8px;
-}
 
 .system-zone-table {
   display: flex;
@@ -3700,7 +3711,7 @@
 }
 
 @media (max-width: 980px) {
-  .system-config-request-toolbar {
+  .system-config-page-header {
     flex-direction: column;
     align-items: flex-start;
   }

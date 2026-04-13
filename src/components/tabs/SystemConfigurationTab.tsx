@@ -143,35 +143,25 @@ export default function SystemConfigurationTab() {
 
   return (
     <div className="tab-content system-config-tab">
-      <div className="system-config-header">
-        <h1>System Configuration</h1>
-        <p>Structured system details from station and system XML output.</p>
-      </div>
-
-      <div className="diag-header-toolbar system-config-request-toolbar">
-        <div className="system-config-request-title">System Configuration Request</div>
-        <div className="btn-group">
-          <button className="btn btn-secondary" onClick={clearSystemConfig}>
-            Clear
-          </button>
-          <button className="btn btn-secondary" onClick={copyPayload}>
-            {copied ? "Copied" : "Copy"}
-          </button>
-          <button className="btn btn-secondary" onClick={sendPayload}>
-            {sent ? "Sent" : "Send"}
-          </button>
+      <div className="system-config-page-header">
+        <h1 className="system-config-page-title">System Configuration</h1>
+        <div className="system-config-actions">
+          <span className="system-config-request-title">Request</span>
+          <div className="btn-group">
+            <button className="btn btn-secondary" onClick={clearSystemConfig}>Clear</button>
+            <button className="btn btn-secondary" onClick={copyPayload}>{copied ? "Copied" : "Copy"}</button>
+            <button className="btn btn-secondary" onClick={sendPayload}>{sent ? "Sent" : "Send"}</button>
+          </div>
+          {error && <div className="warning-item">⚠ {error}</div>}
         </div>
-        {error && <div className="warning-item">⚠ {error}</div>}
       </div>
 
       {systemUpdating && (
-        <div className="system-config-warning">
-          Collecting system configuration data…
-        </div>
+        <div className="system-config-warning">Collecting system configuration data…</div>
       )}
       {hasPartialWarning && !systemUpdating && (
         <div className="system-config-warning">
-          ⚠ Some system details are missing. Run the diagnostics block again to refresh data.
+          ⚠ Some system details are missing. Run the request again to refresh.
         </div>
       )}
 
@@ -180,44 +170,51 @@ export default function SystemConfigurationTab() {
           <div className="system-config-empty-icon">🧭</div>
           <h2>No system details yet</h2>
           <p>
-            Run <strong>System Configuration Request</strong> to populate system information, then
+            Use the <strong>Request</strong> actions above to collect system information, then
             return here for a structured configuration snapshot.
           </p>
         </div>
       ) : (
         <div className="system-config-grid">
+
+          {/* Identity */}
           <div className="card">
-            <div className="card-title">Customer</div>
+            <div className="card-title">Identity</div>
             <div className="system-config-kv"><span>SID</span><strong>{data?.sid || "—"}</strong></div>
-            <div className="system-config-kv"><span>Cellular IMEI</span><strong>{diagState?.cellular?.imei || "—"}</strong></div>
-            <div className="system-config-kv"><span>Satellite IMEI</span><strong>{diagState?.satellite?.sat_imei || data?.imei || "—"}</strong></div>
             <div className="system-config-kv"><span>Display Name</span><strong>{data?.display_name || data?.system_name || "—"}</strong></div>
             <div className="system-config-kv"><span>Location</span><strong>{data?.location || "—"}</strong></div>
-            {data?.install_date && (
-              <div className="system-config-kv"><span>Install Date</span><strong>{data.install_date}</strong></div>
-            )}
+            <div className="system-config-kv"><span>Install Date</span><strong>{data?.install_date || "—"}</strong></div>
+          </div>
+
+          {/* System */}
+          <div className="card">
+            <div className="card-title">System</div>
+            <div className="system-config-kv"><span>System Type</span><strong>{data?.system_type || "—"}</strong></div>
             <div className="system-config-kv"><span>Firmware Version</span><strong>{data?.version || "—"}</strong></div>
             {data?.release_date && (
               <div className="system-config-kv"><span>Release Date</span><strong>{data.release_date}</strong></div>
             )}
+            <div className="system-config-kv"><span>Cellular IMEI</span><strong>{diagState?.cellular?.imei || "—"}</strong></div>
+            <div className="system-config-kv"><span>Satellite IMEI</span><strong>{diagState?.satellite?.sat_imei || data?.imei || "—"}</strong></div>
           </div>
 
+          {/* Configuration */}
           <div className="card">
-            <div className="card-title">System</div>
-            <div className="system-config-kv"><span>System Type</span><strong>{data?.system_type || "—"}</strong></div>
-            <div className="system-config-kv"><span>Preferred Network</span><strong>{titleCase(data?.preferred_network_service_type || data?.preferred_network)}</strong></div>
-            <div className="system-config-kv"><span>Hydraulic Hardware</span><strong>{titleCase(data?.hydraulic_hardware_configuration) || "—"}</strong></div>
+            <div className="card-title">Configuration</div>
             <div className="system-config-kv"><span>Foam Module</span><strong>{yesNo(data?.foam_module)}</strong></div>
-            <div className="system-config-kv"><span>Foam System</span><strong>{data?.no_foam_system == null ? "—" : (data.no_foam_system ? "No" : "Yes")}</strong></div>
-            <div className="system-config-kv"><span>Drain During Deactivation</span><strong>{yesNo(data?.drain_during_deactivation ?? data?.drain_cycle)}</strong></div>
+            <div className="system-config-kv"><span>Drain on Deactivate</span><strong>{yesNo(data?.drain_during_deactivation ?? data?.drain_cycle)}</strong></div>
             <div className="system-config-kv"><span>Init Cycles</span><strong>{data?.initiation_cycles ?? "—"}</strong></div>
-            <div className="system-config-kv"><span>Water Use Mode</span><strong>{titleCase(data?.water_use_mode)}</strong></div>
+            <div className="system-config-kv"><span>Water Mode</span><strong>{titleCase(data?.water_use_mode)}</strong></div>
+            <div className="system-config-kv"><span>Preferred Network</span><strong>{titleCase(data?.preferred_network_service_type || data?.preferred_network)}</strong></div>
           </div>
 
+          {/* Zone Map */}
           <div className="card system-config-zone-card">
-            <div className="card-title">Zone Map</div>
-            <div className="system-config-zone-count">
-              {data?.zone_count ?? zones.length} zone{(data?.zone_count ?? zones.length) === 1 ? "" : "s"}
+            <div className="card-title system-config-zone-title">
+              Zone Map
+              <span className="system-config-zone-pill">
+                {data?.zone_count ?? zones.length} zone{(data?.zone_count ?? zones.length) === 1 ? "" : "s"}
+              </span>
             </div>
             {zones.length === 0 ? (
               <p className="hint">No zone rows were detected in the latest system output.</p>
@@ -238,6 +235,7 @@ export default function SystemConfigurationTab() {
               </div>
             )}
           </div>
+
         </div>
       )}
     </div>

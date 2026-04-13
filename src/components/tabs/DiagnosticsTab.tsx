@@ -1008,7 +1008,16 @@ function summarizeWifi(wifi?: WifiDiagnostic | null): CardSummary {
     || wifi.connman_wifi_connected === true
     || wifi.internet_reachable === true;
   const ssid = wifi.ssid || wifi.access_point || "Wi-Fi";
-  if (!connected) return { health: "neutral", badgeLabel: "Inactive", primaryLine: "Not connected", secondaryLine: ssid };
+  if (!connected) {
+    const checkErrLower = (wifi.check_error || "").toLowerCase();
+    const notEnabled = checkErrLower.includes("-65553")
+      || checkErrLower.includes("not enabled")
+      || wifi.connman_wifi_powered === false;
+    if (notEnabled) {
+      return { health: "warning", badgeLabel: "Inactive", primaryLine: "Not connected", secondaryLine: "Network technology is not enabled" };
+    }
+    return { health: "neutral", badgeLabel: "Inactive", primaryLine: "Not connected", secondaryLine: ssid };
+  }
   const sig = wifiSignalLabel(wifi);
   const weakByController = (wifi.strength_label || "").toLowerCase() === "weak";
   if (weakByController) {

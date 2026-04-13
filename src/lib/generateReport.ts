@@ -275,6 +275,13 @@ export function generateNetworkRows(diag: DiagnosticState): NetworkStatusRow[] {
   const ethLinked = diag.ethernet?.link_detected === true
     || diag.ethernet?.internet_reachable === true;
 
+  // "Not enabled" WiFi shows amber to indicate configuration is needed, not just
+  // an unplugged cable. Mirrors the warning health added to the diag card.
+  const wifiCheckErrLower = (diag.wifi?.check_error || "").toLowerCase();
+  const wifiNotEnabled = wifiCheckErrLower.includes("-65553")
+    || wifiCheckErrLower.includes("not enabled")
+    || diag.wifi?.connman_wifi_powered === false;
+
   return [
     {
       interface: "Ethernet",
@@ -283,7 +290,13 @@ export function generateNetworkRows(diag: DiagnosticState): NetworkStatusRow[] {
     },
     {
       interface: "Wi-Fi",
-      status: !diag.wifi ? "unknown" : (wifiConnected ? toStatus(diag.wifi.status) : "unknown"),
+      status: !diag.wifi
+        ? "unknown"
+        : wifiConnected
+          ? toStatus(diag.wifi.status)
+          : wifiNotEnabled
+            ? "orange"
+            : "unknown",
       summary: diag.wifi ? formatWifiSummary(diag.wifi) : "Diagnostics not collected",
     },
     {
@@ -377,8 +390,8 @@ export function generateRecommendedActions(
     if (wifi.status === "red" && wifi.check_result === "Failure") {
       actions.push({
         id: mkId(), interface: "Wi-Fi",
-        text: "Verify SSID and password",
-        detail: "Connection failed. Re-run setup-wifi to correct credentials.",
+        text: "Configure Wi-Fi",
+        detail: "Re-run setup-wifi and configure to verified SSID and password.",
         dismissed: false, checked: false, custom: false,
       });
     } else if (wifi.status === "red" && (wifi.strength_score ?? 100) < 40) {
