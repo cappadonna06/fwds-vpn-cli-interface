@@ -1427,7 +1427,7 @@ echo "===== CELLULAR DIAGNOSTICS END ====="
     label: "Full Diags + Satellite",
     icon: "🔬",
     description: "Complete suite including satellite loopback (~12 min total)",
-    affected_interfaces: ["ethernet", "wifi", "cellular", "satellite", "pressure", "system"],
+    affected_interfaces: ["ethernet", "wifi", "cellular", "pressure", "satellite", "system"],
     when_to_run: "New install sign-off, post-repair baseline, or when a site has intermittent issues and you need a full picture.",
     light_command_ids: [],
     heavy_command_ids: [
@@ -1594,7 +1594,7 @@ echo "===== SATELLITE DIAGNOSTICS END ====="
     label: "Full Diags (no loopback)",
     icon: "🔬",
     description: "Complete diagnostics without satellite loopback. Includes satellite IMEI verification plus Ethernet, Wi-Fi, cellular, and system checks.",
-    affected_interfaces: ["ethernet", "wifi", "cellular", "satellite", "pressure", "system"],
+    affected_interfaces: ["ethernet", "wifi", "cellular", "pressure", "satellite", "system"],
     when_to_run: "Use when you want full network/system coverage but need to skip the long satellite loopback test.",
     light_command_ids: [],
     heavy_command_ids: [

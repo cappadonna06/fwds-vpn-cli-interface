@@ -2496,7 +2496,15 @@ fn parse_satellite_imei(text: &str, diag: &mut SatelliteDiagnostic) {
         if let Some(cap) = imei_re.find(&scoped) {
             diag.sat_imei = Some(cap.as_str().to_string());
             diag.modem_present = Some(true);
+            return;
         }
+    }
+    // If the scoped output explicitly says "Failed" (the sat-imei command itself failed,
+    // meaning no modem was reachable), mark the modem as absent so the card shows the
+    // correct error state rather than the misleading "Modem present / Full test not run".
+    let lower = scoped.to_lowercase();
+    if lower.contains("failed") || lower.contains("error") || lower.contains("no imei") {
+        diag.modem_present = Some(false);
     }
 }
 

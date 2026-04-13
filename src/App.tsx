@@ -190,7 +190,7 @@ export default function App() {
 
         <main className="app-body">
           <div style={{ display: activeTab === "session" ? "contents" : "none" }}>
-            <SessionTab onControllerConnected={() => setActiveTab("commands")} />
+            <SessionTab />
           </div>
           <div style={{ display: activeTab === "commands" ? "contents" : "none" }}>
             <CommandsTab />

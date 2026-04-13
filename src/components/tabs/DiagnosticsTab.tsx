@@ -715,7 +715,7 @@ function buildCellularSections(cell?: CellularDiagnostic | null): DiagSection[] 
         { label: "Signal", value: signalLabel(cell.strength_score) + (cell.strength_score !== null && cell.strength_score !== undefined ? ` (${cell.strength_score}/100)` : "") },
         { label: "Connection", value: (cell.connman_cell_connected === true || cell.internet_reachable === true) ? "Connected" : "Not connected" },
         { label: "Role", value: roleLabel(cell.role) || "Unknown" },
-        { label: "SIM", value: cell.sim_inserted === false ? "Missing" : cell.sim_ready === true ? "Ready" : "Unknown" },
+        { label: "SIM", value: cell.sim_inserted === false ? "Missing" : cell.sim_ready === true ? `Ready${cell.imei ? ` — IMEI ${cell.imei}` : ""}` : "Unknown" },
         { label: "Modem", value: cell.modem_not_present ? "Not detected" : cell.modem_unreachable ? "Detected — not responding" : cell.cellular_disabled && cell.imei ? "Powered off (detected)" : cell.cellular_disabled ? "Powered off" : cell.modem_present === true ? cell.modem_model ?? "Detected" : "Unknown" },
         { label: "Network", value: [cell.rat, cell.band].filter(Boolean).join(" / ") || "—" },
         { label: "APN", value: cleanCellValue(cell.at_apn) || cleanCellValue(cell.basic_apn) || "—" },
@@ -1613,7 +1613,11 @@ export default function DiagnosticsTab() {
             const hold = cardHoldsRef.current[iface];
             // Skip update if hold is still active AND not being released this cycle.
             if (hold && hold.expiresAt > nowMs && !willBeReleasedThisCycle.has(iface)) return;
-            if (state.interface_runs?.[iface]?.in_progress === true) return;
+            // Only let in_progress block the display while the hold is still protecting the
+            // card (i.e., we know a fresh run is in flight). Once the hold is expired or
+            // released this cycle, show whatever data the backend has — otherwise a card
+            // can count all the way down and still never populate.
+            if (!willBeReleasedThisCycle.has(iface) && state.interface_runs?.[iface]?.in_progress === true) return;
             (next as any)[iface] = (state as any)?.[iface] ?? null;
           });
           next.interface_runs = state.interface_runs ?? {};

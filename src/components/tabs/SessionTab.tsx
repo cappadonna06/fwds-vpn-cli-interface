@@ -70,6 +70,9 @@ export default function SessionTab({ onControllerConnected }: SessionTabProps) {
   const [serialDevices, setSerialDevices] = useState<string[]>([]);
   const [serialDetail, setSerialDetail] = useState("");
 
+  const [successBanner, setSuccessBanner] = useState<string | null>(null);
+  const successBannerTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   const vpnPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const ctrlPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const prevCtrlPhaseRef = useRef<string>("disconnected");
@@ -237,12 +240,19 @@ export default function SessionTab({ onControllerConnected }: SessionTabProps) {
     }
   }
 
+  function showSuccess(msg: string) {
+    setSuccessBanner(msg);
+    if (successBannerTimerRef.current) clearTimeout(successBannerTimerRef.current);
+    successBannerTimerRef.current = setTimeout(() => setSuccessBanner(null), 7000);
+  }
+
   async function connectAndLaunch() {
     if (!canConnect) return;
     await connectToController();
     try {
       await invoke("open_controller_terminal");
       await invoke("start_log_watcher").catch(() => {});
+      showSuccess("Connection successful — terminal app opened");
       onControllerConnected?.();
     } catch (e) {
       setCtrlDetail(String(e));
@@ -277,6 +287,7 @@ export default function SessionTab({ onControllerConnected }: SessionTabProps) {
       await invoke("open_local_serial_terminal", { device: serialDevice });
       await invoke("start_log_watcher").catch(() => {});
       setSerialDetail("Connected");
+      showSuccess("Connection successful — terminal app opened");
       onControllerConnected?.();
     } catch (e) {
       setSerialDetail(String(e));
@@ -317,6 +328,13 @@ export default function SessionTab({ onControllerConnected }: SessionTabProps) {
 
   return (
     <div className="tab-content session-tab">
+      {successBanner && (
+        <div className="session-success-banner" role="status" aria-live="polite">
+          <span className="session-success-icon">✓</span>
+          {successBanner}
+          <button className="session-success-dismiss" onClick={() => setSuccessBanner(null)} aria-label="Dismiss">×</button>
+        </div>
+      )}
       <div className="session-shell">
         <div className="session-heading">
           <h1>Connect</h1>
