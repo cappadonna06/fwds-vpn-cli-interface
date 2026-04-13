@@ -2487,10 +2487,29 @@ fn parse_satellite_controller_info(text: &str, diag: &mut SatelliteDiagnostic) {
 }
 
 fn parse_satellite_imei(text: &str, diag: &mut SatelliteDiagnostic) {
-    // Scope to the satellite section markers first so that a cellular IMEI appearing
-    // earlier in a compound diagnostic block is not mistaken for the satellite IMEI.
+    let lower_text = text.to_ascii_lowercase();
+
+    // Detect whether this block has satellite-specific section markers and/or
+    // non-satellite section markers (cellular, ethernet, wifi, pressure).
+    let has_satellite_markers = lower_text.contains("===== satellite")
+        || lower_text.contains("===== quick satellite");
+    let has_non_satellite_markers = lower_text.contains("===== cellular")
+        || lower_text.contains("===== wifi")
+        || lower_text.contains("===== eth")
+        || lower_text.contains("===== pressure");
+
+    // Guard: a compound block that contains non-satellite sections but NO satellite
+    // section markers cannot reliably scope the IMEI search.  Without this guard,
+    // a cellular block's 15-digit IMEI (e.g. from `cell-imei`) is mis-assigned to
+    // `sat_imei`.  Return early and leave the satellite diagnostic unchanged.
+    if !has_satellite_markers && has_non_satellite_markers {
+        return;
+    }
+
+    // Scope to the satellite section markers when present so that a cellular IMEI
+    // appearing earlier in a compound block is not mistaken for the satellite IMEI.
     // extract_satellite_scoped_text returns text.to_string() when no markers are
-    // found, so the full text is still searched in the standalone sat-imei case.
+    // found, so the full text is still searched for the standalone sat-imei case.
     let scoped = extract_satellite_scoped_text(text);
     if let Ok(imei_re) = Regex::new(r"\b\d{14,17}\b") {
         if let Some(cap) = imei_re.find(&scoped) {
@@ -2867,7 +2886,13 @@ fn parse_ethernet(
         DiagStatus::Grey => "Ethernet inactive".to_string(),
         DiagStatus::Red => "Ethernet needs attention".to_string(),
         DiagStatus::Orange => "Ethernet warning".to_string(),
-        DiagStatus::Unknown => "No data yet".to_string(),
+        DiagStatus::Unknown => {
+            if link_detected == Some(false) {
+                "No link detected".to_string()
+            } else {
+                "No data yet".to_string()
+            }
+        }
     };
 
     Some(EthernetDiagnostic {

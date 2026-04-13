@@ -134,6 +134,14 @@ function qualityLabel(score?: number | null, label?: string | null): string {
   return "No service";
 }
 
+function formatEthernetSummary(eth: EthernetDiag): string {
+  if (eth.link_detected === false) return "No link detected";
+  if (eth.status === "grey") return "Inactive — technology disabled";
+  if (eth.status === "green") return "Connected";
+  if (eth.status === "red") return "No connection";
+  return eth.summary || "Unknown";
+}
+
 function formatWifiSummary(wifi: WifiDiag): string {
   const connected = wifi.connected === true
     || wifi.connman_wifi_connected === true
@@ -146,7 +154,12 @@ function formatWifiSummary(wifi: WifiDiag): string {
     if (raw) {
       const meaningful = raw.split(":").map((p: string) => p.trim())
         .find((p: string) => p && !/^(done|failure|success|-?\d+)$/i.test(p));
-      if (meaningful) return `Not connected — ${meaningful}`;
+      // Skip connman's generic "is not connected" — it just means WiFi is unassociated,
+      // which is already captured by "Not connected". Keep specific reasons like
+      // "Network technology is not enabled" or "Association failed".
+      if (meaningful && !/\bis not connected\b/i.test(meaningful)) {
+        return `Not connected — ${meaningful}`;
+      }
     }
     return "Not connected";
   }
@@ -266,7 +279,7 @@ export function generateNetworkRows(diag: DiagnosticState): NetworkStatusRow[] {
     {
       interface: "Ethernet",
       status: !diag.ethernet ? "unknown" : (ethLinked ? toStatus(diag.ethernet.status) : "unknown"),
-      summary: diag.ethernet?.summary ?? "Diagnostics not collected",
+      summary: diag.ethernet ? formatEthernetSummary(diag.ethernet) : "Diagnostics not collected",
     },
     {
       interface: "Wi-Fi",
