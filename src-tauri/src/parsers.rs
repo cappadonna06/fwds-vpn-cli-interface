@@ -358,6 +358,19 @@ fn update_interface_run_states(log: &str, state: &mut DiagnosticState) {
             "sim_picker" => latest_marker_index(&lower, &["===== sim picker end ====="]),
             "cellular" => latest_marker_index(&lower, &["===== cellular diagnostics end ====="]),
             "satellite" => latest_marker_index(&lower, &["===== satellite diagnostics end ====="]),
+            // The system section has no explicit end marker. Use the first section that
+            // always runs AFTER system (pressure or satellite) as an implicit end so that
+            // system.in_progress clears even on controllers whose station/system XML does
+            // not contain hydraulic_hardware_configuration or preferred_network.
+            "system" => latest_marker_index(
+                &lower,
+                &[
+                    "===== pressure snapshot =====",
+                    "===== pressure live =====",
+                    "===== satellite diagnostics start =====",
+                    "===== satellite basic =====",
+                ],
+            ),
             _ => None,
         };
         let has_active_start = start
@@ -552,9 +565,12 @@ fn parse_sid_from_prompt(log: &str) -> Option<String> {
     // would break a simple `\[digits\]#` regex on the raw log.
     let ansi_re = Regex::new(r"\x1B\[[0-?]*[ -/]*[@-~]").ok()?;
     let clean = ansi_re.replace_all(log, "");
+    // PTY/script output also embeds carriage returns and null bytes between
+    // the closing bracket and '#', e.g. `[24250062]\r#`. Strip those too.
+    let clean = clean.replace('\r', "").replace('\x00', "");
     let sid_re = Regex::new(r"\[(\d{6,10})\]#").ok()?;
     sid_re
-        .captures_iter(clean.as_ref())
+        .captures_iter(&clean)
         .filter_map(|caps| caps.get(1).map(|m| m.as_str().to_string()))
         .last()
 }

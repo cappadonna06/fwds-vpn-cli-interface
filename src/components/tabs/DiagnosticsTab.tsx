@@ -310,7 +310,7 @@ interface DiagCardProps {
 }
 
 type InterfaceKey = "wifi" | "cellular" | "satellite" | "ethernet" | "pressure" | "sim_picker";
-type HoldState = { startedAt: number; expiresAt: number; reason: string };
+type HoldState = { startedAt: number; expiresAt: number; reason: string; inProgressConfirmed?: boolean };
 
 function resolveBlockScript(block: DiagnosticBlock, tier: "light" | "heavy"): string {
   const custom = tier === "light" ? block.light_script : block.heavy_script;
@@ -1570,11 +1570,20 @@ export default function DiagnosticsTab() {
           const next = { ...prev };
           (Object.keys(prev) as InterfaceKey[]).forEach((iface) => {
             const hold = prev[iface];
+            if (!hold) return;
+
+            // Mark confirmed once the backend acknowledges the current run has started.
+            // Without this, the first poll after Send may see in_progress=false from a
+            // PREVIOUS run, and isInterfaceComplete would immediately release the hold.
+            if (!hold.inProgressConfirmed && state.interface_runs?.[iface]?.in_progress === true) {
+              next[iface] = { ...hold, inProgressConfirmed: true };
+              changed = true;
+            }
+
+            const currentHold = next[iface] ?? hold;
             const complete = isInterfaceComplete(iface, state);
-            // Release only when the backend signals completion or the safety timeout fires.
-            // Do NOT release on !backendInProgress — the backend may not have seen the START
-            // marker yet (first poll after Send), and that would release the hold prematurely.
-            if (hold && (complete || hold.expiresAt <= nowMs)) {
+            // Release when: confirmed start + data complete, OR safety timeout.
+            if (currentHold && ((currentHold.inProgressConfirmed && complete) || currentHold.expiresAt <= nowMs)) {
               delete next[iface];
               changed = true;
             }
@@ -1955,7 +1964,7 @@ export default function DiagnosticsTab() {
           onSendCommand={() => sendDiagnosticBlock("firmware")}
           sent={sentCommandId === "firmware"}
           compact={firmwareSummary.health === "neutral"}
-          updating={displayDiag?.interface_runs?.system?.in_progress === true}
+          updating={displayDiag?.interface_runs?.system?.in_progress === true && !currentFirmware}
           inlineControls={
             <FirmwareVersionEditor
               value={latestFirmwareVersion}

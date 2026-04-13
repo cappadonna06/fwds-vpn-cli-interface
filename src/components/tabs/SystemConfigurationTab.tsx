@@ -82,10 +82,12 @@ export default function SystemConfigurationTab() {
     refresh();
     const id = setInterval(refresh, 2000);
     const unlistenSid = listen("controller-sid-detected", () => { refresh(); });
+    const unlistenSystem = listen("system-config-updated", () => { refresh(); });
     return () => {
       alive = false;
       clearInterval(id);
       unlistenSid.then((fn) => fn());
+      unlistenSystem.then((fn) => fn());
     };
   }, []);
 

@@ -1469,6 +1469,7 @@ fn start_log_watcher_internal(state: &AppState, start_from_end: bool) -> Result<
         };
 
         let mut prev_sid: Option<String> = None;
+        let mut prev_system_sig: String = String::new();
         let mut buffer = String::new();
         loop {
             if kill_flag.load(Ordering::Relaxed) {
@@ -1511,6 +1512,26 @@ fn start_log_watcher_internal(state: &AppState, start_from_end: bool) -> Result<
                             }
                         }
                         prev_sid = current_sid;
+
+                        // Notify frontend whenever system diagnostic data changes so that
+                        // the System Configuration tab refreshes without waiting for its
+                        // 2-second poll cycle.
+                        let current_system_sig = diag.system.as_ref().map(|s| {
+                            format!(
+                                "{:?}|{:?}|{:?}|{:?}|{:?}|{}",
+                                s.version, s.sid, s.hydraulic_hardware_configuration,
+                                s.preferred_network, s.zone_count,
+                                s.zones.len()
+                            )
+                        }).unwrap_or_default();
+                        if current_system_sig != prev_system_sig && !current_system_sig.is_empty() {
+                            if let Ok(h) = app_handle_arc.lock() {
+                                if let Some(handle) = h.as_ref() {
+                                    let _ = handle.emit("system-config-updated", ());
+                                }
+                            }
+                        }
+                        prev_system_sig = current_system_sig;
 
                         let mut migrated_from: Option<String> = None;
                         if let Some(sid) = diag
