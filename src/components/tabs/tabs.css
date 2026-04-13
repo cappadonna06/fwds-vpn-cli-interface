@@ -3675,3 +3675,33 @@
     grid-template-columns: minmax(0, 1fr);
   }
 }
+
+/* ── Diagnostic card progress countdown ring ─────────────────────────────── */
+.diag-progress-countdown {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.diag-progress-ring {
+  flex-shrink: 0;
+  overflow: visible;
+}
+.diag-progress-ring-track {
+  stroke: var(--text-muted);
+  opacity: 0.25;
+}
+.diag-progress-ring-fill {
+  stroke: var(--text-secondary);
+  transition: stroke-dashoffset 0.95s linear;
+}
+.diag-progress-ring-fill.done {
+  stroke: #22c55e;
+  transition: stroke-dashoffset 0.15s ease-out;
+}
+.diag-progress-label {
+  font-size: 11px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}

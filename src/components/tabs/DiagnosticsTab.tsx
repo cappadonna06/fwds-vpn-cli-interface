@@ -304,6 +304,7 @@ interface DiagCardProps {
   onClear?: () => void;
   updating?: boolean;
   onForceRelease?: () => void;
+  countdown?: CountdownProps;
   collapsedMetricCards?: Array<{ label: string; value: string; tone: HealthTone }>;
   inlineControls?: ReactNode;
 }
@@ -377,6 +378,67 @@ function holdTimeoutMsForInterface(iface: InterfaceKey, script: string): number 
   const hasSatelliteLoopback = lower.includes("satellite-check -t");
   if (iface === "satellite" && hasSatelliteLoopback) return 15 * 60 * 1000;
   return 60 * 1000;
+}
+
+// ── Progress countdown ─────────────────────────────────────────────────────
+
+// Expected wall-clock time for each interface's own diagnostic commands.
+// Sequential blocks (full-diags) stack these cumulatively so that each card's
+// countdown starts at the right offset from the moment the command is sent.
+const IFACE_DURATION_MS: Record<InterfaceKey, number> = {
+  ethernet:   20_000,
+  wifi:       25_000,
+  cellular:   35_000,
+  pressure:   60_000,
+  sim_picker: 180_000,
+  satellite:  60_000,   // quick; loopback overridden in ifaceDurationMs()
+};
+
+function ifaceDurationMs(iface: InterfaceKey, script: string): number {
+  if (iface === "satellite" && script.toLowerCase().includes("satellite-check -t"))
+    return 15 * 60 * 1000;
+  return IFACE_DURATION_MS[iface] ?? 60_000;
+}
+
+type CountdownProps = {
+  progressFraction: number;
+  remainingMs: number;
+  elapsedMs: number;
+  isElapsedMode: boolean; // satellite loopback: show elapsed rather than remaining
+};
+
+function fmtCountdownMs(ms: number): string {
+  const total = Math.floor(ms / 1000);
+  const m = Math.floor(total / 60);
+  const s = total % 60;
+  return m > 0 ? `${m}:${s.toString().padStart(2, "0")}` : `${s}s`;
+}
+
+function ProgressCountdown({ progressFraction, remainingMs, elapsedMs, isElapsedMode }: CountdownProps) {
+  const r    = 11;
+  const circ = 2 * Math.PI * r;
+  const done = progressFraction >= 1 || remainingMs === 0;
+  const offset = done ? 0 : circ * (1 - progressFraction);
+  const label  = done
+    ? "Done"
+    : isElapsedMode
+    ? `${fmtCountdownMs(elapsedMs)} elapsed`
+    : fmtCountdownMs(remainingMs);
+
+  return (
+    <span className="diag-progress-countdown">
+      <svg width="26" height="26" viewBox="0 0 26 26" aria-hidden="true" className="diag-progress-ring">
+        <circle cx="13" cy="13" r={r} fill="none" strokeWidth="2.5"
+                className="diag-progress-ring-track" />
+        <circle cx="13" cy="13" r={r} fill="none" strokeWidth="2.5" strokeLinecap="round"
+                strokeDasharray={circ}
+                strokeDashoffset={offset}
+                transform="rotate(-90 13 13)"
+                className={`diag-progress-ring-fill${done ? " done" : ""}`} />
+      </svg>
+      <span className="diag-progress-label">{label}</span>
+    </span>
+  );
 }
 
 function toneFromStatus(status?: DiagStatus | null): HealthTone {
@@ -1055,6 +1117,7 @@ function DiagCard({
   onClear,
   updating,
   onForceRelease,
+  countdown,
   collapsedMetricCards,
   inlineControls,
 }: DiagCardProps) {
@@ -1096,7 +1159,9 @@ function DiagCard({
         <div className="diag-card-head-right">
           <span className="diag-status-label">
             <span className={`diag-status-dot diag-status-${updating ? "neutral" : health}`} />
-            <span>{updating ? "Updating…" : statusLabel}</span>
+            {updating && countdown
+              ? <ProgressCountdown {...countdown} />
+              : <span>{updating ? "Updating…" : statusLabel}</span>}
           </span>
           {onClear && (
             <div className="diag-card-menu-wrap" ref={menuRef}>
@@ -1423,9 +1488,22 @@ export default function DiagnosticsTab() {
   const [pressureHhc, setPressureHhc] = useState<"mp3" | "hp6">("mp3");
   const [cardHolds, setCardHolds] = useState<Partial<Record<InterfaceKey, HoldState>>>({});
   const cardHoldsRef = useRef<Partial<Record<InterfaceKey, HoldState>>>({});
+  // Sequential expiry timestamps computed when a diagnostic block is sent.
+  // Each interface gets the timestamp at which its own work is expected to finish,
+  // accounting for all preceding interfaces in the same block.
+  const interfaceExpirationsRef = useRef<Partial<Record<InterfaceKey, number>>>({});
+  const commandSentAtRef = useRef<number>(0);
 
   useEffect(() => {
     cardHoldsRef.current = cardHolds;
+  }, [cardHolds]);
+
+  // 1-second tick to keep countdowns live while any hold is active.
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    if (Object.keys(cardHolds).length === 0) return;
+    const id = setInterval(() => setTick((t) => t + 1), 1000);
+    return () => clearInterval(id);
   }, [cardHolds]);
 
   useEffect(() => {
@@ -1610,6 +1688,16 @@ export default function DiagnosticsTab() {
         });
         return next;
       });
+      // Compute per-interface sequential expiry: each card's countdown ends at
+      // commandSentAt + sum(durations of all preceding interfaces) + its own duration.
+      commandSentAtRef.current = now;
+      const expirations: Partial<Record<InterfaceKey, number>> = {};
+      let cursor = now;
+      for (const iface of touchedInterfaces) {
+        cursor += ifaceDurationMs(iface, script);
+        expirations[iface] = cursor;
+      }
+      interfaceExpirationsRef.current = expirations;
       await sendCommandText(script);
       setSentCommandId(blockId);
       setTimeout(() => setSentCommandId((prev) => (prev === blockId ? null : prev)), 1400);
@@ -1617,6 +1705,19 @@ export default function DiagnosticsTab() {
     } catch (e) {
       setSendError(String(e) || "Open session first");
     }
+  }
+
+  function getCountdownProps(iface: InterfaceKey): CountdownProps | undefined {
+    const hold = cardHolds[iface];
+    if (!hold) return undefined;
+    const expiresAt = interfaceExpirationsRef.current[iface] ?? hold.expiresAt;
+    const sentAt    = commandSentAtRef.current || hold.startedAt;
+    const totalMs   = Math.max(1, expiresAt - sentAt);
+    const elapsedMs = Date.now() - sentAt;
+    const remainingMs = Math.max(0, expiresAt - Date.now());
+    const progressFraction = Math.min(1, elapsedMs / totalMs);
+    const isElapsedMode = hold.reason === "Satellite loopback in progress";
+    return { progressFraction, remainingMs, elapsedMs, isElapsedMode };
   }
 
   const safeSid = system?.sid && /^\d{8}$/.test(system.sid) ? system.sid : null;
@@ -1700,6 +1801,7 @@ export default function DiagnosticsTab() {
           compact={wifiSummary.health === "neutral"}
           updating={isUpdating("wifi")}
           onForceRelease={() => releaseCardHold("wifi")}
+          countdown={getCountdownProps("wifi")}
           onClear={async () => {
             await invoke("clear_diagnostic_interface", { interface: "wifi" }).catch(() => {});
             setDisplayDiag(prev => prev ? { ...prev, wifi: null } : prev);
@@ -1728,6 +1830,7 @@ export default function DiagnosticsTab() {
           compact={cellularSummary.health === "neutral"}
           updating={isUpdating("cellular")}
           onForceRelease={() => releaseCardHold("cellular")}
+          countdown={getCountdownProps("cellular")}
           onClear={async () => {
             await invoke("clear_diagnostic_interface", { interface: "cellular" }).catch(() => {});
             setDisplayDiag(prev => prev ? { ...prev, cellular: null } : prev);
@@ -1756,6 +1859,7 @@ export default function DiagnosticsTab() {
           compact={satelliteSummary.health === "neutral"}
           updating={isUpdating("satellite")}
           onForceRelease={() => releaseCardHold("satellite")}
+          countdown={getCountdownProps("satellite")}
           onClear={async () => {
             await invoke("clear_diagnostic_interface", { interface: "satellite" }).catch(() => {});
             setDisplayDiag(prev => prev ? { ...prev, satellite: null } : prev);
@@ -1784,6 +1888,7 @@ export default function DiagnosticsTab() {
           compact={ethernetSummary.health === "neutral"}
           updating={isUpdating("ethernet")}
           onForceRelease={() => releaseCardHold("ethernet")}
+          countdown={getCountdownProps("ethernet")}
           onClear={async () => {
             await invoke("clear_diagnostic_interface", { interface: "ethernet" }).catch(() => {});
             setDisplayDiag(prev => prev ? { ...prev, ethernet: null } : prev);
@@ -1812,6 +1917,7 @@ export default function DiagnosticsTab() {
           compact={pressureSummary.health === "neutral"}
           updating={isUpdating("pressure")}
           onForceRelease={() => releaseCardHold("pressure")}
+          countdown={getCountdownProps("pressure")}
           inlineControls={
             <div className="pressure-hhc-pills" onClick={(e) => e.stopPropagation()}>
               <button
@@ -1887,6 +1993,7 @@ export default function DiagnosticsTab() {
           compact={!simPicker?.scan_attempted}
           updating={isUpdating("sim_picker")}
           onForceRelease={() => releaseCardHold("sim_picker")}
+          countdown={getCountdownProps("sim_picker")}
           onClear={async () => {
             await invoke("clear_diagnostic_interface", { interface: "sim_picker" }).catch(() => {});
             setDisplayDiag(prev => prev ? { ...prev, sim_picker: null } : prev);
