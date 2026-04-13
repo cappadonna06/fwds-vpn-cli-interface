@@ -222,14 +222,12 @@ export default function SystemConfigurationTab() {
                   <span>Number</span>
                   <span>Type</span>
                   <span>Name</span>
-                  <span>Motor Driver</span>
                 </div>
                 {zones.map((zone, idx) => (
                   <div key={`${zone.number ?? "n"}-${idx}`} className="system-zone-row">
                     <span>{zone.number ?? idx + 1}</span>
                     <span>{titleCase(zone.zone_type)}</span>
                     <span>{zone.name || "—"}</span>
-                    <span>{zone.motor_driver || "—"}</span>
                   </div>
                 ))}
               </div>

@@ -109,8 +109,8 @@ pub fn parse_log_into_state(log: &str, state: &mut DiagnosticState) {
         find_latest(&blocks, &["sid"]),
         find_latest(&blocks, &["version"]).or(controller_info_body.as_deref()),
         find_latest(&blocks, &["release"]),
-        find_latest(&blocks, &["cat /var/etc/fwds/station_info"]).or(system_section_body),
-        find_latest(&blocks, &["cat /var/etc/fwds/system_info"]).or(system_section_body),
+        find_latest(&blocks, &["cat /var/etc/fwds/station_info", "cat-station-info"]).or(system_section_body),
+        find_latest(&blocks, &["cat /var/etc/fwds/system_info", "cat-system-info"]).or(system_section_body),
     );
     if system.sid.is_none() {
         system.sid = parse_sid_from_prompt(log);
@@ -676,7 +676,7 @@ fn extract_section_until_next_marker(text: &str, start_marker: &str) -> Option<S
 
 fn split_blocks(log: &str) -> Vec<CommandBlock> {
     let prompt_re = Regex::new(
-        r"^(?:\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?[+-]\d{4}\s+)?(?:\[\d+\])?#\s*(.+)$",
+        r"^(?:\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?[+-]\d{4}\s+)?\[\d+\]#\s*(.+)$",
     )
     .expect("prompt regex");
     let prompt_inline_re =

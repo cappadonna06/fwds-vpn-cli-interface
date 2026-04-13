@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { DIAGNOSTIC_BLOCKS, DiagnosticBlock } from "../../types/commands";
+import { DIAGNOSTIC_BLOCKS, DiagnosticBlock, COMMANDS } from "../../types/commands";
 import { sendCommandText } from "../../lib/commandActions";
 
 type DiagStatus = "grey" | "green" | "orange" | "red" | "unknown";
@@ -316,7 +316,7 @@ function resolveBlockScript(block: DiagnosticBlock, tier: "light" | "heavy"): st
   const custom = tier === "light" ? block.light_script : block.heavy_script;
   if (custom && custom.trim().length > 0) return custom;
   const ids = tier === "light" ? block.light_command_ids : block.heavy_command_ids;
-  return ids.join("\n");
+  return ids.map((id) => COMMANDS.find((c) => c.id === id)?.command ?? id).join("\n");
 }
 
 function inferInterfacesFromScript(script: string): InterfaceKey[] {
@@ -1550,12 +1550,30 @@ export default function DiagnosticsTab() {
         prevCardsRef.current = nextCards;
         prevSystemRef.current = nextSystem;
         setRawDiag(state);
+
+        // Pre-compute which holds will be released this cycle so setDisplayDiag
+        // can write fresh data atomically — preventing the "no data" flash that
+        // occurs when the hold is still present in the ref when setDisplayDiag
+        // runs but then deleted by setCardHolds in the same React batch.
+        const willBeReleasedThisCycle = new Set<InterfaceKey>();
+        (Object.keys(cardHoldsRef.current) as InterfaceKey[]).forEach((iface) => {
+          const hold = cardHoldsRef.current[iface];
+          if (!hold) return;
+          const effectiveConfirmed = hold.inProgressConfirmed ||
+            state.interface_runs?.[iface]?.in_progress === true;
+          const complete = isInterfaceComplete(iface, state);
+          if ((effectiveConfirmed && complete) || hold.expiresAt <= nowMs) {
+            willBeReleasedThisCycle.add(iface);
+          }
+        });
+
         setDisplayDiag((prevDisplay) => {
           const base = prevDisplay ?? state;
           const next = { ...base };
           (Object.keys(nextCards) as InterfaceKey[]).forEach((iface) => {
             const hold = cardHoldsRef.current[iface];
-            if (hold && hold.expiresAt > nowMs) return;
+            // Skip update if hold is still active AND not being released this cycle.
+            if (hold && hold.expiresAt > nowMs && !willBeReleasedThisCycle.has(iface)) return;
             if (state.interface_runs?.[iface]?.in_progress === true) return;
             (next as any)[iface] = (state as any)?.[iface] ?? null;
           });
