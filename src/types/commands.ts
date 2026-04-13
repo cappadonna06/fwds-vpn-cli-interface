@@ -1384,8 +1384,8 @@ echo "===== SATELLITE DIAGNOSTICS END ====="
     description: "Firmware version, controller serial number, and release metadata. Use at the start of any session to confirm which controller you are connected to and whether the firmware is current.",
     affected_interfaces: ["system"],
     when_to_run: "At the start of any session to confirm controller identity and firmware version.",
-    light_command_ids: ["version", "sid", "release", "cat-station-info", "cat-system-info"],
-    heavy_command_ids: ["version", "sid", "release", "cat-station-info", "cat-system-info"],
+    light_command_ids: ["version", "sid", "release", "cell-imei", "sat-imei", "cat-station-info", "cat-system-info"],
+    heavy_command_ids: ["version", "sid", "release", "cell-imei", "sat-imei", "cat-station-info", "cat-system-info"],
   },
   {
     id: "firmware",

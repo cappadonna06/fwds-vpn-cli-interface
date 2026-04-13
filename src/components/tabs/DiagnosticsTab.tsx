@@ -339,6 +339,18 @@ function interfacesForBlock(block: DiagnosticBlock, script: string): InterfaceKe
   return inferInterfacesFromScript(script);
 }
 
+// Backend stores started_at as "%H:%M:%S" (local time, no date). JavaScript's
+// Date constructor can't parse a bare time string, so we reconstruct today's date.
+function parseBackendTime(timeStr?: string | null): number | null {
+  if (!timeStr) return null;
+  const parts = timeStr.split(":");
+  if (parts.length < 3) return null;
+  const d = new Date();
+  d.setHours(parseInt(parts[0], 10), parseInt(parts[1], 10), parseInt(parts[2], 10), 0);
+  const ms = d.getTime();
+  return isNaN(ms) ? null : ms;
+}
+
 function isInterfaceComplete(iface: InterfaceKey, state: DiagnosticState | null | undefined): boolean {
   if (!state) return false;
   if (iface === "wifi") {
@@ -386,12 +398,12 @@ function holdTimeoutMsForInterface(iface: InterfaceKey, script: string): number 
 // Sequential blocks (full-diags) stack these cumulatively so that each card's
 // countdown starts at the right offset from the moment the command is sent.
 const IFACE_DURATION_MS: Record<InterfaceKey, number> = {
-  ethernet:   20_000,
-  wifi:       25_000,
-  cellular:   35_000,
-  pressure:   60_000,
+  ethernet:   12_000,   // ~10–15 s in practice
+  wifi:       15_000,   // ~12–18 s
+  cellular:   20_000,   // ~15–25 s (IMEI + signal + check)
+  pressure:   35_000,   // ~25–40 s (snapshot + live readings)
   sim_picker: 180_000,
-  satellite:  60_000,   // quick; loopback overridden in ifaceDurationMs()
+  satellite:  10_000,   // quick non-loopback check (~5–10 s); loopback overridden below
 };
 
 function ifaceDurationMs(iface: InterfaceKey, script: string): number {
@@ -1561,9 +1573,8 @@ export default function DiagnosticsTab() {
           if (!hold) return;
           // started_at >= hold.startedAt means a new run completed even if polling
           // missed the in_progress=true transition (fast commands).
-          const runStartedAt = state.interface_runs?.[iface]?.started_at;
-          const runIsNewer = runStartedAt != null &&
-            new Date(runStartedAt).getTime() >= hold.startedAt;
+          const runStartedAtMs = parseBackendTime(state.interface_runs?.[iface]?.started_at);
+          const runIsNewer = runStartedAtMs !== null && runStartedAtMs >= hold.startedAt;
           // For pressure there is no interface_runs entry — auto-confirm after the
           // grace period so isInterfaceComplete can trigger release when data arrives.
           const pressureGracePassed = iface === "pressure" && (nowMs - hold.startedAt) > 4000;
@@ -1685,8 +1696,12 @@ export default function DiagnosticsTab() {
   const wifiRole = resolveRole("wifi", primaryNetwork, !!(wifi?.connected || wifi?.connman_wifi_connected));
   const cellularRole = resolveRole("cellular", primaryNetwork, !!(cellular?.connman_cell_connected || cellular?.internet_reachable));
   const ethernetRole = resolveRole("ethernet", primaryNetwork, !!(ethernet?.link_detected || ethernet?.internet_reachable));
-  const isUpdating = (iface: InterfaceKey) =>
-    (displayDiag?.interface_runs?.[iface]?.in_progress === true) || !!cardHolds[iface];
+  const isUpdating = (iface: InterfaceKey) => {
+    // Pressure has no reliable backend in_progress tracking (no end marker in
+    // most firmware versions), so only the frontend hold drives the updating state.
+    if (iface === "pressure") return !!cardHolds[iface];
+    return (displayDiag?.interface_runs?.[iface]?.in_progress === true) || !!cardHolds[iface];
+  };
 
   async function clearCards() {
     await invoke("stop_log_watcher").catch(() => {});

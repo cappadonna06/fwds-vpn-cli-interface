@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { copyCommandText, sendCommandText } from "../../lib/commandActions";
 
-const COMMAND_PAYLOAD = "cat /var/etc/fwds/station_info\ncat /var/etc/fwds/system_info";
+const COMMAND_PAYLOAD = "cat /var/etc/fwds/station_info\ncat /var/etc/fwds/system_info\ncell-imei\nsat-imei";
 
 interface SystemZone {
   number?: number | null;
@@ -42,6 +42,8 @@ interface InterfaceRunState {
 
 interface DiagnosticState {
   system?: SystemDiagnostic | null;
+  cellular?: { imei?: string | null } | null;
+  satellite?: { sat_imei?: string | null } | null;
   interface_runs?: Record<string, InterfaceRunState> | null;
 }
 
@@ -95,7 +97,9 @@ export default function SystemConfigurationTab() {
   const zones = data?.zones ?? [];
   const systemUpdating = diagState?.interface_runs?.system?.in_progress === true;
   const hasData = Boolean(
-    data &&
+    diagState?.cellular?.imei ||
+    diagState?.satellite?.sat_imei ||
+    (data &&
       (data.sid ||
         data.imei ||
         data.version ||
@@ -110,7 +114,7 @@ export default function SystemConfigurationTab() {
         data.initiation_cycles != null ||
         data.water_use_mode ||
         data.zone_count != null ||
-        zones.length > 0)
+        zones.length > 0))
   );
 
   const hasPartialWarning = Boolean(diagState?.system && !hasData);
@@ -185,7 +189,8 @@ export default function SystemConfigurationTab() {
           <div className="card">
             <div className="card-title">Customer</div>
             <div className="system-config-kv"><span>SID</span><strong>{data?.sid || "—"}</strong></div>
-            <div className="system-config-kv"><span>IMEI</span><strong>{data?.imei || "—"}</strong></div>
+            <div className="system-config-kv"><span>Cellular IMEI</span><strong>{diagState?.cellular?.imei || data?.imei || "—"}</strong></div>
+            <div className="system-config-kv"><span>Satellite IMEI</span><strong>{diagState?.satellite?.sat_imei || "—"}</strong></div>
             <div className="system-config-kv"><span>Display Name</span><strong>{data?.display_name || data?.system_name || "—"}</strong></div>
             <div className="system-config-kv"><span>Location</span><strong>{data?.location || "—"}</strong></div>
             {data?.install_date && (

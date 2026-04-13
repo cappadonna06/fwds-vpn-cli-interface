@@ -301,6 +301,9 @@ fn is_interface_complete(iface: &str, state: &DiagnosticState, lower_log: &str) 
                         .as_ref()
                         .map(|s| s.count > 0)
                         .unwrap_or(false)
+                    // Sensor errors (e.g. "could not get sensor") count as complete:
+                    // the commands ran and produced a result, just not a valid reading.
+                    || !p.sensor_errors.is_empty()
             })
             .unwrap_or(false),
         "system" => state
