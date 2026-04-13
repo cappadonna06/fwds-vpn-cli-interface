@@ -21,6 +21,10 @@ interface WifiDiag {
   status: DiagStatus;
   summary: string;
   check_result?: string | null;
+  check_error?: string | null;
+  connected?: boolean | null;
+  connman_wifi_connected?: boolean | null;
+  internet_reachable?: boolean | null;
   strength_score?: number | null;
   strength_label?: string | null;
   signal_dbm?: number | null;
@@ -131,6 +135,22 @@ function qualityLabel(score?: number | null, label?: string | null): string {
 }
 
 function formatWifiSummary(wifi: WifiDiag): string {
+  const connected = wifi.connected === true
+    || wifi.connman_wifi_connected === true
+    || wifi.internet_reachable === true;
+
+  if (!connected) {
+    // Extract a human-readable reason from the check_result/check_error, e.g.
+    // "Done: Failure: -65553: Network technology is not enabled" → "Network technology is not enabled"
+    const raw = wifi.check_error || wifi.check_result || null;
+    if (raw) {
+      const meaningful = raw.split(":").map((p: string) => p.trim())
+        .find((p: string) => p && !/^(done|failure|success|-?\d+)$/i.test(p));
+      if (meaningful) return `Not connected — ${meaningful}`;
+    }
+    return "Not connected";
+  }
+
   const network = wifi.ssid || wifi.access_point || "Unknown network";
   const quality = qualityLabel(wifi.strength_score, wifi.strength_label);
   const scorePart = wifi.strength_score !== null && wifi.strength_score !== undefined
@@ -168,6 +188,21 @@ function formatSatelliteSummary(sat: SatelliteDiag): string {
 }
 
 function formatCellSummary(cell: CellularDiag): string {
+  if (cell.modem_not_present) return "No modem detected";
+  if (cell.modem_unreachable) return "Modem not responding — reboot controller";
+
+  const connected = cell.connman_cell_connected === true || cell.pdp_active === true;
+
+  if (!connected) {
+    if (cell.sim_inserted === false) return "No SIM detected";
+    if (cell.no_service) {
+      const carrier = cell.operator_name || cell.provider_code || null;
+      return carrier ? `${carrier} — No service` : "No service";
+    }
+    const carrier = cell.operator_name || cell.provider_code || null;
+    return carrier ? `${carrier} — Not connected` : "Not connected";
+  }
+
   const carrier = cell.operator_name || cell.provider_code || "Cellular";
   const quality = qualityLabel(cell.strength_score, cell.strength_label);
   const scorePart = cell.strength_score !== null && cell.strength_score !== undefined

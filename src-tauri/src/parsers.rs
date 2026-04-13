@@ -151,15 +151,11 @@ pub fn parse_log_into_state(log: &str, state: &mut DiagnosticState) {
             // cellular diag block exists in the log.
             if sp.full_block_run {
                 let cell = parse_cellular(block);
+                // Use merge_cellular_diag so that an authoritative check result from a
+                // prior cellular-diags run (e.g. "red / no service") is preserved and
+                // not overwritten by the AT-command-only parse from the SIM Picker block.
                 state.cellular = Some(match state.cellular.take() {
-                    Some(prev) => {
-                        // Only replace if the block-parsed result has more data
-                        if cell.imei.is_some() || cell.internet_reachable {
-                            cell
-                        } else {
-                            prev
-                        }
-                    }
+                    Some(prev) => merge_cellular_diag(prev, cell),
                     None => cell,
                 });
             }
@@ -2468,8 +2464,13 @@ fn parse_satellite_controller_info(text: &str, diag: &mut SatelliteDiagnostic) {
 }
 
 fn parse_satellite_imei(text: &str, diag: &mut SatelliteDiagnostic) {
+    // Scope to the satellite section markers first so that a cellular IMEI appearing
+    // earlier in a compound diagnostic block is not mistaken for the satellite IMEI.
+    // extract_satellite_scoped_text returns text.to_string() when no markers are
+    // found, so the full text is still searched in the standalone sat-imei case.
+    let scoped = extract_satellite_scoped_text(text);
     if let Ok(imei_re) = Regex::new(r"\b\d{14,17}\b") {
-        if let Some(cap) = imei_re.find(text) {
+        if let Some(cap) = imei_re.find(&scoped) {
             diag.sat_imei = Some(cap.as_str().to_string());
             diag.modem_present = Some(true);
         }

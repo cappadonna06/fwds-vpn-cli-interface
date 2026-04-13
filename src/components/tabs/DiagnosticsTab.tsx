@@ -925,16 +925,30 @@ function buildPressureMetricCards(pressure?: PressureDiagnostic | null): Array<{
   const hasDistribution = distribution !== null && distribution !== undefined && !Number.isNaN(distribution);
   const cards: Array<{ label: string; value: string; tone: HealthTone }> = [];
   if (hasSource) {
+    const sourceIssues = (pressure.issues ?? []).filter((i) => {
+      const h = `${i.title} ${i.description}`.toLowerCase();
+      return h.includes("p3") || h.includes("source");
+    });
+    const issueText = sourceIssues.length > 0 ? sourceIssues[0].title : "";
     cards.push({
       label: "Source (P3)",
-      value: formatPressureSummaryPsi(source),
+      value: issueText
+        ? `${formatPressureSummaryPsi(source)} · ${issueText}`
+        : formatPressureSummaryPsi(source),
       tone: pressureMetricTone(pressure, "source"),
     });
   }
   if (hasDistribution) {
+    const distIssues = (pressure.issues ?? []).filter((i) => {
+      const h = `${i.title} ${i.description}`.toLowerCase();
+      return h.includes("p2") || h.includes("distribution");
+    });
+    const issueText = distIssues.length > 0 ? distIssues[0].title : "";
     cards.push({
       label: "Distribution (P2)",
-      value: formatPressureSummaryPsi(distribution),
+      value: issueText
+        ? `${formatPressureSummaryPsi(distribution)} · ${issueText}`
+        : formatPressureSummaryPsi(distribution),
       tone: pressureMetricTone(pressure, "distribution"),
     });
   }

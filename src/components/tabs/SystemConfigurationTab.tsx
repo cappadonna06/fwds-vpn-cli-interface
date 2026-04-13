@@ -208,7 +208,7 @@ export default function SystemConfigurationTab() {
             <div className="system-config-kv"><span>Preferred Network</span><strong>{titleCase(data?.preferred_network_service_type || data?.preferred_network)}</strong></div>
             <div className="system-config-kv"><span>Hydraulic Hardware</span><strong>{titleCase(data?.hydraulic_hardware_configuration) || "—"}</strong></div>
             <div className="system-config-kv"><span>Foam Module</span><strong>{yesNo(data?.foam_module)}</strong></div>
-            <div className="system-config-kv"><span>No Foam System</span><strong>{yesNo(data?.no_foam_system)}</strong></div>
+            <div className="system-config-kv"><span>Foam System</span><strong>{data?.no_foam_system == null ? "—" : (data.no_foam_system ? "No" : "Yes")}</strong></div>
             <div className="system-config-kv"><span>Drain During Deactivation</span><strong>{yesNo(data?.drain_during_deactivation ?? data?.drain_cycle)}</strong></div>
             <div className="system-config-kv"><span>Init Cycles</span><strong>{data?.initiation_cycles ?? "—"}</strong></div>
             <div className="system-config-kv"><span>Water Use Mode</span><strong>{titleCase(data?.water_use_mode)}</strong></div>
