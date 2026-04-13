@@ -3262,7 +3262,7 @@ fn build_pressure_from_text(text: &str, system: &SystemDiagnostic) -> Option<Pre
                 severity: DiagStatus::Orange,
                 title: "P3 Source Pressure low".into(),
                 description: format!("P3 Source Pressure is {:.2} PSI.", p3_value),
-                action: "Check source valve, booster pump, and upstream water main.".into(),
+                action: "Check source line, and ensure booster pump is operational.".into(),
             });
         }
     }
@@ -4701,7 +4701,7 @@ fn determine_cellular_status(diag: &mut CellularDiagnostic) {
 
         diag.summary = "No service — searching for network".into();
         diag.recommended_action = Some("Check coverage area and antenna".into());
-        diag.other_actions = vec!["Reboot controller".into(), "Check antenna placement".into()];
+        diag.other_actions = vec!["Reboot controller".into(), "Check antenna connection".into()];
         return;
     }
 

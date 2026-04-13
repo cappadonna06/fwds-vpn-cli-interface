@@ -310,7 +310,18 @@ interface DiagCardProps {
 }
 
 type InterfaceKey = "wifi" | "cellular" | "satellite" | "ethernet" | "pressure" | "sim_picker";
-type HoldState = { startedAt: number; expiresAt: number; reason: string; inProgressConfirmed?: boolean };
+type HoldState = {
+  startedAt: number;
+  expiresAt: number;
+  reason: string;
+  inProgressConfirmed?: boolean;
+  // Snapshot of pressure sensor counts at hold-creation time so we can require
+  // NEW readings (counts beyond baseline) before releasing the pressure hold.
+  pressureBaselineCounts?: { source: number; distribution: number; supply: number };
+  // Baseline satellite IMEI at hold-creation time; release early when IMEI
+  // arrives or changes (handles fast-complete without an in_progress transition).
+  satelliteBaselineImei?: string | null;
+};
 
 function resolveBlockScript(block: DiagnosticBlock, tier: "light" | "heavy"): string {
   const custom = tier === "light" ? block.light_script : block.heavy_script;
@@ -383,6 +394,22 @@ function isInterfaceComplete(iface: InterfaceKey, state: DiagnosticState | null 
     return readings.some((sensor) => (sensor?.count ?? 0) > 0) || (p.sensor_errors?.length ?? 0) > 0;
   }
   return false;
+}
+
+// Returns true only when pressure has NEW sensor counts beyond the baseline that
+// was snapshotted when the hold was created, preventing premature release due to
+// leftover readings from a prior session satisfying isInterfaceComplete.
+function isPressureCompleteVsBaseline(
+  state: DiagnosticState | null | undefined,
+  baseline?: { source: number; distribution: number; supply: number },
+): boolean {
+  const p = state?.pressure;
+  if (!p) return false;
+  const src  = p.sensors?.source?.count       ?? 0;
+  const dist = p.sensors?.distribution?.count ?? 0;
+  const sup  = p.sensors?.supply?.count       ?? 0;
+  if (!baseline) return src > 0 || dist > 0 || sup > 0;
+  return src > baseline.source || dist > baseline.distribution || sup > baseline.supply;
 }
 
 function holdTimeoutMsForInterface(iface: InterfaceKey, script: string): number {
@@ -1599,18 +1626,29 @@ export default function DiagnosticsTab() {
           // missed the in_progress=true transition (fast commands).
           const runStartedAtMs = parseBackendTime(state.interface_runs?.[iface]?.started_at);
           const runIsNewer = runStartedAtMs !== null && runStartedAtMs >= hold.startedAt;
-          // For pressure there is no interface_runs entry — auto-confirm after the
-          // grace period so isInterfaceComplete can trigger release when data arrives.
+          // For pressure there is no interface_runs entry — auto-confirm after a
+          // grace period. We still guard release against stale data via baseline counts.
           const pressureGracePassed = iface === "pressure" && (nowMs - hold.startedAt) > 4000;
           const effectiveConfirmed = hold.inProgressConfirmed ||
             state.interface_runs?.[iface]?.in_progress === true ||
             runIsNewer || pressureGracePassed;
-          const complete = isInterfaceComplete(iface, state);
-          // Also release when the countdown ring hits "Done" and data is already
-          // available — prevents the ring showing Done while the card is still frozen.
+          // Pressure: require NEW counts beyond the baseline snapshotted at hold creation.
+          const complete = iface === "pressure"
+            ? isPressureCompleteVsBaseline(state, hold.pressureBaselineCounts)
+            : isInterfaceComplete(iface, state);
           const countdownExpiresAt = interfaceExpirationsRef.current[iface];
           const countdownExpired = countdownExpiresAt != null && countdownExpiresAt <= nowMs;
-          if ((effectiveConfirmed && complete) || hold.expiresAt <= nowMs || (countdownExpired && complete)) {
+          // Satellite: release early when IMEI is newly populated (fast-complete path).
+          const satelliteGotData = iface === "satellite" &&
+            "satelliteBaselineImei" in hold &&
+            !!state.satellite?.sat_imei &&
+            state.satellite.sat_imei !== hold.satelliteBaselineImei;
+          if (
+            (effectiveConfirmed && complete) ||
+            hold.expiresAt <= nowMs ||
+            (countdownExpired && complete) ||
+            satelliteGotData
+          ) {
             willBeReleasedThisCycle.add(iface);
           }
         });
@@ -1644,13 +1682,14 @@ export default function DiagnosticsTab() {
 
             // Mark confirmed once the backend acknowledges the current run has started.
             // Without this, the first poll after Send may see in_progress=false from a
-            // PREVIOUS run, and isInterfaceComplete would immediately release the hold.
+            // PREVIOUS run, and release would be triggered by stale completion data.
             if (!hold.inProgressConfirmed) {
               const runStartedAt = state.interface_runs?.[iface]?.started_at;
               const runIsNewer = runStartedAt != null &&
                 new Date(runStartedAt).getTime() >= hold.startedAt;
-              // Pressure has no interface_runs entry; auto-confirm after 4 s (2 polls)
-              // so completion can be detected via sensor data without waiting forever.
+              // Pressure has no interface_runs entry; auto-confirm after 4 s (2 polls).
+              // Release is still guarded by the baseline count check, so stale data
+              // from a prior session cannot trigger a premature release.
               const pressureGracePassed = iface === "pressure" && (nowMs - hold.startedAt) > 4000;
               if (
                 state.interface_runs?.[iface]?.in_progress === true ||
@@ -1662,15 +1701,24 @@ export default function DiagnosticsTab() {
             }
 
             const currentHold = next[iface] ?? hold;
-            const complete = isInterfaceComplete(iface, state);
+            // Pressure: require NEW counts beyond the baseline snapshotted at hold creation.
+            const complete = iface === "pressure"
+              ? isPressureCompleteVsBaseline(state, currentHold.pressureBaselineCounts)
+              : isInterfaceComplete(iface, state);
             const countdownExpiresAt = interfaceExpirationsRef.current[iface];
             const countdownExpired = countdownExpiresAt != null && countdownExpiresAt <= nowMs;
+            // Satellite: release early when IMEI is newly populated (fast-complete path).
+            const satelliteGotData = iface === "satellite" &&
+              "satelliteBaselineImei" in (currentHold ?? {}) &&
+              !!state.satellite?.sat_imei &&
+              state.satellite.sat_imei !== currentHold.satelliteBaselineImei;
             // Release when: confirmed start + data complete, OR safety timeout,
-            // OR countdown expired and data is already available.
+            // OR countdown expired and data available, OR satellite IMEI just arrived.
             if (currentHold && (
               (currentHold.inProgressConfirmed && complete) ||
               currentHold.expiresAt <= nowMs ||
-              (countdownExpired && complete)
+              (countdownExpired && complete) ||
+              satelliteGotData
             )) {
               delete next[iface];
               changed = true;
@@ -1787,6 +1835,16 @@ export default function DiagnosticsTab() {
         expirations[iface] = cursor;
       }
       interfaceExpirationsRef.current = expirations;
+      // Snapshot baselines before the hold is created so release logic can
+      // distinguish genuinely new data from pre-existing (stale) readings.
+      const pressureSnap = rawDiag?.pressure;
+      const pressureBaseline = {
+        source:       pressureSnap?.sensors?.source?.count       ?? 0,
+        distribution: pressureSnap?.sensors?.distribution?.count ?? 0,
+        supply:       pressureSnap?.sensors?.supply?.count       ?? 0,
+      };
+      const satelliteBaselineImei = rawDiag?.satellite?.sat_imei ?? null;
+
       setCardHolds((prev) => {
         const next = { ...prev };
         touchedInterfaces.forEach((iface) => {
@@ -1802,6 +1860,8 @@ export default function DiagnosticsTab() {
             reason: iface === "satellite" && script.toLowerCase().includes("satellite-check -t")
               ? "Satellite loopback in progress"
               : "Diagnostics command in progress",
+            ...(iface === "pressure" ? { pressureBaselineCounts: pressureBaseline } : {}),
+            ...(iface === "satellite" ? { satelliteBaselineImei } : {}),
           };
         });
         return next;
