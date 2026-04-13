@@ -217,15 +217,25 @@ export function generateNetworkRows(diag: DiagnosticState): NetworkStatusRow[] {
     return "unknown";
   };
 
+  // Mirror the diag card summarize logic: inactive / no-link interfaces show
+  // gray ("unknown") rather than the raw backend "red" status, which the backend
+  // emits even for simply-unconfigured interfaces. This keeps the report status
+  // dots consistent with what the diag cards display.
+  const wifiConnected = diag.wifi?.connected === true
+    || diag.wifi?.connman_wifi_connected === true
+    || diag.wifi?.internet_reachable === true;
+  const ethLinked = diag.ethernet?.link_detected === true
+    || diag.ethernet?.internet_reachable === true;
+
   return [
     {
       interface: "Ethernet",
-      status: toStatus(diag.ethernet?.status),
+      status: !diag.ethernet ? "unknown" : (ethLinked ? toStatus(diag.ethernet.status) : "unknown"),
       summary: diag.ethernet?.summary ?? "Diagnostics not collected",
     },
     {
       interface: "Wi-Fi",
-      status: toStatus(diag.wifi?.status),
+      status: !diag.wifi ? "unknown" : (wifiConnected ? toStatus(diag.wifi.status) : "unknown"),
       summary: diag.wifi ? formatWifiSummary(diag.wifi) : "Diagnostics not collected",
     },
     {

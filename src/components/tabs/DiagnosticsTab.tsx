@@ -1559,10 +1559,23 @@ export default function DiagnosticsTab() {
         (Object.keys(cardHoldsRef.current) as InterfaceKey[]).forEach((iface) => {
           const hold = cardHoldsRef.current[iface];
           if (!hold) return;
+          // started_at >= hold.startedAt means a new run completed even if polling
+          // missed the in_progress=true transition (fast commands).
+          const runStartedAt = state.interface_runs?.[iface]?.started_at;
+          const runIsNewer = runStartedAt != null &&
+            new Date(runStartedAt).getTime() >= hold.startedAt;
+          // For pressure there is no interface_runs entry — auto-confirm after the
+          // grace period so isInterfaceComplete can trigger release when data arrives.
+          const pressureGracePassed = iface === "pressure" && (nowMs - hold.startedAt) > 4000;
           const effectiveConfirmed = hold.inProgressConfirmed ||
-            state.interface_runs?.[iface]?.in_progress === true;
+            state.interface_runs?.[iface]?.in_progress === true ||
+            runIsNewer || pressureGracePassed;
           const complete = isInterfaceComplete(iface, state);
-          if ((effectiveConfirmed && complete) || hold.expiresAt <= nowMs) {
+          // Also release when the countdown ring hits "Done" and data is already
+          // available — prevents the ring showing Done while the card is still frozen.
+          const countdownExpiresAt = interfaceExpirationsRef.current[iface];
+          const countdownExpired = countdownExpiresAt != null && countdownExpiresAt <= nowMs;
+          if ((effectiveConfirmed && complete) || hold.expiresAt <= nowMs || (countdownExpired && complete)) {
             willBeReleasedThisCycle.add(iface);
           }
         });
@@ -1593,15 +1606,33 @@ export default function DiagnosticsTab() {
             // Mark confirmed once the backend acknowledges the current run has started.
             // Without this, the first poll after Send may see in_progress=false from a
             // PREVIOUS run, and isInterfaceComplete would immediately release the hold.
-            if (!hold.inProgressConfirmed && state.interface_runs?.[iface]?.in_progress === true) {
-              next[iface] = { ...hold, inProgressConfirmed: true };
-              changed = true;
+            if (!hold.inProgressConfirmed) {
+              const runStartedAt = state.interface_runs?.[iface]?.started_at;
+              const runIsNewer = runStartedAt != null &&
+                new Date(runStartedAt).getTime() >= hold.startedAt;
+              // Pressure has no interface_runs entry; auto-confirm after 4 s (2 polls)
+              // so completion can be detected via sensor data without waiting forever.
+              const pressureGracePassed = iface === "pressure" && (nowMs - hold.startedAt) > 4000;
+              if (
+                state.interface_runs?.[iface]?.in_progress === true ||
+                runIsNewer || pressureGracePassed
+              ) {
+                next[iface] = { ...hold, inProgressConfirmed: true };
+                changed = true;
+              }
             }
 
             const currentHold = next[iface] ?? hold;
             const complete = isInterfaceComplete(iface, state);
-            // Release when: confirmed start + data complete, OR safety timeout.
-            if (currentHold && ((currentHold.inProgressConfirmed && complete) || currentHold.expiresAt <= nowMs)) {
+            const countdownExpiresAt = interfaceExpirationsRef.current[iface];
+            const countdownExpired = countdownExpiresAt != null && countdownExpiresAt <= nowMs;
+            // Release when: confirmed start + data complete, OR safety timeout,
+            // OR countdown expired and data is already available.
+            if (currentHold && (
+              (currentHold.inProgressConfirmed && complete) ||
+              currentHold.expiresAt <= nowMs ||
+              (countdownExpired && complete)
+            )) {
               delete next[iface];
               changed = true;
             }
@@ -1702,21 +1733,9 @@ export default function DiagnosticsTab() {
     try {
       const now = Date.now();
       const touchedInterfaces = interfacesForBlock(block, script);
-      setCardHolds((prev) => {
-        const next = { ...prev };
-        touchedInterfaces.forEach((iface) => {
-          next[iface] = {
-            startedAt: now,
-            expiresAt: now + holdTimeoutMsForInterface(iface, script),
-            reason: iface === "satellite" && script.toLowerCase().includes("satellite-check -t")
-              ? "Satellite loopback in progress"
-              : "Diagnostics command in progress",
-          };
-        });
-        return next;
-      });
-      // Compute per-interface sequential expiry: each card's countdown ends at
-      // commandSentAt + sum(durations of all preceding interfaces) + its own duration.
+      // Compute per-interface sequential expiry FIRST so hold.expiresAt and the
+      // countdown ring both expire at the same moment (no "Done" ring while hold
+      // is still blocking the card update).
       commandSentAtRef.current = now;
       const expirations: Partial<Record<InterfaceKey, number>> = {};
       let cursor = now;
@@ -1725,6 +1744,25 @@ export default function DiagnosticsTab() {
         expirations[iface] = cursor;
       }
       interfaceExpirationsRef.current = expirations;
+      setCardHolds((prev) => {
+        const next = { ...prev };
+        touchedInterfaces.forEach((iface) => {
+          next[iface] = {
+            startedAt: now,
+            // Align hold timeout with the sequential countdown expiry, floored at
+            // the interface's individual safety minimum (e.g. 60 s for most, 15 min
+            // for satellite loopback) so short-sequential entries still get coverage.
+            expiresAt: Math.max(
+              now + holdTimeoutMsForInterface(iface, script),
+              expirations[iface] ?? now + holdTimeoutMsForInterface(iface, script),
+            ),
+            reason: iface === "satellite" && script.toLowerCase().includes("satellite-check -t")
+              ? "Satellite loopback in progress"
+              : "Diagnostics command in progress",
+          };
+        });
+        return next;
+      });
       await sendCommandText(script);
       setSentCommandId(blockId);
       setTimeout(() => setSentCommandId((prev) => (prev === blockId ? null : prev)), 1400);
@@ -1771,7 +1809,16 @@ export default function DiagnosticsTab() {
     });
     setDisplayDiag((prev) => {
       if (!prev || !rawDiag) return prev;
-      return { ...prev, [iface]: (rawDiag as any)?.[iface] ?? null };
+      const next = { ...prev, [iface]: (rawDiag as any)?.[iface] ?? null };
+      // Force in_progress=false so the static "Updating…" label clears immediately
+      // even when the backend still reports in_progress=true for this interface.
+      if (next.interface_runs?.[iface]) {
+        next.interface_runs = {
+          ...next.interface_runs,
+          [iface]: { ...next.interface_runs[iface], in_progress: false },
+        };
+      }
+      return next;
     });
     setCardUpdatedAt((prev) => ({ ...prev, [iface]: new Date().toLocaleTimeString() }));
   }
