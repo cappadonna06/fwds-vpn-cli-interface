@@ -15,6 +15,7 @@ interface EthernetDiag {
   summary: string;
   link_detected?: boolean | null;
   flap_count?: number;
+  internet_reachable?: boolean | null;
 }
 
 interface WifiDiag {
@@ -25,6 +26,7 @@ interface WifiDiag {
   connected?: boolean | null;
   connman_wifi_connected?: boolean | null;
   internet_reachable?: boolean | null;
+  connman_wifi_powered?: boolean | null;
   strength_score?: number | null;
   strength_label?: string | null;
   signal_dbm?: number | null;

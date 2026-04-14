@@ -225,6 +225,7 @@ interface SystemDiagnostic {
   version?: string | null;
   release_date?: string | null;
   preferred_network?: string | null;
+  system_type?: string | null;
 }
 
 type SimPickerRecommendation =
@@ -2132,7 +2133,7 @@ export default function DiagnosticsTab() {
           onSendCommand={() => sendDiagnosticBlock("firmware")}
           sent={sentCommandId === "firmware"}
           compact={firmwareSummary.health === "neutral"}
-          updating={displayDiag?.interface_runs?.system?.in_progress === true && !currentFirmware}
+          updating={Object.values(displayDiag?.interface_runs || {}).some(r => r.in_progress) && !currentFirmware}
           inlineControls={
             <FirmwareVersionEditor
               value={latestFirmwareVersion}
