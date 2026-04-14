@@ -62,6 +62,14 @@ function yesNo(value?: boolean | null): string {
   return "—";
 }
 
+// Format ISO-8601 date strings (e.g. "2026-01-30T17:19:56-08:00") as MM/DD/YYYY.
+function formatDate(raw?: string | null): string {
+  if (!raw) return "—";
+  const m = raw.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!m) return raw;
+  return `${m[2]}/${m[3]}/${m[1]}`;
+}
+
 export default function SystemConfigurationTab() {
   const [copied, setCopied] = useState(false);
   const [sent, setSent] = useState(false);
@@ -192,7 +200,7 @@ export default function SystemConfigurationTab() {
             <div className="system-config-kv"><span>System Type</span><strong>{data?.system_type || "—"}</strong></div>
             <div className="system-config-kv"><span>Firmware Version</span><strong>{data?.version || "—"}</strong></div>
             {data?.release_date && (
-              <div className="system-config-kv"><span>Release Date</span><strong>{data.release_date}</strong></div>
+              <div className="system-config-kv"><span>Release Date</span><strong>{formatDate(data.release_date)}</strong></div>
             )}
             <div className="system-config-kv"><span>Cellular IMEI</span><strong>{diagState?.cellular?.imei || "—"}</strong></div>
             <div className="system-config-kv"><span>Satellite IMEI</span><strong>{diagState?.satellite?.sat_imei || data?.imei || "—"}</strong></div>

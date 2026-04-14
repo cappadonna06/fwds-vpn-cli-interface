@@ -146,19 +146,12 @@ pub fn parse_log_into_state(log: &str, state: &mut DiagnosticState) {
     if let Some(block) = sim_picker_block {
         let sp = parse_sim_picker(block);
         if sp.scan_attempted || sp.full_block_run {
-            // When the unified SIM Picker block was run it contains all cellular commands too.
-            // Parse cellular from it so the Cellular card populates even if no separate
-            // cellular diag block exists in the log.
-            if sp.full_block_run {
-                let cell = parse_cellular(block);
-                // Use merge_cellular_diag so that an authoritative check result from a
-                // prior cellular-diags run (e.g. "red / no service") is preserved and
-                // not overwritten by the AT-command-only parse from the SIM Picker block.
-                state.cellular = Some(match state.cellular.take() {
-                    Some(prev) => merge_cellular_diag(prev, cell),
-                    None => cell,
-                });
-            }
+            // NOTE: We intentionally do NOT parse or merge cellular state from the SIM
+            // picker block. The SIM picker runs cell-support --at --scan which puts the
+            // modem in "searching" mode (+CREG: 0,2), producing a transient orange
+            // "Searching for service" state that would corrupt a valid red "No service"
+            // result from a prior cellular diagnostic run. Cellular card state is managed
+            // exclusively by dedicated cellular diagnostic runs.
             state.sim_picker = Some(sp);
         }
     }
@@ -544,6 +537,27 @@ fn find_latest_body_contains<'a>(blocks: &'a [CommandBlock], markers: &[&str]) -
         if markers
             .iter()
             .all(|m| lower.contains(&m.to_ascii_lowercase()))
+        {
+            Some(body)
+        } else {
+            None
+        }
+    })
+}
+
+/// Like `find_latest_body_contains` but skips blocks whose body also contains
+/// any of the `excluded` markers. Used to prevent SIM-picker blocks (which embed
+/// a full cellular diagnostic) from being treated as a standalone cellular run.
+fn find_latest_body_contains_excl<'a>(
+    blocks: &'a [CommandBlock],
+    required: &[&str],
+    excluded: &[&str],
+) -> Option<&'a str> {
+    blocks.iter().rev().find_map(|block| {
+        let body = block.body.as_str();
+        let lower = body.to_ascii_lowercase();
+        if required.iter().all(|m| lower.contains(&m.to_ascii_lowercase()))
+            && excluded.iter().all(|m| !lower.contains(&m.to_ascii_lowercase()))
         {
             Some(body)
         } else {
@@ -2218,9 +2232,14 @@ fn parse_cellular_from_latest(blocks: &[CommandBlock]) -> Option<CellularDiagnos
     // positionally assigned to basic_provider (→ card title) and basic_apn.
     // With a single early marker, full_section_parsed triggers within ~0.5s and
     // parse_cellular_block safely handles missing later sections via extract_between.
-    if let Some(block) =
-        find_latest_body_contains(blocks, &["===== cellular connectivity test ====="])
-    {
+    // Exclude SIM picker blocks — they embed a full cellular diagnostic run (same
+    // markers) but the AT scan command puts the modem into "searching" mode
+    // (+CREG: 0,2), which would corrupt the cellular card with a transient state.
+    if let Some(block) = find_latest_body_contains_excl(
+        blocks,
+        &["===== cellular connectivity test ====="],
+        &["===== sim picker start ====="],
+    ) {
         parse_cellular_block(block, &mut diag);
         has_cellular_specific = true;
         full_section_parsed = true;
