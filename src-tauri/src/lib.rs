@@ -1290,8 +1290,8 @@ fn open_local_serial_terminal(device: String, state: State<'_, AppState>) -> Res
             .timeout(Duration::from_millis(50))
             .open()
             .map_err(|e| match e.kind() {
-                serialport::ErrorKind::Io(ref io_err)
-                    if io_err.kind() == std::io::ErrorKind::PermissionDenied =>
+                serialport::ErrorKind::Io(io_kind)
+                    if io_kind == std::io::ErrorKind::PermissionDenied =>
                 {
                     format!("Port {port_name} is busy or access denied.")
                 }
