@@ -252,7 +252,7 @@ export default function SessionTab({ onControllerConnected }: SessionTabProps) {
     try {
       await invoke("open_controller_terminal");
       await invoke("start_log_watcher").catch(() => {});
-      showSuccess("Connection successful — terminal app opened");
+      showSuccess("Connection successful — terminal and Console tab ready");
       onControllerConnected?.();
     } catch (e) {
       setCtrlDetail(String(e));
@@ -287,7 +287,7 @@ export default function SessionTab({ onControllerConnected }: SessionTabProps) {
       await invoke("open_local_serial_terminal", { device: serialDevice });
       await invoke("start_log_watcher").catch(() => {});
       setSerialDetail("Connected");
-      showSuccess("Connection successful — terminal app opened");
+      showSuccess("Connection successful — use the Console tab to interact");
       onControllerConnected?.();
     } catch (e) {
       setSerialDetail(String(e));

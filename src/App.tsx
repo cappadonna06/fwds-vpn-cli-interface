@@ -4,6 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { confirm } from "@tauri-apps/plugin-dialog";
 import SessionTab from "./components/tabs/SessionTab";
+import ConsoleTab from "./components/tabs/ConsoleTab";
 import CommandsTab from "./components/tabs/CommandsTab";
 import WizardTab from "./components/tabs/WizardTab";
 import ReportTab from "./components/tabs/ReportTab";
@@ -16,10 +17,11 @@ import { StatusPillState } from "./components/shell/StatusPill";
 import "./App.css";
 import "./components/tabs/tabs.css";
 
-type Tab = "session" | "commands" | "wizard" | "system-configuration" | "report" | "diagnostics";
+type Tab = "session" | "console" | "commands" | "wizard" | "system-configuration" | "report" | "diagnostics";
 
 const TABS: { id: Tab; label: string; badge?: string }[] = [
   { id: "session", label: "Connect" },
+  { id: "console", label: "Console" },
   { id: "commands", label: "Commands" },
   { id: "wizard", label: "Setup Wizard" },
   { id: "system-configuration", label: "System Configuration" },
@@ -191,7 +193,10 @@ export default function App() {
 
         <main className="app-body">
           <div style={{ display: activeTab === "session" ? "contents" : "none" }}>
-            <SessionTab />
+            <SessionTab onControllerConnected={() => setActiveTab("console")} />
+          </div>
+          <div style={{ display: activeTab === "console" ? "contents" : "none" }}>
+            <ConsoleTab />
           </div>
           <div style={{ display: activeTab === "commands" ? "contents" : "none" }}>
             <CommandsTab />
