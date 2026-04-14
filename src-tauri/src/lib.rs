@@ -62,6 +62,12 @@ struct InnerState {
 
     // External Terminal.app session target (window id) used by Send buttons.
     external_terminal_window_id: Option<i64>,
+
+    // Windows-only: backend-owned serial port writer and reader-thread stop flag.
+    #[cfg(target_os = "windows")]
+    windows_serial_writer: Option<Arc<Mutex<Box<dyn serialport::SerialPort + Send>>>>,
+    #[cfg(target_os = "windows")]
+    windows_serial_stop: Option<Arc<AtomicBool>>,
 }
 
 struct AppState {
@@ -1038,9 +1044,31 @@ fn toggle_debug(state: State<'_, AppState>) -> Result<bool, String> {
     Ok(inner.shell_debug)
 }
 
-/// Send Ctrl+C (interrupt byte \x03) to the active controller shell.
+/// Send Ctrl+C (interrupt byte \x03) to the active controller shell or serial port.
 #[tauri::command]
 fn send_interrupt(state: State<'_, AppState>) -> Result<(), String> {
+    // ── Windows: send interrupt to backend-owned serial port ─────────────────
+    #[cfg(target_os = "windows")]
+    {
+        let (mode, writer_arc) = {
+            let inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
+            (
+                inner.connection_mode.clone(),
+                inner.windows_serial_writer.clone(),
+            )
+        };
+        if mode == "local" {
+            let writer_arc = writer_arc.ok_or_else(|| "No serial port open".to_string())?;
+            let mut port = writer_arc.lock().map_err(|_| "serial port lock poisoned")?;
+            port.write_all(b"\x03")
+                .map_err(|e| format!("Serial interrupt error: {e}"))?;
+            port.flush()
+                .map_err(|e| format!("Serial flush error: {e}"))?;
+            return Ok(());
+        }
+    }
+
+    // ── SSH path (macOS VPN mode) ─────────────────────────────────────────────
     let mut inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
     let Some(stdin) = inner.shell_stdin.as_mut() else {
         return Err("No active controller shell".into());
@@ -1202,19 +1230,49 @@ fn open_controller_terminal(state: State<'_, AppState>) -> Result<(), String> {
     }
 }
 
+/// Extract the bare port name from a display string like "COM3 (FT232R USB UART)".
+/// On macOS the device path is used as-is (no parenthesised label added).
+fn port_name_from_display(s: &str) -> &str {
+    s.split(" (").next().unwrap_or(s)
+}
+
 #[tauri::command]
 fn list_serial_devices() -> Result<Vec<String>, String> {
-    let entries = fs::read_dir("/dev").map_err(|e| format!("Failed to read /dev: {e}"))?;
-    let mut devices = Vec::new();
-    for entry in entries.flatten() {
-        let name = entry.file_name();
-        let name = name.to_string_lossy();
-        if name.starts_with("cu.") {
-            devices.push(format!("/dev/{name}"));
-        }
+    // ── Windows: enumerate COM ports via the serialport crate ─────────────────
+    #[cfg(target_os = "windows")]
+    {
+        use serialport::SerialPortType;
+        let ports = serialport::available_ports()
+            .map_err(|e| format!("Failed to enumerate COM ports: {e}"))?;
+        let mut devices: Vec<String> = ports
+            .iter()
+            .map(|p| match &p.port_type {
+                SerialPortType::UsbPort(info) => {
+                    let label = info.product.as_deref().unwrap_or("USB Serial");
+                    format!("{} ({})", p.port_name, label)
+                }
+                _ => p.port_name.clone(),
+            })
+            .collect();
+        devices.sort();
+        return Ok(devices);
     }
-    devices.sort();
-    Ok(devices)
+
+    // ── macOS: scan /dev for cu.* entries ────────────────────────────────────
+    #[allow(unreachable_code)]
+    {
+        let entries = fs::read_dir("/dev").map_err(|e| format!("Failed to read /dev: {e}"))?;
+        let mut devices = Vec::new();
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if name.starts_with("cu.") {
+                devices.push(format!("/dev/{name}"));
+            }
+        }
+        devices.sort();
+        Ok(devices)
+    }
 }
 
 #[tauri::command]
@@ -1223,62 +1281,171 @@ fn open_local_serial_terminal(device: String, state: State<'_, AppState>) -> Res
         return Err("Serial device is required".into());
     }
 
+    // ── Windows: open serial port directly in the backend ────────────────────
+    #[cfg(target_os = "windows")]
     {
-        let mut inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
-        inner.connection_mode = "local".into();
-        inner.local_serial_device = Some(device.clone());
+        let port_name = port_name_from_display(&device).to_owned();
+
+        let port = serialport::new(&port_name, 115_200)
+            .timeout(Duration::from_millis(50))
+            .open()
+            .map_err(|e| match e.kind() {
+                serialport::ErrorKind::Io(ref io_err)
+                    if io_err.kind() == std::io::ErrorKind::PermissionDenied =>
+                {
+                    format!("Port {port_name} is busy or access denied.")
+                }
+                serialport::ErrorKind::NoDevice => {
+                    format!("Port {port_name} not found. Check USB connection.")
+                }
+                _ => format!("Failed to open {port_name}: {e}"),
+            })?;
+
+        let writer = port
+            .try_clone()
+            .map_err(|e| format!("Failed to clone serial port handle: {e}"))?;
+
+        let stop_flag = Arc::new(AtomicBool::new(false));
+        let stop_clone = Arc::clone(&stop_flag);
+
+        {
+            let mut inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
+            inner.windows_serial_writer = Some(Arc::new(Mutex::new(writer)));
+            inner.windows_serial_stop = Some(stop_flag);
+            inner.local_serial_device = Some(device.clone());
+            inner.connection_mode = "local".into();
+            inner.shell_phase = "connected".into();
+            inner.shell_detail = format!("Serial: {port_name}");
+            inner
+                .shell_logs
+                .push(format!("[Connected to {port_name} @ 115200]"));
+        }
+
+        let state_inner = Arc::clone(&state.inner);
+        let mut reader = port;
+
+        thread::spawn(move || {
+            let mut buf = [0u8; 512];
+            let mut partial = String::new();
+            loop {
+                if stop_clone.load(Ordering::Relaxed) {
+                    break;
+                }
+                match reader.read(&mut buf) {
+                    Ok(0) => continue,
+                    Ok(n) => {
+                        partial.push_str(&String::from_utf8_lossy(&buf[..n]));
+                        while let Some(pos) = partial.find('\n') {
+                            let line = partial.drain(..=pos).collect::<String>();
+                            let line = line.trim_end_matches(|c| c == '\r' || c == '\n').to_owned();
+                            if !line.is_empty() {
+                                if let Ok(mut inner) = state_inner.lock() {
+                                    inner.shell_logs.push(line);
+                                }
+                            }
+                        }
+                    }
+                    Err(ref e) if e.kind() == std::io::ErrorKind::TimedOut => continue,
+                    Err(_) => break,
+                }
+            }
+            // Mark session as disconnected when the reader exits.
+            if let Ok(mut inner) = state_inner.lock() {
+                if inner.connection_mode == "local" && inner.shell_phase == "connected" {
+                    inner.shell_phase = "disconnected".into();
+                    inner.shell_detail = "Serial port closed".into();
+                    inner.shell_logs.push("[Serial port disconnected]".into());
+                }
+            }
+        });
+
+        return Ok(());
     }
 
-    let log_path = local_serial_log_file(&device);
-    let command = format!(
-        "clear; script -q {} minicom -D {} -b 115200; exit",
-        shell_quote(&log_path.to_string_lossy()),
-        shell_quote(&device),
-    );
-    let script = format!(
-        "tell application \"Terminal\"\nactivate\ndo script {}\ndelay 0.1\nreturn id of front window\nend tell",
-        applescript_string_literal(&command)
-    );
-
-    let out = Command::new("osascript")
-        .arg("-e")
-        .arg(&script)
-        .output()
-        .map_err(|e| format!("Failed to open Terminal: {e}"))?;
-
-    if out.status.success() {
-        let window_id = String::from_utf8_lossy(&out.stdout)
-            .trim()
-            .parse::<i64>()
-            .ok();
-        if let Ok(mut inner) = state.inner.lock() {
-            inner.external_terminal_window_id = window_id;
+    // ── macOS: launch Terminal.app with minicom ───────────────────────────────
+    #[cfg(not(target_os = "windows"))]
+    {
+        {
+            let mut inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
+            inner.connection_mode = "local".into();
+            inner.local_serial_device = Some(device.clone());
         }
-        start_log_watcher_internal(&state, false)?;
-        Ok(())
-    } else {
-        let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
-        Err(if stderr.is_empty() {
-            "Terminal launch failed.".into()
+
+        let log_path = local_serial_log_file(&device);
+        let command = format!(
+            "clear; script -q {} minicom -D {} -b 115200; exit",
+            shell_quote(&log_path.to_string_lossy()),
+            shell_quote(&device),
+        );
+        let script = format!(
+            "tell application \"Terminal\"\nactivate\ndo script {}\ndelay 0.1\nreturn id of front window\nend tell",
+            applescript_string_literal(&command)
+        );
+
+        let out = Command::new("osascript")
+            .arg("-e")
+            .arg(&script)
+            .output()
+            .map_err(|e| format!("Failed to open Terminal: {e}"))?;
+
+        if out.status.success() {
+            let window_id = String::from_utf8_lossy(&out.stdout)
+                .trim()
+                .parse::<i64>()
+                .ok();
+            if let Ok(mut inner) = state.inner.lock() {
+                inner.external_terminal_window_id = window_id;
+            }
+            start_log_watcher_internal(&state, false)?;
+            Ok(())
         } else {
-            format!("Failed to open Terminal: {stderr}")
-        })
+            let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+            Err(if stderr.is_empty() {
+                "Terminal launch failed.".into()
+            } else {
+                format!("Failed to open Terminal: {stderr}")
+            })
+        }
     }
 }
 
 #[tauri::command]
 fn disconnect_local_controller(state: State<'_, AppState>) -> Result<(), String> {
+    // ── Windows: stop reader thread and close serial port ────────────────────
+    #[cfg(target_os = "windows")]
     {
         let mut inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
+        if let Some(stop) = inner.windows_serial_stop.take() {
+            stop.store(true, Ordering::Relaxed);
+        }
+        inner.windows_serial_writer.take(); // dropping closes the port
+        inner.shell_phase = "disconnected".into();
+        inner.shell_detail = String::new();
+        inner.shell_logs.push("[Disconnected]".into());
         inner.local_serial_device = None;
-        inner.connection_mode = "local".into();
-        inner.external_terminal_window_id = None;
+        inner.connection_mode = "vpn".into(); // reset to default for next session
+        drop(inner);
+        if let Ok(mut diag) = state.diagnostic_state.lock() {
+            *diag = DiagnosticState::default();
+        }
+        return Ok(());
     }
-    stop_log_watcher_internal(&state)?;
-    if let Ok(mut diag) = state.diagnostic_state.lock() {
-        *diag = DiagnosticState::default();
+
+    // ── macOS: clear window ref and stop log watcher ──────────────────────────
+    #[cfg(not(target_os = "windows"))]
+    {
+        {
+            let mut inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
+            inner.local_serial_device = None;
+            inner.connection_mode = "local".into();
+            inner.external_terminal_window_id = None;
+        }
+        stop_log_watcher_internal(&state)?;
+        if let Ok(mut diag) = state.diagnostic_state.lock() {
+            *diag = DiagnosticState::default();
+        }
+        Ok(())
     }
-    Ok(())
 }
 
 /// Lightweight status for the Session tab — does NOT advance the ConsoleTab cursor.
@@ -1306,8 +1473,34 @@ fn get_app_state(state: State<'_, AppState>) -> Result<serde_json::Value, String
 }
 
 /// Send input to the active external Terminal.app session (window/tab launched by this app).
+/// On Windows with a local serial session, writes directly to the backend-owned serial port.
 #[tauri::command]
 fn send_external_input(text: String, state: State<'_, AppState>) -> Result<(), String> {
+    // ── Windows: write directly to backend-owned serial port ─────────────────
+    #[cfg(target_os = "windows")]
+    {
+        let (mode, writer_arc) = {
+            let inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
+            (
+                inner.connection_mode.clone(),
+                inner.windows_serial_writer.clone(),
+            )
+        };
+        if mode == "local" {
+            let writer_arc = writer_arc.ok_or_else(|| "No serial port open".to_string())?;
+            let mut port = writer_arc.lock().map_err(|_| "serial port lock poisoned")?;
+            let payload = format!("{text}\r\n");
+            port.write_all(payload.as_bytes())
+                .map_err(|e| format!("Serial write error: {e}"))?;
+            port.flush()
+                .map_err(|e| format!("Serial flush error: {e}"))?;
+            return Ok(());
+        }
+        // VPN/SSH mode on Windows falls through; caller receives an osascript error
+        // (VPN connections are not supported on Windows).
+    }
+
+    // ── macOS: type into Terminal.app window via AppleScript ─────────────────
     let window_id = {
         let inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
         inner
@@ -1507,7 +1700,8 @@ fn start_log_watcher_internal(state: &AppState, start_from_end: bool) -> Result<
                         if prev_sid.is_none() && current_sid.is_some() {
                             if let Ok(h) = app_handle_arc.lock() {
                                 if let Some(handle) = h.as_ref() {
-                                    let _ = handle.emit("controller-sid-detected", current_sid.clone());
+                                    let _ =
+                                        handle.emit("controller-sid-detected", current_sid.clone());
                                 }
                             }
                         }
@@ -1516,14 +1710,21 @@ fn start_log_watcher_internal(state: &AppState, start_from_end: bool) -> Result<
                         // Notify frontend whenever system diagnostic data changes so that
                         // the System Configuration tab refreshes without waiting for its
                         // 2-second poll cycle.
-                        let current_system_sig = diag.system.as_ref().map(|s| {
-                            format!(
-                                "{:?}|{:?}|{:?}|{:?}|{:?}|{}",
-                                s.version, s.sid, s.hydraulic_hardware_configuration,
-                                s.preferred_network, s.zone_count,
-                                s.zones.len()
-                            )
-                        }).unwrap_or_default();
+                        let current_system_sig = diag
+                            .system
+                            .as_ref()
+                            .map(|s| {
+                                format!(
+                                    "{:?}|{:?}|{:?}|{:?}|{:?}|{}",
+                                    s.version,
+                                    s.sid,
+                                    s.hydraulic_hardware_configuration,
+                                    s.preferred_network,
+                                    s.zone_count,
+                                    s.zones.len()
+                                )
+                            })
+                            .unwrap_or_default();
                         if current_system_sig != prev_system_sig && !current_system_sig.is_empty() {
                             if let Ok(h) = app_handle_arc.lock() {
                                 if let Some(handle) = h.as_ref() {

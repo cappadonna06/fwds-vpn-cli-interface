@@ -109,8 +109,16 @@ pub fn parse_log_into_state(log: &str, state: &mut DiagnosticState) {
         find_latest(&blocks, &["sid"]),
         find_latest(&blocks, &["version"]).or(controller_info_body.as_deref()),
         find_latest(&blocks, &["release"]),
-        find_latest(&blocks, &["cat /var/etc/fwds/station_info", "cat-station-info"]).or(system_section_body),
-        find_latest(&blocks, &["cat /var/etc/fwds/system_info", "cat-system-info"]).or(system_section_body),
+        find_latest(
+            &blocks,
+            &["cat /var/etc/fwds/station_info", "cat-station-info"],
+        )
+        .or(system_section_body),
+        find_latest(
+            &blocks,
+            &["cat /var/etc/fwds/system_info", "cat-system-info"],
+        )
+        .or(system_section_body),
     );
     if system.sid.is_none() {
         system.sid = parse_sid_from_prompt(log);
@@ -238,16 +246,22 @@ fn is_interface_complete(iface: &str, state: &DiagnosticState, lower_log: &str) 
                 state
                     .cellular
                     .as_ref()
-                    .map(|c| c.check_result != "Unknown" || c.imei.is_some() || c.basic_status.is_some())
+                    .map(|c| {
+                        c.check_result != "Unknown" || c.imei.is_some() || c.basic_status.is_some()
+                    })
                     .unwrap_or(false)
             }
         }
-        "sim_picker" => state
-            .sim_picker
-            .as_ref()
-            .map(|sp| sp.scan_attempted && (sp.scan_completed || sp.scan_failed || sp.scan_empty))
-            .unwrap_or(false)
-            || lower_log.contains("===== sim picker end ====="),
+        "sim_picker" => {
+            state
+                .sim_picker
+                .as_ref()
+                .map(|sp| {
+                    sp.scan_attempted && (sp.scan_completed || sp.scan_failed || sp.scan_empty)
+                })
+                .unwrap_or(false)
+                || lower_log.contains("===== sim picker end =====")
+        }
         "satellite" => {
             let has_sat_start = lower_log.contains("===== satellite diagnostics start =====")
                 || lower_log.contains("===== satellite basic =====")
@@ -556,8 +570,12 @@ fn find_latest_body_contains_excl<'a>(
     blocks.iter().rev().find_map(|block| {
         let body = block.body.as_str();
         let lower = body.to_ascii_lowercase();
-        if required.iter().all(|m| lower.contains(&m.to_ascii_lowercase()))
-            && excluded.iter().all(|m| !lower.contains(&m.to_ascii_lowercase()))
+        if required
+            .iter()
+            .all(|m| lower.contains(&m.to_ascii_lowercase()))
+            && excluded
+                .iter()
+                .all(|m| !lower.contains(&m.to_ascii_lowercase()))
         {
             Some(body)
         } else {
@@ -2519,8 +2537,8 @@ fn parse_satellite_imei(text: &str, diag: &mut SatelliteDiagnostic) {
 
     // Detect whether this block has satellite-specific section markers and/or
     // non-satellite section markers (cellular, ethernet, wifi, pressure).
-    let has_satellite_markers = lower_text.contains("===== satellite")
-        || lower_text.contains("===== quick satellite");
+    let has_satellite_markers =
+        lower_text.contains("===== satellite") || lower_text.contains("===== quick satellite");
     let has_non_satellite_markers = lower_text.contains("===== cellular")
         || lower_text.contains("===== wifi")
         || lower_text.contains("===== eth")
@@ -3495,8 +3513,8 @@ fn parse_system(
     // Scan lines in reverse so that the last valid version string wins.
     // Using find_map with sanitize_version avoids returning non-version lines (e.g., a SID)
     // that happen to be the last line of a compound block's version/controller-info section.
-    let version = version_block
-        .and_then(|b| b.lines().rev().find_map(|l| sanitize_version(l.trim())));
+    let version =
+        version_block.and_then(|b| b.lines().rev().find_map(|l| sanitize_version(l.trim())));
     let release_date = release_block.and_then(|b| capture_after(b, "Date:"));
     let system_name = display_name.clone();
     let preferred_network = station_info_block
@@ -4720,7 +4738,10 @@ fn determine_cellular_status(diag: &mut CellularDiagnostic) {
 
         diag.summary = "No service — searching for network".into();
         diag.recommended_action = Some("Check coverage area and antenna".into());
-        diag.other_actions = vec!["Reboot controller".into(), "Check antenna connection".into()];
+        diag.other_actions = vec![
+            "Reboot controller".into(),
+            "Check antenna connection".into(),
+        ];
         return;
     }
 
