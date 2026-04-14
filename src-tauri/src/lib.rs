@@ -1449,6 +1449,7 @@ fn disconnect_local_controller(state: State<'_, AppState>) -> Result<(), String>
         inner.local_serial_device = None;
         inner.connection_mode = "vpn".into(); // reset to default for next session
         drop(inner);
+        stop_log_watcher_internal(&state)?;
         if let Ok(mut diag) = state.diagnostic_state.lock() {
             *diag = DiagnosticState::default();
         }
