@@ -1305,6 +1305,19 @@ fn open_local_serial_terminal(device: String, state: State<'_, AppState>) -> Res
             .try_clone()
             .map_err(|e| format!("Failed to clone serial port handle: {e}"))?;
 
+        // Create (or truncate) the diagnostic log file so start_log_watcher_internal
+        // can begin tailing it immediately. The reader thread appends to this file so
+        // parse_log_into_state() feeds DiagnosticState the same way as macOS.
+        let log_path = local_serial_log_file(&device);
+        if let Some(parent) = log_path.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        let log_file = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_path)
+            .map_err(|e| format!("Failed to create serial log file: {e}"))?;
+
         let stop_flag = Arc::new(AtomicBool::new(false));
         let stop_clone = Arc::clone(&stop_flag);
 
@@ -1323,6 +1336,7 @@ fn open_local_serial_terminal(device: String, state: State<'_, AppState>) -> Res
 
         let state_inner = Arc::clone(&state.inner);
         let mut reader = port;
+        let mut log_writer = std::io::BufWriter::new(log_file);
 
         thread::spawn(move || {
             let mut buf = [0u8; 512];
@@ -1334,7 +1348,12 @@ fn open_local_serial_terminal(device: String, state: State<'_, AppState>) -> Res
                 match reader.read(&mut buf) {
                     Ok(0) => continue,
                     Ok(n) => {
-                        partial.push_str(&String::from_utf8_lossy(&buf[..n]));
+                        let chunk = &buf[..n];
+                        // Mirror raw bytes to the log file for parse_log_into_state().
+                        let _ = log_writer.write_all(chunk);
+                        let _ = log_writer.flush();
+
+                        partial.push_str(&String::from_utf8_lossy(chunk));
                         while let Some(pos) = partial.find('\n') {
                             let line = partial.drain(..=pos).collect::<String>();
                             let line = line.trim_end_matches(|c| c == '\r' || c == '\n').to_owned();
@@ -1358,6 +1377,11 @@ fn open_local_serial_terminal(device: String, state: State<'_, AppState>) -> Res
                 }
             }
         });
+
+        // Start the diagnostic log watcher — same pipeline as macOS.
+        // The watcher waits up to 10 s for the log file to appear (it already
+        // exists above) then tails it and calls parse_log_into_state().
+        start_log_watcher_internal(&state, false)?;
 
         return Ok(());
     }
