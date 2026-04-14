@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { confirm } from "@tauri-apps/plugin-dialog";
 import SessionTab from "./components/tabs/SessionTab";
@@ -17,13 +18,13 @@ import "./components/tabs/tabs.css";
 
 type Tab = "session" | "commands" | "wizard" | "system-configuration" | "report" | "diagnostics";
 
-const TABS: { id: Tab; label: string }[] = [
+const TABS: { id: Tab; label: string; badge?: string }[] = [
   { id: "session", label: "Connect" },
   { id: "commands", label: "Commands" },
   { id: "wizard", label: "Setup Wizard" },
   { id: "system-configuration", label: "System Configuration" },
-  { id: "diagnostics", label: "Diagnostics" },
-  { id: "report", label: "Report" },
+  { id: "diagnostics", label: "Diagnostics", badge: "Beta" },
+  { id: "report", label: "Report", badge: "Beta" },
 ];
 
 let closeGuard = false;
@@ -143,7 +144,11 @@ export default function App() {
     }
     fetchStatus();
     const id = setInterval(fetchStatus, 2000);
-    return () => clearInterval(id);
+    const unlistenSid = listen("controller-sid-detected", () => { fetchStatus(); });
+    return () => {
+      clearInterval(id);
+      unlistenSid.then((fn) => fn());
+    };
   }, []);
 
   const showVpn = appStatus.vpn_phase !== "disconnected";
@@ -175,6 +180,7 @@ export default function App() {
                 <SidebarNavItem
                   key={tab.id}
                   label={tab.label}
+                  badge={tab.badge}
                   selected={activeTab === tab.id}
                   onClick={() => setActiveTab(tab.id)}
                 />
@@ -185,7 +191,7 @@ export default function App() {
 
         <main className="app-body">
           <div style={{ display: activeTab === "session" ? "contents" : "none" }}>
-            <SessionTab onControllerConnected={() => setActiveTab("commands")} />
+            <SessionTab />
           </div>
           <div style={{ display: activeTab === "commands" ? "contents" : "none" }}>
             <CommandsTab />

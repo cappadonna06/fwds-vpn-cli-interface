@@ -1255,12 +1255,12 @@ echo "===== SIM PICKER END ====="
 )`,
   },
   {
-    id: "pressure",
-    label: "Pressure",
+    id: "pressure-mp3",
+    label: "Pressure (MP3 / CDS)",
     icon: "💧",
-    description: "Pressure diagnostics — snapshot and live readings for source, supply, and distribution sensors.",
+    description: "Pressure diagnostics for MP3 and CDS systems — source and distribution sensors (P1 supply not wired on these platforms).",
     affected_interfaces: ["pressure", "system"],
-    when_to_run: "When validating hydraulic pressure sensor behavior or troubleshooting readings.",
+    when_to_run: "When validating hydraulic pressure sensor behavior on MP3 or CDS controllers.",
     light_command_ids: ["pressure-monitor"],
     heavy_command_ids: ["date", "version", "sid", "pressure-monitor"],
     heavy_script: `(
@@ -1272,14 +1272,40 @@ sid
 echo ""
 echo "===== PRESSURE SNAPSHOT ====="
 pressure-monitor -v --hhc=mp3 --pressure-sensor=source -u us
-pressure-monitor -v --hhc=mp3 --pressure-sensor=supply -u us
 pressure-monitor -v --hhc=mp3 --pressure-sensor=distribution -u us
 
 echo ""
 echo "===== PRESSURE LIVE ====="
 pressure-monitor -v --hhc=mp3 --pressure-sensor=source -u us --period=500 --wait=10
-pressure-monitor -v --hhc=mp3 --pressure-sensor=supply -u us --period=500 --wait=10
 pressure-monitor -v --hhc=mp3 --pressure-sensor=distribution -u us --period=500 --wait=10
+)`,
+  },
+  {
+    id: "pressure-hp6",
+    label: "Pressure (HP6)",
+    icon: "💧",
+    description: "Pressure diagnostics for HP6 systems — source, supply, and distribution sensors (all three required).",
+    affected_interfaces: ["pressure", "system"],
+    when_to_run: "When validating hydraulic pressure sensor behavior on HP6 controllers.",
+    light_command_ids: ["pressure-monitor"],
+    heavy_command_ids: ["date", "version", "sid", "pressure-monitor"],
+    heavy_script: `(
+echo "===== CONTROLLER INFO ====="
+date
+version
+sid
+
+echo ""
+echo "===== PRESSURE SNAPSHOT ====="
+pressure-monitor -v --hhc=hp6 --pressure-sensor=source -u us
+pressure-monitor -v --hhc=hp6 --pressure-sensor=supply -u us
+pressure-monitor -v --hhc=hp6 --pressure-sensor=distribution -u us
+
+echo ""
+echo "===== PRESSURE LIVE ====="
+pressure-monitor -v --hhc=hp6 --pressure-sensor=source -u us --period=500 --wait=10
+pressure-monitor -v --hhc=hp6 --pressure-sensor=supply -u us --period=500 --wait=10
+pressure-monitor -v --hhc=hp6 --pressure-sensor=distribution -u us --period=500 --wait=10
 )`,
   },
   {
@@ -1358,8 +1384,18 @@ echo "===== SATELLITE DIAGNOSTICS END ====="
     description: "Firmware version, controller serial number, and release metadata. Use at the start of any session to confirm which controller you are connected to and whether the firmware is current.",
     affected_interfaces: ["system"],
     when_to_run: "At the start of any session to confirm controller identity and firmware version.",
-    light_command_ids: ["version", "sid", "release", "cat-station-info", "cat-system-info"],
-    heavy_command_ids: ["version", "sid", "release", "cat-station-info", "cat-system-info"],
+    light_command_ids: ["version", "sid", "release", "cell-imei", "sat-imei", "cat-station-info", "cat-system-info"],
+    heavy_command_ids: ["version", "sid", "release", "cell-imei", "sat-imei", "cat-station-info", "cat-system-info"],
+  },
+  {
+    id: "firmware",
+    label: "Firmware",
+    icon: "💾",
+    description: "Check firmware version from the controller.",
+    affected_interfaces: ["system"],
+    when_to_run: "To check current firmware version without running full system diagnostics.",
+    light_command_ids: ["version"],
+    heavy_command_ids: ["version"],
   },
   {
     id: "networking-all",
@@ -1391,7 +1427,7 @@ echo "===== CELLULAR DIAGNOSTICS END ====="
     label: "Full Diags + Satellite",
     icon: "🔬",
     description: "Complete suite including satellite loopback (~12 min total)",
-    affected_interfaces: ["ethernet", "wifi", "cellular", "satellite", "pressure", "system"],
+    affected_interfaces: ["ethernet", "wifi", "cellular", "pressure", "satellite", "system"],
     when_to_run: "New install sign-off, post-repair baseline, or when a site has intermittent issues and you need a full picture.",
     light_command_ids: [],
     heavy_command_ids: [
@@ -1558,7 +1594,7 @@ echo "===== SATELLITE DIAGNOSTICS END ====="
     label: "Full Diags (no loopback)",
     icon: "🔬",
     description: "Complete diagnostics without satellite loopback. Includes satellite IMEI verification plus Ethernet, Wi-Fi, cellular, and system checks.",
-    affected_interfaces: ["ethernet", "wifi", "cellular", "satellite", "pressure", "system"],
+    affected_interfaces: ["ethernet", "wifi", "cellular", "pressure", "satellite", "system"],
     when_to_run: "Use when you want full network/system coverage but need to skip the long satellite loopback test.",
     light_command_ids: [],
     heavy_command_ids: [

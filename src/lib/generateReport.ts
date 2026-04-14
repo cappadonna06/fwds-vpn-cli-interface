@@ -21,6 +21,10 @@ interface WifiDiag {
   status: DiagStatus;
   summary: string;
   check_result?: string | null;
+  check_error?: string | null;
+  connected?: boolean | null;
+  connman_wifi_connected?: boolean | null;
+  internet_reachable?: boolean | null;
   strength_score?: number | null;
   strength_label?: string | null;
   signal_dbm?: number | null;
@@ -130,7 +134,36 @@ function qualityLabel(score?: number | null, label?: string | null): string {
   return "No service";
 }
 
+function formatEthernetSummary(eth: EthernetDiag): string {
+  if (eth.link_detected === false) return "No link detected";
+  if (eth.status === "grey") return "Inactive — technology disabled";
+  if (eth.status === "green") return "Connected";
+  if (eth.status === "red") return "No connection";
+  return eth.summary || "Unknown";
+}
+
 function formatWifiSummary(wifi: WifiDiag): string {
+  const connected = wifi.connected === true
+    || wifi.connman_wifi_connected === true
+    || wifi.internet_reachable === true;
+
+  if (!connected) {
+    // Extract a human-readable reason from the check_result/check_error, e.g.
+    // "Done: Failure: -65553: Network technology is not enabled" → "Network technology is not enabled"
+    const raw = wifi.check_error || wifi.check_result || null;
+    if (raw) {
+      const meaningful = raw.split(":").map((p: string) => p.trim())
+        .find((p: string) => p && !/^(done|failure|success|-?\d+)$/i.test(p));
+      // Skip connman's generic "is not connected" — it just means WiFi is unassociated,
+      // which is already captured by "Not connected". Keep specific reasons like
+      // "Network technology is not enabled" or "Association failed".
+      if (meaningful && !/\bis not connected\b/i.test(meaningful)) {
+        return `Not connected — ${meaningful}`;
+      }
+    }
+    return "Not connected";
+  }
+
   const network = wifi.ssid || wifi.access_point || "Unknown network";
   const quality = qualityLabel(wifi.strength_score, wifi.strength_label);
   const scorePart = wifi.strength_score !== null && wifi.strength_score !== undefined
@@ -168,6 +201,21 @@ function formatSatelliteSummary(sat: SatelliteDiag): string {
 }
 
 function formatCellSummary(cell: CellularDiag): string {
+  if (cell.modem_not_present) return "No modem detected";
+  if (cell.modem_unreachable) return "Modem not responding — reboot controller";
+
+  const connected = cell.connman_cell_connected === true || cell.pdp_active === true;
+
+  if (!connected) {
+    if (cell.sim_inserted === false) return "No SIM detected";
+    if (cell.no_service) {
+      const carrier = cell.operator_name || cell.provider_code || null;
+      return carrier ? `${carrier} — No service` : "No service";
+    }
+    const carrier = cell.operator_name || cell.provider_code || null;
+    return carrier ? `${carrier} — Not connected` : "Not connected";
+  }
+
   const carrier = cell.operator_name || cell.provider_code || "Cellular";
   const quality = qualityLabel(cell.strength_score, cell.strength_label);
   const scorePart = cell.strength_score !== null && cell.strength_score !== undefined
@@ -217,15 +265,38 @@ export function generateNetworkRows(diag: DiagnosticState): NetworkStatusRow[] {
     return "unknown";
   };
 
+  // Mirror the diag card summarize logic: inactive / no-link interfaces show
+  // gray ("unknown") rather than the raw backend "red" status, which the backend
+  // emits even for simply-unconfigured interfaces. This keeps the report status
+  // dots consistent with what the diag cards display.
+  const wifiConnected = diag.wifi?.connected === true
+    || diag.wifi?.connman_wifi_connected === true
+    || diag.wifi?.internet_reachable === true;
+  const ethLinked = diag.ethernet?.link_detected === true
+    || diag.ethernet?.internet_reachable === true;
+
+  // "Not enabled" WiFi shows amber to indicate configuration is needed, not just
+  // an unplugged cable. Mirrors the warning health added to the diag card.
+  const wifiCheckErrLower = (diag.wifi?.check_error || "").toLowerCase();
+  const wifiNotEnabled = wifiCheckErrLower.includes("-65553")
+    || wifiCheckErrLower.includes("not enabled")
+    || diag.wifi?.connman_wifi_powered === false;
+
   return [
     {
       interface: "Ethernet",
-      status: toStatus(diag.ethernet?.status),
-      summary: diag.ethernet?.summary ?? "Diagnostics not collected",
+      status: !diag.ethernet ? "unknown" : (ethLinked ? toStatus(diag.ethernet.status) : "unknown"),
+      summary: diag.ethernet ? formatEthernetSummary(diag.ethernet) : "Diagnostics not collected",
     },
     {
       interface: "Wi-Fi",
-      status: toStatus(diag.wifi?.status),
+      status: !diag.wifi
+        ? "unknown"
+        : wifiConnected
+          ? toStatus(diag.wifi.status)
+          : wifiNotEnabled
+            ? "orange"
+            : "unknown",
       summary: diag.wifi ? formatWifiSummary(diag.wifi) : "Diagnostics not collected",
     },
     {
@@ -319,8 +390,8 @@ export function generateRecommendedActions(
     if (wifi.status === "red" && wifi.check_result === "Failure") {
       actions.push({
         id: mkId(), interface: "Wi-Fi",
-        text: "Verify SSID and password",
-        detail: "Connection failed. Re-run setup-wifi to correct credentials.",
+        text: "Configure Wi-Fi",
+        detail: "Re-run setup-wifi and configure to verified SSID and password.",
         dismissed: false, checked: false, custom: false,
       });
     } else if (wifi.status === "red" && (wifi.strength_score ?? 100) < 40) {

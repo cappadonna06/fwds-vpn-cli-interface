@@ -96,12 +96,21 @@ pub fn parse_log_into_state(log: &str, state: &mut DiagnosticState) {
         None
     };
 
+    // For compound diagnostic blocks (e.g., full diagnostics), the individual sub-commands
+    // (cat, version, release) appear inside a compound command block. find_latest() uses exact
+    // command-name matching and won't find them. We fall back to the body of the block that
+    // contains the "===== SYSTEM =====" marker, which includes all the station/system XML.
+    // Similarly, we extract the CONTROLLER INFO section to reliably find the firmware version.
+    let system_section_body = find_latest_body_contains(&blocks, &["===== system ====="]);
+    let controller_info_body = find_latest_body_contains(&blocks, &["===== controller info ====="])
+        .and_then(|b| extract_controller_info_section(b));
+
     let mut system = parse_system(
         find_latest(&blocks, &["sid"]),
-        find_latest(&blocks, &["version"]),
+        find_latest(&blocks, &["version"]).or(controller_info_body.as_deref()),
         find_latest(&blocks, &["release"]),
-        find_latest(&blocks, &["cat /var/etc/fwds/station_info"]),
-        find_latest(&blocks, &["cat /var/etc/fwds/system_info"]),
+        find_latest(&blocks, &["cat /var/etc/fwds/station_info", "cat-station-info"]).or(system_section_body),
+        find_latest(&blocks, &["cat /var/etc/fwds/system_info", "cat-system-info"]).or(system_section_body),
     );
     if system.sid.is_none() {
         system.sid = parse_sid_from_prompt(log);
@@ -137,23 +146,12 @@ pub fn parse_log_into_state(log: &str, state: &mut DiagnosticState) {
     if let Some(block) = sim_picker_block {
         let sp = parse_sim_picker(block);
         if sp.scan_attempted || sp.full_block_run {
-            // When the unified SIM Picker block was run it contains all cellular commands too.
-            // Parse cellular from it so the Cellular card populates even if no separate
-            // cellular diag block exists in the log.
-            if sp.full_block_run {
-                let cell = parse_cellular(block);
-                state.cellular = Some(match state.cellular.take() {
-                    Some(prev) => {
-                        // Only replace if the block-parsed result has more data
-                        if cell.imei.is_some() || cell.internet_reachable {
-                            cell
-                        } else {
-                            prev
-                        }
-                    }
-                    None => cell,
-                });
-            }
+            // NOTE: We intentionally do NOT parse or merge cellular state from the SIM
+            // picker block. The SIM picker runs cell-support --at --scan which puts the
+            // modem in "searching" mode (+CREG: 0,2), producing a transient orange
+            // "Searching for service" state that would corrupt a valid red "No service"
+            // result from a prior cellular diagnostic run. Cellular card state is managed
+            // exclusively by dedicated cellular diagnostic runs.
             state.sim_picker = Some(sp);
         }
     }
@@ -187,6 +185,21 @@ fn latest_marker_index(lower_log: &str, markers: &[&str]) -> Option<usize> {
         .iter()
         .filter_map(|marker| lower_log.rfind(&marker.to_ascii_lowercase()))
         .max()
+}
+
+/// Strip bash continuation-prompt echo lines (`> command`) from the raw log so that
+/// marker detection operates only on real command *output*, not input echo.
+/// Lines that begin with `> ` (after leading whitespace) are the shell's PS2 prompt
+/// and contain the command text as typed, not the actual output.
+fn output_only_lower(log: &str) -> String {
+    log.lines()
+        .filter(|line| {
+            let t = line.trim_start();
+            !t.starts_with("> ")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        .to_ascii_lowercase()
 }
 
 fn is_interface_complete(iface: &str, state: &DiagnosticState, lower_log: &str) -> bool {
@@ -262,6 +275,13 @@ fn is_interface_complete(iface: &str, state: &DiagnosticState, lower_log: &str) 
             .pressure
             .as_ref()
             .map(|p| {
+                // Require at least one actual sensor reading (count > 0).
+                // sensor_errors alone is NOT sufficient — CRITICAL:ASSERT lines from
+                // pressure-monitor produce sensor_errors immediately at startup, before
+                // the live pressure readings have been collected. Using sensor_errors as
+                // a completion signal caused the card hold to release within seconds of
+                // the diagnostic command being sent, before any real data arrived.
+                // If all sensors permanently fail, the hold will expire via expiresAt.
                 p.sensors
                     .source
                     .as_ref()
@@ -279,14 +299,26 @@ fn is_interface_complete(iface: &str, state: &DiagnosticState, lower_log: &str) 
                         .unwrap_or(false)
             })
             .unwrap_or(false),
+        "system" => state
+            .system
+            .as_ref()
+            .map(|s| {
+                s.hydraulic_hardware_configuration.is_some()
+                    || s.zone_count.is_some()
+                    || s.preferred_network.is_some()
+            })
+            .unwrap_or(false),
         _ => false,
     }
 }
 
 fn update_interface_run_states(log: &str, state: &mut DiagnosticState) {
     let now = chrono::Local::now().format("%H:%M:%S").to_string();
-    let lower = log.to_ascii_lowercase();
-    let interfaces: [(&str, &[&str]); 6] = [
+    // Use only actual output lines (strip bash PS2 echo lines like `> echo "===== MARKER ====="`).
+    // Without this, continuation-line echoes of END markers cause false "complete" detection
+    // before any real output has arrived.
+    let lower = output_only_lower(log);
+    let interfaces: [(&str, &[&str]); 7] = [
         ("wifi", &["===== wifi diagnostics start ====="]),
         ("ethernet", &["===== eth diagnostics start ====="]),
         (
@@ -311,6 +343,7 @@ fn update_interface_run_states(log: &str, state: &mut DiagnosticState) {
             &["===== pressure snapshot =====", "===== pressure live ====="],
         ),
         ("sim_picker", &["===== sim picker start ====="]),
+        ("system", &["===== system ====="]),
     ];
 
     for (iface, start_markers) in interfaces {
@@ -321,6 +354,19 @@ fn update_interface_run_states(log: &str, state: &mut DiagnosticState) {
             "sim_picker" => latest_marker_index(&lower, &["===== sim picker end ====="]),
             "cellular" => latest_marker_index(&lower, &["===== cellular diagnostics end ====="]),
             "satellite" => latest_marker_index(&lower, &["===== satellite diagnostics end ====="]),
+            // The system section has no explicit end marker. Use the first section that
+            // always runs AFTER system (pressure or satellite) as an implicit end so that
+            // system.in_progress clears even on controllers whose station/system XML does
+            // not contain hydraulic_hardware_configuration or preferred_network.
+            "system" => latest_marker_index(
+                &lower,
+                &[
+                    "===== pressure snapshot =====",
+                    "===== pressure live =====",
+                    "===== satellite diagnostics start =====",
+                    "===== satellite basic =====",
+                ],
+            ),
             _ => None,
         };
         let has_active_start = start
@@ -350,7 +396,15 @@ fn wifi_has_authoritative_check(diag: &WifiDiagnostic) -> bool {
 }
 
 fn cellular_has_authoritative_check(diag: &CellularDiagnostic) -> bool {
-    diag.check_result != "Unknown" || diag.check_error.is_some()
+    // check_result is authoritative when cellular-check ran explicitly.
+    // status != Unknown is also authoritative: determine_cellular_status set a definitive
+    // result (Green/Orange/Red via connman path 7 or any other path). Without this,
+    // a path-7 Green result (check_result = "Unknown") would be overridden by a stale
+    // prev "Failure" state via merge, causing the card to show the old recommended_action
+    // and internet_reachable = false even while displaying a Green badge.
+    diag.check_result != "Unknown"
+        || diag.check_error.is_some()
+        || diag.status != DiagStatus::Unknown
 }
 
 fn ethernet_has_authoritative_check(diag: &EthernetDiagnostic) -> bool {
@@ -491,6 +545,27 @@ fn find_latest_body_contains<'a>(blocks: &'a [CommandBlock], markers: &[&str]) -
     })
 }
 
+/// Like `find_latest_body_contains` but skips blocks whose body also contains
+/// any of the `excluded` markers. Used to prevent SIM-picker blocks (which embed
+/// a full cellular diagnostic) from being treated as a standalone cellular run.
+fn find_latest_body_contains_excl<'a>(
+    blocks: &'a [CommandBlock],
+    required: &[&str],
+    excluded: &[&str],
+) -> Option<&'a str> {
+    blocks.iter().rev().find_map(|block| {
+        let body = block.body.as_str();
+        let lower = body.to_ascii_lowercase();
+        if required.iter().all(|m| lower.contains(&m.to_ascii_lowercase()))
+            && excluded.iter().all(|m| !lower.contains(&m.to_ascii_lowercase()))
+        {
+            Some(body)
+        } else {
+            None
+        }
+    })
+}
+
 fn find_latest_body_contains_any<'a>(
     blocks: &'a [CommandBlock],
     markers: &[&str],
@@ -510,9 +585,17 @@ fn find_latest_body_contains_any<'a>(
 }
 
 fn parse_sid_from_prompt(log: &str) -> Option<String> {
+    // Strip ANSI escape codes first. Many controller SSH prompts emit color codes
+    // between the closing bracket and the '#' (e.g. `[24250062]\x1b[0m#`), which
+    // would break a simple `\[digits\]#` regex on the raw log.
+    let ansi_re = Regex::new(r"\x1B\[[0-?]*[ -/]*[@-~]").ok()?;
+    let clean = ansi_re.replace_all(log, "");
+    // PTY/script output also embeds carriage returns and null bytes between
+    // the closing bracket and '#', e.g. `[24250062]\r#`. Strip those too.
+    let clean = clean.replace('\r', "").replace('\x00', "");
     let sid_re = Regex::new(r"\[(\d{6,10})\]#").ok()?;
     sid_re
-        .captures_iter(log)
+        .captures_iter(&clean)
         .filter_map(|caps| caps.get(1).map(|m| m.as_str().to_string()))
         .last()
 }
@@ -618,7 +701,7 @@ fn extract_section_until_next_marker(text: &str, start_marker: &str) -> Option<S
 
 fn split_blocks(log: &str) -> Vec<CommandBlock> {
     let prompt_re = Regex::new(
-        r"^(?:\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?[+-]\d{4}\s+)?(?:\[\d+\])?#\s*(.+)$",
+        r"^(?:\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?[+-]\d{4}\s+)?\[\d+\]#\s*(.+)$",
     )
     .expect("prompt regex");
     let prompt_inline_re =
@@ -707,7 +790,10 @@ fn split_blocks(log: &str) -> Vec<CommandBlock> {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_pressure_from_text, parse_cellular, parse_log_into_state, split_blocks};
+    use super::{
+        build_pressure_from_text, parse_cellular, parse_log_into_state, parse_sid_from_prompt,
+        sanitize_version, split_blocks,
+    };
     use crate::{DiagStatus, DiagnosticState, SystemDiagnostic};
 
     #[test]
@@ -1527,6 +1613,54 @@ Done: Failure: -65553: Network technology is not enabled
             "Failure: -65553: Network technology is not enabled"
         );
     }
+
+    #[test]
+    fn parse_sid_from_prompt_handles_ansi_codes() {
+        // Controller SSH prompts often emit ANSI color codes between ']' and '#'.
+        // Without stripping them the regex would fail to find the SID.
+        let log = "2026-04-12T10:00:00-0600 \x1b[01;32m[24250062]\x1b[0m\x1b[01;32m#\x1b[0m \n";
+        let sid = parse_sid_from_prompt(log);
+        assert_eq!(sid.as_deref(), Some("24250062"));
+    }
+
+    #[test]
+    fn parse_sid_from_prompt_plain_prompt() {
+        let log = "2026-04-12T10:00:00-0600 [24250062]# \n";
+        let sid = parse_sid_from_prompt(log);
+        assert_eq!(sid.as_deref(), Some("24250062"));
+    }
+
+    #[test]
+    fn parse_sid_from_prompt_returns_last_when_multiple_prompts() {
+        // Log file grows — many prompt lines appear; we want the last SID seen.
+        let log = "2026-04-01T10:18:37-0600 [22611067]# sid\n22611067\n\
+                   2026-04-01T10:18:43-0600 [22611067]# \n";
+        let sid = parse_sid_from_prompt(log);
+        assert_eq!(sid.as_deref(), Some("22611067"));
+    }
+
+    #[test]
+    fn sanitize_version_exact_match() {
+        assert_eq!(sanitize_version("r3.3.1").as_deref(), Some("r3.3.1"));
+        assert_eq!(sanitize_version("r3.3.1-r3").as_deref(), Some("r3.3.1-r3"));
+        assert_eq!(sanitize_version("r3.3").as_deref(), Some("r3.3"));
+    }
+
+    #[test]
+    fn sanitize_version_embedded_in_banner_line() {
+        // "version" command on some controllers outputs the full banner instead of just
+        // the version string. Embedded extraction should still find the version token.
+        let line = "FWDS controller r3.3.1-r3 (build date Sun Feb  2 21:05:07 UTC 2025)";
+        assert_eq!(sanitize_version(line).as_deref(), Some("r3.3.1-r3"));
+    }
+
+    #[test]
+    fn sanitize_version_rejects_non_version_lines() {
+        assert!(sanitize_version("24250062").is_none());
+        assert!(sanitize_version("Testing Wi-Fi...").is_none());
+        assert!(sanitize_version("Done: Success").is_none());
+        assert!(sanitize_version("").is_none());
+    }
 }
 
 // Parse all WiFi fields from a scoped WiFi section body (or any single wifi-related
@@ -2098,9 +2232,14 @@ fn parse_cellular_from_latest(blocks: &[CommandBlock]) -> Option<CellularDiagnos
     // positionally assigned to basic_provider (→ card title) and basic_apn.
     // With a single early marker, full_section_parsed triggers within ~0.5s and
     // parse_cellular_block safely handles missing later sections via extract_between.
-    if let Some(block) =
-        find_latest_body_contains(blocks, &["===== cellular connectivity test ====="])
-    {
+    // Exclude SIM picker blocks — they embed a full cellular diagnostic run (same
+    // markers) but the AT scan command puts the modem into "searching" mode
+    // (+CREG: 0,2), which would corrupt the cellular card with a transient state.
+    if let Some(block) = find_latest_body_contains_excl(
+        blocks,
+        &["===== cellular connectivity test ====="],
+        &["===== sim picker start ====="],
+    ) {
         parse_cellular_block(block, &mut diag);
         has_cellular_specific = true;
         full_section_parsed = true;
@@ -2125,8 +2264,19 @@ fn parse_cellular_from_latest(blocks: &[CommandBlock]) -> Option<CellularDiagnos
             diag.controller_sid = parse_single_value(Some(text)).or(diag.controller_sid);
         }
         if let Some(text) = find_latest(blocks, &["cellular-check"]) {
-            parse_cellular_check_text(text, &mut diag);
-            has_cellular_specific = true;
+            // Skip compound block bodies. When a multi-interface subshell runs,
+            // find_latest() matches the compound block key ("( ... cellular-check ...)")
+            // via substring and returns the full body which contains WiFi/Ethernet
+            // "Done: Failure" lines *before* the cellular section arrives. Parsing that
+            // body sets check_result = "Failure" transiently, causing the amber card and
+            // the stale "Run setup-cellular to reconfigure" action on a later green result.
+            // Compound bodies are identified by "=====" section markers; standalone
+            // cellular-check output never contains those. parse_cellular_block() handles
+            // compound bodies correctly once the section marker appears.
+            if !text.contains("=====") {
+                parse_cellular_check_text(text, &mut diag);
+                has_cellular_specific = true;
+            }
         }
         let basic_cmds = [
             "cell-imei",
@@ -2142,8 +2292,17 @@ fn parse_cellular_from_latest(blocks: &[CommandBlock]) -> Option<CellularDiagnos
         for cmd in basic_cmds {
             if let Some(text) = find_latest(blocks, &[cmd]) {
                 has_cellular_specific = true;
-                if let Some(v) = parse_single_value(Some(text)) {
-                    basic_lines.push(v);
+                // Skip compound block bodies — they contain "=====" section markers.
+                // parse_single_value iterates in reverse and returns the last non-empty
+                // line, which in a compound body may be a section footer or a bare
+                // command echo from a concurrently-sent script, causing garbage values
+                // to be positionally assigned to IMEI, carrier, APN, etc.
+                // parse_cellular_block() handles compound bodies correctly once the
+                // section markers appear.
+                if !text.contains("=====") {
+                    if let Some(v) = parse_single_value(Some(text)) {
+                        basic_lines.push(v);
+                    }
                 }
             }
         }
@@ -2356,11 +2515,43 @@ fn parse_satellite_controller_info(text: &str, diag: &mut SatelliteDiagnostic) {
 }
 
 fn parse_satellite_imei(text: &str, diag: &mut SatelliteDiagnostic) {
+    let lower_text = text.to_ascii_lowercase();
+
+    // Detect whether this block has satellite-specific section markers and/or
+    // non-satellite section markers (cellular, ethernet, wifi, pressure).
+    let has_satellite_markers = lower_text.contains("===== satellite")
+        || lower_text.contains("===== quick satellite");
+    let has_non_satellite_markers = lower_text.contains("===== cellular")
+        || lower_text.contains("===== wifi")
+        || lower_text.contains("===== eth")
+        || lower_text.contains("===== pressure");
+
+    // Guard: a compound block that contains non-satellite sections but NO satellite
+    // section markers cannot reliably scope the IMEI search.  Without this guard,
+    // a cellular block's 15-digit IMEI (e.g. from `cell-imei`) is mis-assigned to
+    // `sat_imei`.  Return early and leave the satellite diagnostic unchanged.
+    if !has_satellite_markers && has_non_satellite_markers {
+        return;
+    }
+
+    // Scope to the satellite section markers when present so that a cellular IMEI
+    // appearing earlier in a compound block is not mistaken for the satellite IMEI.
+    // extract_satellite_scoped_text returns text.to_string() when no markers are
+    // found, so the full text is still searched for the standalone sat-imei case.
+    let scoped = extract_satellite_scoped_text(text);
     if let Ok(imei_re) = Regex::new(r"\b\d{14,17}\b") {
-        if let Some(cap) = imei_re.find(text) {
+        if let Some(cap) = imei_re.find(&scoped) {
             diag.sat_imei = Some(cap.as_str().to_string());
             diag.modem_present = Some(true);
+            return;
         }
+    }
+    // If the scoped output explicitly says "Failed" (the sat-imei command itself failed,
+    // meaning no modem was reachable), mark the modem as absent so the card shows the
+    // correct error state rather than the misleading "Modem present / Full test not run".
+    let lower = scoped.to_lowercase();
+    if lower.contains("failed") || lower.contains("error") || lower.contains("no imei") {
+        diag.modem_present = Some(false);
     }
 }
 
@@ -2723,7 +2914,13 @@ fn parse_ethernet(
         DiagStatus::Grey => "Ethernet inactive".to_string(),
         DiagStatus::Red => "Ethernet needs attention".to_string(),
         DiagStatus::Orange => "Ethernet warning".to_string(),
-        DiagStatus::Unknown => "No data yet".to_string(),
+        DiagStatus::Unknown => {
+            if link_detected == Some(false) {
+                "No link detected".to_string()
+            } else {
+                "No data yet".to_string()
+            }
+        }
     };
 
     Some(EthernetDiagnostic {
@@ -3084,7 +3281,7 @@ fn build_pressure_from_text(text: &str, system: &SystemDiagnostic) -> Option<Pre
                 severity: DiagStatus::Orange,
                 title: "P3 Source Pressure low".into(),
                 description: format!("P3 Source Pressure is {:.2} PSI.", p3_value),
-                action: "Check source valve, booster pump, and upstream water main.".into(),
+                action: "Check source line, and ensure booster pump is operational.".into(),
             });
         }
     }
@@ -3260,6 +3457,19 @@ fn select_pressure_display(
     }
 }
 
+/// Extract the content between the CONTROLLER INFO section header and the next `=====` marker.
+/// Used to reliably find firmware version in compound diagnostic blocks where individual
+/// `version` command blocks are merged into a single compound block body.
+fn extract_controller_info_section(body: &str) -> Option<String> {
+    let lower = body.to_ascii_lowercase();
+    let header = "===== controller info =====";
+    let header_pos = lower.find(header)?;
+    let after = &body[header_pos + header.len()..];
+    let lower_after = after.to_ascii_lowercase();
+    let end = lower_after.find("=====").unwrap_or(after.len());
+    Some(after[..end].to_string())
+}
+
 fn parse_system(
     sid_block: Option<&str>,
     version_block: Option<&str>,
@@ -3282,7 +3492,11 @@ fn parse_system(
     let location = station_info_block
         .and_then(|b| extract_xml_value(b, "location"))
         .filter(|v| !v.is_empty());
-    let version = parse_single_value(version_block).and_then(|v| sanitize_version(&v));
+    // Scan lines in reverse so that the last valid version string wins.
+    // Using find_map with sanitize_version avoids returning non-version lines (e.g., a SID)
+    // that happen to be the last line of a compound block's version/controller-info section.
+    let version = version_block
+        .and_then(|b| b.lines().rev().find_map(|l| sanitize_version(l.trim())));
     let release_date = release_block.and_then(|b| capture_after(b, "Date:"));
     let system_name = display_name.clone();
     let preferred_network = station_info_block
@@ -3401,11 +3615,21 @@ fn sanitize_sid(input: &str) -> Option<String> {
 fn sanitize_version(input: &str) -> Option<String> {
     let clean = input.trim();
     let re = Regex::new(r"^r\d+\.\d+(?:\.\d+)?(?:[-+][A-Za-z0-9._-]+)?$").ok()?;
+    // Exact match: the entire (trimmed) input is a version string.
     if re.is_match(clean) {
-        Some(clean.to_string())
-    } else {
-        None
+        return Some(clean.to_string());
     }
+    // Embedded match: find a version token within a longer line such as
+    // "FWDS controller r3.3.1-r3 (build date Sun Feb 2 21:05:07 UTC 2025)".
+    // Split on whitespace and check each word after stripping trailing punctuation.
+    clean.split_whitespace().find_map(|word| {
+        let w = word.trim_end_matches(|c: char| matches!(c, '(' | ')' | ',' | '.'));
+        if re.is_match(w) {
+            Some(w.to_string())
+        } else {
+            None
+        }
+    })
 }
 
 fn parse_strength_line(line: Option<String>) -> (u8, String) {
@@ -4496,7 +4720,7 @@ fn determine_cellular_status(diag: &mut CellularDiagnostic) {
 
         diag.summary = "No service — searching for network".into();
         diag.recommended_action = Some("Check coverage area and antenna".into());
-        diag.other_actions = vec!["Reboot controller".into(), "Check antenna placement".into()];
+        diag.other_actions = vec!["Reboot controller".into(), "Check antenna connection".into()];
         return;
     }
 
@@ -4547,6 +4771,14 @@ fn determine_cellular_status(diag: &mut CellularDiagnostic) {
     if diag.connman_cell_connected == Some(true)
         && (diag.full_block_run || diag.check_result != "Unknown")
     {
+        // A live connman connection implies internet is reachable. Setting this ensures
+        // the "Internet test" row in the Details section shows "Passed" and prevents
+        // merge_cellular_diag from overriding with a stale prev.internet_reachable = false.
+        diag.internet_reachable = true;
+        // Clear any stale recommended_action so it doesn't persist through merge.
+        diag.recommended_action = None;
+        diag.other_actions = vec![];
+
         let provider = diag
             .operator_name
             .as_deref()

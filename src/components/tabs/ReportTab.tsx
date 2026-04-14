@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useMemo, useDeferredValue } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import {
   SessionReport,
   ReportRecommendedAction,
@@ -407,8 +408,12 @@ export default function ReportTab() {
 
   useEffect(() => {
     fetchAndUpdate();
-    const id = setInterval(fetchAndUpdate, 5000);
-    return () => clearInterval(id);
+    const id = setInterval(fetchAndUpdate, 2000);
+    const unlistenSid = listen("controller-sid-detected", () => { fetchAndUpdate(); });
+    return () => {
+      clearInterval(id);
+      unlistenSid.then((fn) => fn());
+    };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

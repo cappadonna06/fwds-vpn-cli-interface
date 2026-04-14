@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { DIAGNOSTIC_BLOCKS, DiagnosticBlock } from "../../types/commands";
+import { listen } from "@tauri-apps/api/event";
+import { DIAGNOSTIC_BLOCKS, DiagnosticBlock, COMMANDS } from "../../types/commands";
 import { sendCommandText } from "../../lib/commandActions";
 
 type DiagStatus = "grey" | "green" | "orange" | "red" | "unknown";
@@ -303,17 +304,30 @@ interface DiagCardProps {
   onClear?: () => void;
   updating?: boolean;
   onForceRelease?: () => void;
+  countdown?: CountdownProps;
   collapsedMetricCards?: Array<{ label: string; value: string; tone: HealthTone }>;
+  inlineControls?: ReactNode;
 }
 
 type InterfaceKey = "wifi" | "cellular" | "satellite" | "ethernet" | "pressure" | "sim_picker";
-type HoldState = { startedAt: number; expiresAt: number; reason: string };
+type HoldState = {
+  startedAt: number;
+  expiresAt: number;
+  reason: string;
+  inProgressConfirmed?: boolean;
+  // Snapshot of pressure sensor counts at hold-creation time so we can require
+  // NEW readings (counts beyond baseline) before releasing the pressure hold.
+  pressureBaselineCounts?: { source: number; distribution: number; supply: number };
+  // Baseline satellite IMEI at hold-creation time; release early when IMEI
+  // arrives or changes (handles fast-complete without an in_progress transition).
+  satelliteBaselineImei?: string | null;
+};
 
 function resolveBlockScript(block: DiagnosticBlock, tier: "light" | "heavy"): string {
   const custom = tier === "light" ? block.light_script : block.heavy_script;
   if (custom && custom.trim().length > 0) return custom;
   const ids = tier === "light" ? block.light_command_ids : block.heavy_command_ids;
-  return ids.join("\n");
+  return ids.map((id) => COMMANDS.find((c) => c.id === id)?.command ?? id).join("\n");
 }
 
 function inferInterfacesFromScript(script: string): InterfaceKey[] {
@@ -334,6 +348,18 @@ function interfacesForBlock(block: DiagnosticBlock, script: string): InterfaceKe
   if (fromMetadata.length > 0) return fromMetadata;
   console.warn(`[Diagnostics] affected_interfaces missing for block "${block.id}", using script inference fallback.`);
   return inferInterfacesFromScript(script);
+}
+
+// Backend stores started_at as "%H:%M:%S" (local time, no date). JavaScript's
+// Date constructor can't parse a bare time string, so we reconstruct today's date.
+function parseBackendTime(timeStr?: string | null): number | null {
+  if (!timeStr) return null;
+  const parts = timeStr.split(":");
+  if (parts.length < 3) return null;
+  const d = new Date();
+  d.setHours(parseInt(parts[0], 10), parseInt(parts[1], 10), parseInt(parts[2], 10), 0);
+  const ms = d.getTime();
+  return isNaN(ms) ? null : ms;
 }
 
 function isInterfaceComplete(iface: InterfaceKey, state: DiagnosticState | null | undefined): boolean {
@@ -370,11 +396,88 @@ function isInterfaceComplete(iface: InterfaceKey, state: DiagnosticState | null 
   return false;
 }
 
+// Returns true only when pressure has NEW sensor counts beyond the baseline that
+// was snapshotted when the hold was created, preventing premature release due to
+// leftover readings from a prior session satisfying isInterfaceComplete.
+function isPressureCompleteVsBaseline(
+  state: DiagnosticState | null | undefined,
+  baseline?: { source: number; distribution: number; supply: number },
+): boolean {
+  const p = state?.pressure;
+  if (!p) return false;
+  const src  = p.sensors?.source?.count       ?? 0;
+  const dist = p.sensors?.distribution?.count ?? 0;
+  const sup  = p.sensors?.supply?.count       ?? 0;
+  if (!baseline) return src > 0 || dist > 0 || sup > 0;
+  return src > baseline.source || dist > baseline.distribution || sup > baseline.supply;
+}
+
 function holdTimeoutMsForInterface(iface: InterfaceKey, script: string): number {
   const lower = script.toLowerCase();
   const hasSatelliteLoopback = lower.includes("satellite-check -t");
   if (iface === "satellite" && hasSatelliteLoopback) return 15 * 60 * 1000;
   return 60 * 1000;
+}
+
+// ── Progress countdown ─────────────────────────────────────────────────────
+
+// Expected wall-clock time for each interface's own diagnostic commands.
+// Sequential blocks (full-diags) stack these cumulatively so that each card's
+// countdown starts at the right offset from the moment the command is sent.
+const IFACE_DURATION_MS: Record<InterfaceKey, number> = {
+  ethernet:   12_000,   // ~10–15 s in practice
+  wifi:       15_000,   // ~12–18 s
+  cellular:   20_000,   // ~15–25 s (IMEI + signal + check)
+  pressure:   35_000,   // ~25–40 s (snapshot + live readings)
+  sim_picker: 180_000,
+  satellite:  10_000,   // quick non-loopback check (~5–10 s); loopback overridden below
+};
+
+function ifaceDurationMs(iface: InterfaceKey, script: string): number {
+  if (iface === "satellite" && script.toLowerCase().includes("satellite-check -t"))
+    return 15 * 60 * 1000;
+  return IFACE_DURATION_MS[iface] ?? 60_000;
+}
+
+type CountdownProps = {
+  progressFraction: number;
+  remainingMs: number;
+  elapsedMs: number;
+  isElapsedMode: boolean; // satellite loopback: show elapsed rather than remaining
+};
+
+function fmtCountdownMs(ms: number): string {
+  const total = Math.floor(ms / 1000);
+  const m = Math.floor(total / 60);
+  const s = total % 60;
+  return m > 0 ? `${m}:${s.toString().padStart(2, "0")}` : `${s}s`;
+}
+
+function ProgressCountdown({ progressFraction, remainingMs, elapsedMs, isElapsedMode }: CountdownProps) {
+  const r    = 11;
+  const circ = 2 * Math.PI * r;
+  const done = progressFraction >= 1 || remainingMs === 0;
+  const offset = done ? 0 : circ * (1 - progressFraction);
+  const label  = done
+    ? "Done"
+    : isElapsedMode
+    ? `${fmtCountdownMs(elapsedMs)} elapsed`
+    : fmtCountdownMs(remainingMs);
+
+  return (
+    <span className="diag-progress-countdown">
+      <svg width="26" height="26" viewBox="0 0 26 26" aria-hidden="true" className="diag-progress-ring">
+        <circle cx="13" cy="13" r={r} fill="none" strokeWidth="2.5"
+                className="diag-progress-ring-track" />
+        <circle cx="13" cy="13" r={r} fill="none" strokeWidth="2.5" strokeLinecap="round"
+                strokeDasharray={circ}
+                strokeDashoffset={offset}
+                transform="rotate(-90 13 13)"
+                className={`diag-progress-ring-fill${done ? " done" : ""}`} />
+      </svg>
+      <span className="diag-progress-label">{label}</span>
+    </span>
+  );
 }
 
 function toneFromStatus(status?: DiagStatus | null): HealthTone {
@@ -639,7 +742,7 @@ function buildCellularSections(cell?: CellularDiagnostic | null): DiagSection[] 
         { label: "Signal", value: signalLabel(cell.strength_score) + (cell.strength_score !== null && cell.strength_score !== undefined ? ` (${cell.strength_score}/100)` : "") },
         { label: "Connection", value: (cell.connman_cell_connected === true || cell.internet_reachable === true) ? "Connected" : "Not connected" },
         { label: "Role", value: roleLabel(cell.role) || "Unknown" },
-        { label: "SIM", value: cell.sim_inserted === false ? "Missing" : cell.sim_ready === true ? "Ready" : "Unknown" },
+        { label: "SIM", value: cell.sim_inserted === false ? "Missing" : cell.sim_ready === true ? `Ready${cell.imei ? ` — IMEI ${cell.imei}` : ""}` : "Unknown" },
         { label: "Modem", value: cell.modem_not_present ? "Not detected" : cell.modem_unreachable ? "Detected — not responding" : cell.cellular_disabled && cell.imei ? "Powered off (detected)" : cell.cellular_disabled ? "Powered off" : cell.modem_present === true ? cell.modem_model ?? "Detected" : "Unknown" },
         { label: "Network", value: [cell.rat, cell.band].filter(Boolean).join(" / ") || "—" },
         { label: "APN", value: cleanCellValue(cell.at_apn) || cleanCellValue(cell.basic_apn) || "—" },
@@ -788,7 +891,8 @@ function buildPressureSections(pressure?: PressureDiagnostic | null): DiagSectio
   }
   for (const err of pressure.sensor_errors ?? []) {
     if (err.sensor_index === 0 && err.errno === -2 && /mp3|lv2|cds/i.test(pressure.system_type ?? "")) continue;
-    readings.push({ label: `Sensor ${err.sensor_index}`, value: `missing — ${err.message}` });
+    const sensorLabel = (["P1 Supply", "P2 Distribution", "P3 Source"] as const)[err.sensor_index] ?? `Sensor ${err.sensor_index}`;
+    readings.push({ label: `${sensorLabel} Pressure`, value: `missing — ${err.message}` });
   }
 
   const stats: DiagRow[] = [];
@@ -849,16 +953,30 @@ function buildPressureMetricCards(pressure?: PressureDiagnostic | null): Array<{
   const hasDistribution = distribution !== null && distribution !== undefined && !Number.isNaN(distribution);
   const cards: Array<{ label: string; value: string; tone: HealthTone }> = [];
   if (hasSource) {
+    const sourceIssues = (pressure.issues ?? []).filter((i) => {
+      const h = `${i.title} ${i.description}`.toLowerCase();
+      return h.includes("p3") || h.includes("source");
+    });
+    const issueText = sourceIssues.length > 0 ? sourceIssues[0].title : "";
     cards.push({
       label: "Source (P3)",
-      value: formatPressureSummaryPsi(source),
+      value: issueText
+        ? `${formatPressureSummaryPsi(source)} · ${issueText}`
+        : formatPressureSummaryPsi(source),
       tone: pressureMetricTone(pressure, "source"),
     });
   }
   if (hasDistribution) {
+    const distIssues = (pressure.issues ?? []).filter((i) => {
+      const h = `${i.title} ${i.description}`.toLowerCase();
+      return h.includes("p2") || h.includes("distribution");
+    });
+    const issueText = distIssues.length > 0 ? distIssues[0].title : "";
     cards.push({
       label: "Distribution (P2)",
-      value: formatPressureSummaryPsi(distribution),
+      value: issueText
+        ? `${formatPressureSummaryPsi(distribution)} · ${issueText}`
+        : formatPressureSummaryPsi(distribution),
       tone: pressureMetricTone(pressure, "distribution"),
     });
   }
@@ -917,7 +1035,16 @@ function summarizeWifi(wifi?: WifiDiagnostic | null): CardSummary {
     || wifi.connman_wifi_connected === true
     || wifi.internet_reachable === true;
   const ssid = wifi.ssid || wifi.access_point || "Wi-Fi";
-  if (!connected) return { health: "neutral", badgeLabel: "Inactive", primaryLine: "Not connected", secondaryLine: ssid };
+  if (!connected) {
+    const checkErrLower = (wifi.check_error || "").toLowerCase();
+    const notEnabled = checkErrLower.includes("-65553")
+      || checkErrLower.includes("not enabled")
+      || wifi.connman_wifi_powered === false;
+    if (notEnabled) {
+      return { health: "warning", badgeLabel: "Inactive", primaryLine: "Not connected", secondaryLine: "Network technology is not enabled" };
+    }
+    return { health: "neutral", badgeLabel: "Inactive", primaryLine: "Not connected", secondaryLine: ssid };
+  }
   const sig = wifiSignalLabel(wifi);
   const weakByController = (wifi.strength_label || "").toLowerCase() === "weak";
   if (weakByController) {
@@ -1053,7 +1180,9 @@ function DiagCard({
   onClear,
   updating,
   onForceRelease,
+  countdown,
   collapsedMetricCards,
+  inlineControls,
 }: DiagCardProps) {
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement | null>(null);
@@ -1080,7 +1209,7 @@ function DiagCard({
     : null;
 
   return (
-    <article className={`diag-card diag-card-${health} ${expanded ? "diag-card-open" : "diag-card-collapsed"} ${compact ? "diag-card-compact" : ""} ${emphasizeSecondaryLine ? "diag-card-equal-lines" : ""}`}>
+    <article className={`diag-card diag-card-${updating ? "neutral" : health} ${expanded ? "diag-card-open" : "diag-card-collapsed"} ${compact ? "diag-card-compact" : ""} ${emphasizeSecondaryLine ? "diag-card-equal-lines" : ""}`}>
       <div className="diag-card-head">
         <div className="diag-card-title-wrap">
           <span className="diag-card-icon" aria-hidden>{icon}</span>
@@ -1088,11 +1217,14 @@ function DiagCard({
             {title}
           </span>
           {role ? <span className="diag-role-pill-inline">{role}</span> : null}
+          {inlineControls}
         </div>
         <div className="diag-card-head-right">
           <span className="diag-status-label">
-            <span className={`diag-status-dot diag-status-${health}`} />
-            <span>{updating ? "Updating…" : statusLabel}</span>
+            <span className={`diag-status-dot diag-status-${updating ? "neutral" : health}`} />
+            {updating && countdown
+              ? <ProgressCountdown {...countdown} />
+              : <span>{updating ? "Updating…" : statusLabel}</span>}
           </span>
           {onClear && (
             <div className="diag-card-menu-wrap" ref={menuRef}>
@@ -1249,6 +1381,135 @@ function DiagCard({
   );
 }
 
+// ─── Firmware helpers ────────────────────────────────────────────────────────
+
+const DEFAULT_LATEST_FIRMWARE = "r3.3.1";
+
+function parseFirmwareVersion(v: string): [number, number, number] | null {
+  const m = /^r(\d+)\.(\d+)(?:\.(\d+))?/i.exec(v.trim());
+  if (!m) return null;
+  return [parseInt(m[1], 10), parseInt(m[2], 10), parseInt(m[3] ?? "0", 10)];
+}
+
+function compareFirmwareVersions(a: string, b: string): number {
+  const pa = parseFirmwareVersion(a);
+  const pb = parseFirmwareVersion(b);
+  if (!pa || !pb) return 0;
+  for (let i = 0; i < 3; i++) {
+    if (pa[i] !== pb[i]) return pa[i] - pb[i];
+  }
+  return 0;
+}
+
+function buildFirmwareSummary(currentVersion: string | null | undefined, latestVersion: string) {
+  if (!currentVersion) {
+    return {
+      health: "neutral" as HealthTone,
+      statusLabel: "No data",
+      primaryLine: "No data yet",
+      secondaryLine: "Run diagnostics to populate",
+      updateAvailable: null as boolean | null,
+      notes: "—",
+      recommendedAction: null as string | null,
+    };
+  }
+  if (!parseFirmwareVersion(currentVersion)) {
+    return {
+      health: "error" as HealthTone,
+      statusLabel: "Issue",
+      primaryLine: "Firmware issue",
+      secondaryLine: "Version unreadable",
+      updateAvailable: null as boolean | null,
+      notes: "Version string could not be parsed",
+      recommendedAction: "Run version command again",
+    };
+  }
+  if (compareFirmwareVersions(currentVersion, latestVersion) < 0) {
+    return {
+      health: "warning" as HealthTone,
+      statusLabel: "Update available",
+      primaryLine: "Update available",
+      secondaryLine: currentVersion,
+      updateAvailable: true,
+      notes: "Recommended update",
+      recommendedAction: "Update firmware",
+    };
+  }
+  return {
+    health: "healthy" as HealthTone,
+    statusLabel: "Up to date",
+    primaryLine: "Up to date",
+    secondaryLine: currentVersion,
+    updateAvailable: false,
+    notes: "Current release",
+    recommendedAction: null as string | null,
+  };
+}
+
+function buildFirmwareSections(
+  summary: ReturnType<typeof buildFirmwareSummary>,
+  currentVersion: string | null | undefined,
+  latestVersion: string,
+): DiagSection[] {
+  const details: DiagRow[] = [
+    { label: "Version", value: currentVersion ?? "—" },
+    { label: "Latest", value: latestVersion },
+    {
+      label: "Update available",
+      value: summary.updateAvailable === true ? "Yes" : summary.updateAvailable === false ? "No" : "—",
+    },
+    { label: "Notes", value: summary.notes },
+  ];
+  const sections: DiagSection[] = [{ title: "Details", rows: details }];
+  if (summary.recommendedAction) {
+    sections.push({
+      title: "Recommended Actions",
+      rows: [{ label: "Recommended action", value: summary.recommendedAction }],
+    });
+  }
+  return sections;
+}
+
+function FirmwareVersionEditor({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(value);
+
+  const commit = () => {
+    const norm = draft.trim().toLowerCase();
+    if (/^r\d+\.\d+(\.\d+)?$/.test(norm)) onChange(norm);
+    setEditing(false);
+  };
+
+  if (editing) {
+    return (
+      <input
+        className="firmware-version-input"
+        value={draft}
+        size={7}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") commit();
+          if (e.key === "Escape") setEditing(false);
+        }}
+        onClick={(e) => e.stopPropagation()}
+        autoFocus
+      />
+    );
+  }
+  return (
+    <button
+      type="button"
+      className="firmware-version-pill"
+      onClick={(e) => { e.stopPropagation(); setDraft(value); setEditing(true); }}
+    >
+      latest: {value}
+    </button>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 export default function DiagnosticsTab() {
   const [rawDiag, setRawDiag] = useState<DiagnosticState | null>(null);
   const [displayDiag, setDisplayDiag] = useState<DiagnosticState | null>(null);
@@ -1260,6 +1521,7 @@ export default function DiagnosticsTab() {
     ethernet: false,
     pressure: false,
     sim_picker: false,
+    firmware: false,
   });
   const [cardUpdatedAt, setCardUpdatedAt] = useState<Record<string, string | null>>({
     wifi: null,
@@ -1268,6 +1530,9 @@ export default function DiagnosticsTab() {
     ethernet: null,
     pressure: null,
     sim_picker: null,
+  });
+  const [latestFirmwareVersion, setLatestFirmwareVersion] = useState<string>(() => {
+    try { return localStorage.getItem("fwds-latest-firmware") ?? DEFAULT_LATEST_FIRMWARE; } catch { return DEFAULT_LATEST_FIRMWARE; }
   });
   const prevCardsRef = useRef<Record<string, string>>({
     wifi: "",
@@ -1283,12 +1548,36 @@ export default function DiagnosticsTab() {
   const [sentCommandId, setSentCommandId] = useState<string | null>(null);
   const [sendError, setSendError] = useState<string | null>(null);
   const [globalDiagTier, setGlobalDiagTier] = useState<"quick" | "full" | "no-satellite">("quick");
+  const [pressureHhc, setPressureHhc] = useState<"mp3" | "hp6">("mp3");
   const [cardHolds, setCardHolds] = useState<Partial<Record<InterfaceKey, HoldState>>>({});
   const cardHoldsRef = useRef<Partial<Record<InterfaceKey, HoldState>>>({});
+  // Sequential expiry timestamps computed when a diagnostic block is sent.
+  // Each interface gets the timestamp at which its own work is expected to finish,
+  // accounting for all preceding interfaces in the same block.
+  const interfaceExpirationsRef = useRef<Partial<Record<InterfaceKey, number>>>({});
+  const commandSentAtRef = useRef<number>(0);
 
   useEffect(() => {
     cardHoldsRef.current = cardHolds;
   }, [cardHolds]);
+
+  // 1-second tick to keep countdowns live while any hold is active.
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    if (Object.keys(cardHolds).length === 0) return;
+    const id = setInterval(() => setTick((t) => t + 1), 1000);
+    return () => clearInterval(id);
+  }, [cardHolds]);
+
+  useEffect(() => {
+    const st = displayDiag?.system?.system_type;
+    if (!st) return;
+    setPressureHhc(st.toLowerCase() === "hp6" ? "hp6" : "mp3");
+  }, [displayDiag?.system?.system_type]);
+
+  useEffect(() => {
+    try { localStorage.setItem("fwds-latest-firmware", latestFirmwareVersion); } catch {}
+  }, [latestFirmwareVersion]);
 
   useEffect(() => {
     invoke("start_log_watcher").catch(() => {});
@@ -1324,12 +1613,58 @@ export default function DiagnosticsTab() {
         prevCardsRef.current = nextCards;
         prevSystemRef.current = nextSystem;
         setRawDiag(state);
+
+        // Pre-compute which holds will be released this cycle so setDisplayDiag
+        // can write fresh data atomically — preventing the "no data" flash that
+        // occurs when the hold is still present in the ref when setDisplayDiag
+        // runs but then deleted by setCardHolds in the same React batch.
+        const willBeReleasedThisCycle = new Set<InterfaceKey>();
+        (Object.keys(cardHoldsRef.current) as InterfaceKey[]).forEach((iface) => {
+          const hold = cardHoldsRef.current[iface];
+          if (!hold) return;
+          // started_at >= hold.startedAt means a new run completed even if polling
+          // missed the in_progress=true transition (fast commands).
+          const runStartedAtMs = parseBackendTime(state.interface_runs?.[iface]?.started_at);
+          const runIsNewer = runStartedAtMs !== null && runStartedAtMs >= hold.startedAt;
+          // For pressure there is no interface_runs entry — auto-confirm after a
+          // grace period. We still guard release against stale data via baseline counts.
+          const pressureGracePassed = iface === "pressure" && (nowMs - hold.startedAt) > 4000;
+          const effectiveConfirmed = hold.inProgressConfirmed ||
+            state.interface_runs?.[iface]?.in_progress === true ||
+            runIsNewer || pressureGracePassed;
+          // Pressure: require NEW counts beyond the baseline snapshotted at hold creation.
+          const complete = iface === "pressure"
+            ? isPressureCompleteVsBaseline(state, hold.pressureBaselineCounts)
+            : isInterfaceComplete(iface, state);
+          const countdownExpiresAt = interfaceExpirationsRef.current[iface];
+          const countdownExpired = countdownExpiresAt != null && countdownExpiresAt <= nowMs;
+          // Satellite: release early when IMEI is newly populated (fast-complete path).
+          const satelliteGotData = iface === "satellite" &&
+            "satelliteBaselineImei" in hold &&
+            !!state.satellite?.sat_imei &&
+            state.satellite.sat_imei !== hold.satelliteBaselineImei;
+          if (
+            (effectiveConfirmed && complete) ||
+            hold.expiresAt <= nowMs ||
+            (countdownExpired && complete) ||
+            satelliteGotData
+          ) {
+            willBeReleasedThisCycle.add(iface);
+          }
+        });
+
         setDisplayDiag((prevDisplay) => {
           const base = prevDisplay ?? state;
           const next = { ...base };
           (Object.keys(nextCards) as InterfaceKey[]).forEach((iface) => {
             const hold = cardHoldsRef.current[iface];
-            if (hold && hold.expiresAt > nowMs) return;
+            // Skip update if hold is still active AND not being released this cycle.
+            if (hold && hold.expiresAt > nowMs && !willBeReleasedThisCycle.has(iface)) return;
+            // Only let in_progress block the display while the hold is still protecting the
+            // card (i.e., we know a fresh run is in flight). Once the hold is expired or
+            // released this cycle, show whatever data the backend has — otherwise a card
+            // can count all the way down and still never populate.
+            if (!willBeReleasedThisCycle.has(iface) && state.interface_runs?.[iface]?.in_progress === true) return;
             (next as any)[iface] = (state as any)?.[iface] ?? null;
           });
           next.interface_runs = state.interface_runs ?? {};
@@ -1343,9 +1678,48 @@ export default function DiagnosticsTab() {
           const next = { ...prev };
           (Object.keys(prev) as InterfaceKey[]).forEach((iface) => {
             const hold = prev[iface];
-            const backendInProgress = state.interface_runs?.[iface]?.in_progress === true;
-            const complete = isInterfaceComplete(iface, state);
-            if (hold && (complete || !backendInProgress || hold.expiresAt <= nowMs)) {
+            if (!hold) return;
+
+            // Mark confirmed once the backend acknowledges the current run has started.
+            // Without this, the first poll after Send may see in_progress=false from a
+            // PREVIOUS run, and release would be triggered by stale completion data.
+            if (!hold.inProgressConfirmed) {
+              const runStartedAt = state.interface_runs?.[iface]?.started_at;
+              const runIsNewer = runStartedAt != null &&
+                new Date(runStartedAt).getTime() >= hold.startedAt;
+              // Pressure has no interface_runs entry; auto-confirm after 4 s (2 polls).
+              // Release is still guarded by the baseline count check, so stale data
+              // from a prior session cannot trigger a premature release.
+              const pressureGracePassed = iface === "pressure" && (nowMs - hold.startedAt) > 4000;
+              if (
+                state.interface_runs?.[iface]?.in_progress === true ||
+                runIsNewer || pressureGracePassed
+              ) {
+                next[iface] = { ...hold, inProgressConfirmed: true };
+                changed = true;
+              }
+            }
+
+            const currentHold = next[iface] ?? hold;
+            // Pressure: require NEW counts beyond the baseline snapshotted at hold creation.
+            const complete = iface === "pressure"
+              ? isPressureCompleteVsBaseline(state, currentHold.pressureBaselineCounts)
+              : isInterfaceComplete(iface, state);
+            const countdownExpiresAt = interfaceExpirationsRef.current[iface];
+            const countdownExpired = countdownExpiresAt != null && countdownExpiresAt <= nowMs;
+            // Satellite: release early when IMEI is newly populated (fast-complete path).
+            const satelliteGotData = iface === "satellite" &&
+              "satelliteBaselineImei" in (currentHold ?? {}) &&
+              !!state.satellite?.sat_imei &&
+              state.satellite.sat_imei !== currentHold.satelliteBaselineImei;
+            // Release when: confirmed start + data complete, OR safety timeout,
+            // OR countdown expired and data available, OR satellite IMEI just arrived.
+            if (currentHold && (
+              (currentHold.inProgressConfirmed && complete) ||
+              currentHold.expiresAt <= nowMs ||
+              (countdownExpired && complete) ||
+              satelliteGotData
+            )) {
               delete next[iface];
               changed = true;
             }
@@ -1358,7 +1732,24 @@ export default function DiagnosticsTab() {
       }
     }, 2000);
 
-    return () => clearInterval(id);
+    const unlistenSid = listen("controller-sid-detected", async () => {
+      try {
+        const state = await invoke<DiagnosticState>("get_diagnostic_state");
+        setRawDiag(state);
+        setDisplayDiag((prev) => {
+          const next = { ...(prev ?? state) };
+          next.system = state.system ?? null;
+          next.interface_runs = state.interface_runs ?? {};
+          next.session_has_data = state.session_has_data;
+          return next;
+        });
+      } catch { /* best effort */ }
+    });
+
+    return () => {
+      clearInterval(id);
+      unlistenSid.then((fn) => fn());
+    };
   }, []);
 
   const showNoSessionBanner = useMemo(() => !displayDiag?.session_has_data, [displayDiag]);
@@ -1375,12 +1766,18 @@ export default function DiagnosticsTab() {
   const satelliteSummary = summarizeSatellite(satellite);
   const ethernetSummary = summarizeEthernet(ethernet);
   const pressureSummary = summarizePressure(pressure);
+  const currentFirmware = displayDiag?.system?.version ?? null;
+  const firmwareSummary = buildFirmwareSummary(currentFirmware, latestFirmwareVersion);
   const primaryNetwork = resolvePrimaryNetwork({ wifi, cellular, satellite, ethernet, system });
   const wifiRole = resolveRole("wifi", primaryNetwork, !!(wifi?.connected || wifi?.connman_wifi_connected));
   const cellularRole = resolveRole("cellular", primaryNetwork, !!(cellular?.connman_cell_connected || cellular?.internet_reachable));
   const ethernetRole = resolveRole("ethernet", primaryNetwork, !!(ethernet?.link_detected || ethernet?.internet_reachable));
-  const isUpdating = (iface: InterfaceKey) =>
-    (displayDiag?.interface_runs?.[iface]?.in_progress === true) || !!cardHolds[iface];
+  const isUpdating = (iface: InterfaceKey) => {
+    // Pressure has no reliable backend in_progress tracking (no end marker in
+    // most firmware versions), so only the frontend hold drives the updating state.
+    if (iface === "pressure") return !!cardHolds[iface];
+    return (displayDiag?.interface_runs?.[iface]?.in_progress === true) || !!cardHolds[iface];
+  };
 
   async function clearCards() {
     await invoke("stop_log_watcher").catch(() => {});
@@ -1427,15 +1824,44 @@ export default function DiagnosticsTab() {
     try {
       const now = Date.now();
       const touchedInterfaces = interfacesForBlock(block, script);
+      // Compute per-interface sequential expiry FIRST so hold.expiresAt and the
+      // countdown ring both expire at the same moment (no "Done" ring while hold
+      // is still blocking the card update).
+      commandSentAtRef.current = now;
+      const expirations: Partial<Record<InterfaceKey, number>> = {};
+      let cursor = now;
+      for (const iface of touchedInterfaces) {
+        cursor += ifaceDurationMs(iface, script);
+        expirations[iface] = cursor;
+      }
+      interfaceExpirationsRef.current = expirations;
+      // Snapshot baselines before the hold is created so release logic can
+      // distinguish genuinely new data from pre-existing (stale) readings.
+      const pressureSnap = rawDiag?.pressure;
+      const pressureBaseline = {
+        source:       pressureSnap?.sensors?.source?.count       ?? 0,
+        distribution: pressureSnap?.sensors?.distribution?.count ?? 0,
+        supply:       pressureSnap?.sensors?.supply?.count       ?? 0,
+      };
+      const satelliteBaselineImei = rawDiag?.satellite?.sat_imei ?? null;
+
       setCardHolds((prev) => {
         const next = { ...prev };
         touchedInterfaces.forEach((iface) => {
           next[iface] = {
             startedAt: now,
-            expiresAt: now + holdTimeoutMsForInterface(iface, script),
+            // Align hold timeout with the sequential countdown expiry, floored at
+            // the interface's individual safety minimum (e.g. 60 s for most, 15 min
+            // for satellite loopback) so short-sequential entries still get coverage.
+            expiresAt: Math.max(
+              now + holdTimeoutMsForInterface(iface, script),
+              expirations[iface] ?? now + holdTimeoutMsForInterface(iface, script),
+            ),
             reason: iface === "satellite" && script.toLowerCase().includes("satellite-check -t")
               ? "Satellite loopback in progress"
               : "Diagnostics command in progress",
+            ...(iface === "pressure" ? { pressureBaselineCounts: pressureBaseline } : {}),
+            ...(iface === "satellite" ? { satelliteBaselineImei } : {}),
           };
         });
         return next;
@@ -1449,13 +1875,28 @@ export default function DiagnosticsTab() {
     }
   }
 
+  function getCountdownProps(iface: InterfaceKey): CountdownProps | undefined {
+    const hold = cardHolds[iface];
+    if (!hold) return undefined;
+    const expiresAt = interfaceExpirationsRef.current[iface] ?? hold.expiresAt;
+    const sentAt    = commandSentAtRef.current || hold.startedAt;
+    const totalMs   = Math.max(1, expiresAt - sentAt);
+    const elapsedMs = Date.now() - sentAt;
+    const remainingMs = Math.max(0, expiresAt - Date.now());
+    const progressFraction = Math.min(1, elapsedMs / totalMs);
+    const isElapsedMode = hold.reason === "Satellite loopback in progress";
+    return { progressFraction, remainingMs, elapsedMs, isElapsedMode };
+  }
+
   const safeSid = system?.sid && /^\d{8}$/.test(system.sid) ? system.sid : null;
   const safeVersion = system?.version && /^r\d+\.\d+/.test(system.version) ? system.version : null;
   const systemIdentity = [
     safeSid ? `SID ${safeSid}` : null,
     safeVersion ? `v${safeVersion}` : null,
     system?.release_date ? system.release_date : null,
+    system?.system_type ? system.system_type : null,
   ].filter(Boolean).join(" · ");
+  const pressureDiagBlockId = pressureHhc === "hp6" ? "pressure-hp6" : "pressure-mp3";
   const globalDiagBlockId = globalDiagTier === "full"
     ? "full-diags"
     : globalDiagTier === "no-satellite"
@@ -1471,7 +1912,16 @@ export default function DiagnosticsTab() {
     });
     setDisplayDiag((prev) => {
       if (!prev || !rawDiag) return prev;
-      return { ...prev, [iface]: (rawDiag as any)?.[iface] ?? null };
+      const next = { ...prev, [iface]: (rawDiag as any)?.[iface] ?? null };
+      // Force in_progress=false so the static "Updating…" label clears immediately
+      // even when the backend still reports in_progress=true for this interface.
+      if (next.interface_runs?.[iface]) {
+        next.interface_runs = {
+          ...next.interface_runs,
+          [iface]: { ...next.interface_runs[iface], in_progress: false },
+        };
+      }
+      return next;
     });
     setCardUpdatedAt((prev) => ({ ...prev, [iface]: new Date().toLocaleTimeString() }));
   }
@@ -1528,6 +1978,7 @@ export default function DiagnosticsTab() {
           compact={wifiSummary.health === "neutral"}
           updating={isUpdating("wifi")}
           onForceRelease={() => releaseCardHold("wifi")}
+          countdown={getCountdownProps("wifi")}
           onClear={async () => {
             await invoke("clear_diagnostic_interface", { interface: "wifi" }).catch(() => {});
             setDisplayDiag(prev => prev ? { ...prev, wifi: null } : prev);
@@ -1556,6 +2007,7 @@ export default function DiagnosticsTab() {
           compact={cellularSummary.health === "neutral"}
           updating={isUpdating("cellular")}
           onForceRelease={() => releaseCardHold("cellular")}
+          countdown={getCountdownProps("cellular")}
           onClear={async () => {
             await invoke("clear_diagnostic_interface", { interface: "cellular" }).catch(() => {});
             setDisplayDiag(prev => prev ? { ...prev, cellular: null } : prev);
@@ -1584,6 +2036,7 @@ export default function DiagnosticsTab() {
           compact={satelliteSummary.health === "neutral"}
           updating={isUpdating("satellite")}
           onForceRelease={() => releaseCardHold("satellite")}
+          countdown={getCountdownProps("satellite")}
           onClear={async () => {
             await invoke("clear_diagnostic_interface", { interface: "satellite" }).catch(() => {});
             setDisplayDiag(prev => prev ? { ...prev, satellite: null } : prev);
@@ -1612,6 +2065,7 @@ export default function DiagnosticsTab() {
           compact={ethernetSummary.health === "neutral"}
           updating={isUpdating("ethernet")}
           onForceRelease={() => releaseCardHold("ethernet")}
+          countdown={getCountdownProps("ethernet")}
           onClear={async () => {
             await invoke("clear_diagnostic_interface", { interface: "ethernet" }).catch(() => {});
             setDisplayDiag(prev => prev ? { ...prev, ethernet: null } : prev);
@@ -1633,17 +2087,63 @@ export default function DiagnosticsTab() {
           expanded={expanded.pressure}
           onToggle={() => setExpanded((p) => ({ ...p, pressure: !p.pressure }))}
           updatedAt={cardUpdatedAt.pressure}
-          onCopyCommand={() => copyDiagnosticBlock("pressure")}
-          copied={copiedCommandId === "pressure"}
-          onSendCommand={() => sendDiagnosticBlock("pressure")}
-          sent={sentCommandId === "pressure"}
+          onCopyCommand={() => copyDiagnosticBlock(pressureDiagBlockId)}
+          copied={copiedCommandId === pressureDiagBlockId}
+          onSendCommand={() => sendDiagnosticBlock(pressureDiagBlockId)}
+          sent={sentCommandId === pressureDiagBlockId}
           compact={pressureSummary.health === "neutral"}
           updating={isUpdating("pressure")}
           onForceRelease={() => releaseCardHold("pressure")}
+          countdown={getCountdownProps("pressure")}
+          inlineControls={
+            <div className="pressure-hhc-pills" onClick={(e) => e.stopPropagation()}>
+              <button
+                type="button"
+                className={`pressure-hhc-pill${pressureHhc === "mp3" ? " pressure-hhc-pill-active" : ""}`}
+                onClick={() => setPressureHhc("mp3")}
+              >MP3</button>
+              <button
+                type="button"
+                className={`pressure-hhc-pill${pressureHhc === "hp6" ? " pressure-hhc-pill-active" : ""}`}
+                onClick={() => setPressureHhc("hp6")}
+              >HP6</button>
+            </div>
+          }
           onClear={async () => {
             await invoke("clear_diagnostic_interface", { interface: "pressure" }).catch(() => {});
             setDisplayDiag(prev => prev ? { ...prev, pressure: null } : prev);
             setCardUpdatedAt(prev => ({ ...prev, pressure: null }));
+          }}
+        />
+
+        <DiagCard
+          title="Firmware"
+          icon="💾"
+          health={firmwareSummary.health}
+          statusLabel={firmwareSummary.statusLabel}
+          primaryLine={firmwareSummary.primaryLine}
+          secondaryLine={firmwareSummary.secondaryLine}
+          sections={buildFirmwareSections(firmwareSummary, currentFirmware, latestFirmwareVersion)}
+          expanded={expanded.firmware}
+          onToggle={() => setExpanded((p) => ({ ...p, firmware: !p.firmware }))}
+          updatedAt={systemUpdatedAt}
+          onCopyCommand={() => copyDiagnosticBlock("firmware")}
+          copied={copiedCommandId === "firmware"}
+          onSendCommand={() => sendDiagnosticBlock("firmware")}
+          sent={sentCommandId === "firmware"}
+          compact={firmwareSummary.health === "neutral"}
+          updating={displayDiag?.interface_runs?.system?.in_progress === true && !currentFirmware}
+          inlineControls={
+            <FirmwareVersionEditor
+              value={latestFirmwareVersion}
+              onChange={setLatestFirmwareVersion}
+            />
+          }
+          onClear={async () => {
+            await invoke("clear_diagnostic_interface", { interface: "system" }).catch(() => {});
+            setDisplayDiag(prev =>
+              prev ? { ...prev, system: prev.system ? { ...prev.system, version: null, release_date: null } : null } : prev
+            );
           }}
         />
       </div>
@@ -1670,6 +2170,7 @@ export default function DiagnosticsTab() {
           compact={!simPicker?.scan_attempted}
           updating={isUpdating("sim_picker")}
           onForceRelease={() => releaseCardHold("sim_picker")}
+          countdown={getCountdownProps("sim_picker")}
           onClear={async () => {
             await invoke("clear_diagnostic_interface", { interface: "sim_picker" }).catch(() => {});
             setDisplayDiag(prev => prev ? { ...prev, sim_picker: null } : prev);
