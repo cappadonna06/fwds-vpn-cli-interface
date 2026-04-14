@@ -38,6 +38,7 @@ interface AppStatus {
   controller_ip: string | null;
   connection_mode?: string;
   local_serial_device?: string | null;
+  platform?: string;
 }
 
 interface SystemInfo {
@@ -157,6 +158,7 @@ export default function App() {
   const showLocal = appStatus.connection_mode === "local";
   const vpnState = mapVpnState(appStatus.vpn_phase);
   const localState = mapLocalState(appStatus.connection_mode, appStatus.local_serial_device);
+  const useTerminal = appStatus.platform === "windows" && appStatus.connection_mode === "local";
 
   const controllerDisplay = appStatus.controller_ip ?? appStatus.local_serial_device ?? "No controller";
   const controllerValid = Boolean(appStatus.controller_ip) || Boolean(appStatus.local_serial_device);
@@ -196,7 +198,7 @@ export default function App() {
             <SessionTab onControllerConnected={() => setActiveTab("console")} />
           </div>
           <div style={{ display: activeTab === "console" ? "contents" : "none" }}>
-            <ConsoleTab />
+            <ConsoleTab useTerminal={useTerminal} />
           </div>
           <div style={{ display: activeTab === "commands" ? "contents" : "none" }}>
             <CommandsTab />

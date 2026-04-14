@@ -1335,12 +1335,12 @@ fn open_local_serial_terminal(device: String, state: State<'_, AppState>) -> Res
         }
 
         let state_inner = Arc::clone(&state.inner);
+        let app_handle_arc = state.app_handle.clone();
         let mut reader = port;
         let mut log_writer = std::io::BufWriter::new(log_file);
 
         thread::spawn(move || {
             let mut buf = [0u8; 512];
-            let mut partial = String::new();
             loop {
                 if stop_clone.load(Ordering::Relaxed) {
                     break;
@@ -1352,15 +1352,11 @@ fn open_local_serial_terminal(device: String, state: State<'_, AppState>) -> Res
                         // Mirror raw bytes to the log file for parse_log_into_state().
                         let _ = log_writer.write_all(chunk);
                         let _ = log_writer.flush();
-
-                        partial.push_str(&String::from_utf8_lossy(chunk));
-                        while let Some(pos) = partial.find('\n') {
-                            let line = partial.drain(..=pos).collect::<String>();
-                            let line = line.trim_end_matches(|c| c == '\r' || c == '\n').to_owned();
-                            if !line.is_empty() {
-                                if let Ok(mut inner) = state_inner.lock() {
-                                    inner.shell_logs.push(line);
-                                }
+                        // Emit raw bytes to the xterm.js pane in the frontend.
+                        let chunk_str = String::from_utf8_lossy(chunk).into_owned();
+                        if let Ok(h) = app_handle_arc.lock() {
+                            if let Some(handle) = h.as_ref() {
+                                let _ = handle.emit("serial-data", chunk_str);
                             }
                         }
                     }
@@ -1494,6 +1490,7 @@ fn get_app_state(state: State<'_, AppState>) -> Result<serde_json::Value, String
         "connection_mode": inner.connection_mode,
         "local_serial_device": inner.local_serial_device,
         "external_terminal_window_id": inner.external_terminal_window_id,
+        "platform": std::env::consts::OS,  // "windows" | "macos" | "linux"
     }))
 }
 
@@ -1574,6 +1571,27 @@ end tell",
     }
 
     Ok(())
+}
+
+/// Write raw bytes to the backend-owned Windows serial port (no \r\n appended).
+/// Called by the xterm.js TerminalPane `onData` callback for every keystroke.
+#[tauri::command]
+fn send_serial_raw(data: String, state: State<'_, AppState>) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        let writer_arc = {
+            let inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
+            inner.windows_serial_writer.clone()
+        };
+        let writer_arc = writer_arc.ok_or("No serial port open")?;
+        let mut port = writer_arc.lock().map_err(|_| "serial port lock poisoned")?;
+        port.write_all(data.as_bytes())
+            .map_err(|e| format!("Serial write error: {e}"))?;
+        port.flush().map_err(|e| format!("Serial flush error: {e}"))?;
+        return Ok(());
+    }
+    #[allow(unreachable_code)]
+    Err("send_serial_raw is only supported on Windows".into())
 }
 
 fn has_any_diag_data(diag: &DiagnosticState) -> bool {
@@ -2689,6 +2707,7 @@ pub fn run() {
             poll_controller,
             send_input,
             send_external_input,
+            send_serial_raw,
             send_interrupt,
             toggle_debug,
             disconnect_controller,

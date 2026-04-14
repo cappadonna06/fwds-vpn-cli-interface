@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { COMMANDS, FAVORITE_COMMAND_IDS, ControllerCommand, CommandCategory } from "../../types/commands";
+import TerminalPane from "../terminal/TerminalPane";
 
 type CommandPaletteTab = "favorites" | "common" | "all";
 
@@ -23,7 +24,7 @@ interface LogLine {
 
 interface ControllerPoll { phase: string; detail: string; new_lines: string[]; }
 
-export default function ConsoleTab() {
+export default function ConsoleTab({ useTerminal = false }: { useTerminal?: boolean }) {
   const [input, setInput] = useState("");
   const [log, setLog] = useState<LogLine[]>([
     { id: 0, text: "Connect to a controller in the Session tab, then run commands here.", type: "info" },
@@ -38,6 +39,8 @@ export default function ConsoleTab() {
   const [confirmCommand, setConfirmCommand] = useState<ControllerCommand | null>(null);
   const logEndRef = useRef<HTMLDivElement>(null);
   const idRef = useRef(1);
+  const useTerminalRef = useRef(useTerminal);
+  useEffect(() => { useTerminalRef.current = useTerminal; }, [useTerminal]);
 
   useEffect(() => {
     logEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -58,7 +61,7 @@ export default function ConsoleTab() {
         ctrlPhaseRef.current = r.phase;
         setCtrlPhase(r.phase);
       }
-      if (r.new_lines.length > 0) {
+      if (r.new_lines.length > 0 && !useTerminalRef.current) {
         setLog((prev) => {
           const newEntries: LogLine[] = r.new_lines.flatMap<LogLine>((raw) => {
             if (raw.startsWith("\x01")) {
@@ -118,17 +121,27 @@ export default function ConsoleTab() {
     } catch { /* ignore */ }
   }
 
+  // Routes a command to xterm (via send_serial_raw) or the line-based console.
+  async function doSend(cmd: string) {
+    if (useTerminal) {
+      if (!cmd.trim()) return;
+      invoke("send_serial_raw", { data: cmd + "\r" }).catch(() => {});
+    } else {
+      await sendCommand(cmd);
+    }
+  }
+
   function handlePreset(cmd: ControllerCommand) {
     if (cmd.guard === "hard" || cmd.guard === "confirm") {
       setConfirmCommand(cmd);
     } else {
-      sendCommand(cmd.command);
+      doSend(cmd.command);
     }
   }
 
   function confirmAndSend() {
     if (confirmCommand) {
-      sendCommand(confirmCommand.command);
+      doSend(confirmCommand.command);
       setConfirmCommand(null);
     }
   }
@@ -176,72 +189,80 @@ export default function ConsoleTab() {
           <span className={`badge badge-${ctrlPhase === "connected" ? "connected" : ctrlPhase === "connecting" ? "connecting" : ctrlPhase === "failed" ? "failed" : "disconnected"}`}>
             {ctrlPhase === "connected" ? "Shell connected" : ctrlPhase === "connecting" ? "Connecting…" : ctrlPhase === "failed" ? "Failed" : "Not connected"}
           </span>
-          {waitingForInput && (
+          {!useTerminal && waitingForInput && (
             <span className="hint-inline" style={{ color: "var(--accent)" }}>
               Waiting for input ↓
             </span>
           )}
-          <button
-            className={`btn btn-secondary`}
-            onClick={toggleDebug}
-            style={{ marginLeft: "auto", fontSize: 11, padding: "2px 8px", opacity: debugMode ? 1 : 0.5, color: debugMode ? "#d97706" : undefined }}
-            title="Toggle raw chunk debug logging"
-          >
-            {debugMode ? "Debug ON" : "Debug"}
-          </button>
+          {!useTerminal && (
+            <button
+              className={`btn btn-secondary`}
+              onClick={toggleDebug}
+              style={{ marginLeft: "auto", fontSize: 11, padding: "2px 8px", opacity: debugMode ? 1 : 0.5, color: debugMode ? "#d97706" : undefined }}
+              title="Toggle raw chunk debug logging"
+            >
+              {debugMode ? "Debug ON" : "Debug"}
+            </button>
+          )}
         </div>
-        <div className="log-pane console-log">
-          {log.map((line, i) => {
-            const prevType = i > 0 ? log[i - 1].type : null;
-            const isWizardAnswer = line.type === "input" && prevType === "wizard";
-            if (line.type === "debug") {
-              return (
-                <div key={line.id} style={{ fontSize: 10, opacity: 0.6, color: "#d97706", fontFamily: "var(--mono)", whiteSpace: "pre-wrap", lineHeight: 1.3 }}>
-                  ⬡ {line.text}
-                </div>
-              );
-            }
-            return (
-              <div key={line.id} className={`log-line log-${line.type}`}>
-                {isWizardAnswer ? `> ${line.text}` : line.text}
-              </div>
-            );
-          })}
-          <div ref={logEndRef} />
-        </div>
-        <div className="console-input-row">
-          <span className="console-prompt">$</span>
-          <input
-            className="console-input"
-            type="text"
-            value={input}
-            placeholder={waitingForInput ? "Type response and press Enter…" : "Enter command…"}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") sendCommand(input);
-              if (e.key === "c" && e.ctrlKey) {
-                e.preventDefault();
-                sendInterrupt();
-              }
-            }}
-            autoFocus
-          />
-          <button
-            className="btn btn-secondary"
-            title="Send Ctrl+C (interrupt)"
-            onClick={sendInterrupt}
-            style={{ fontFamily: "var(--mono)", fontSize: 11, padding: "4px 8px" }}
-          >
-            ⌃C
-          </button>
-          <button
-            className="btn btn-primary"
-            disabled={!input.trim() && !waitingForInput}
-            onClick={() => sendCommand(input)}
-          >
-            Send
-          </button>
-        </div>
+        {useTerminal ? (
+          <TerminalPane />
+        ) : (
+          <>
+            <div className="log-pane console-log">
+              {log.map((line, i) => {
+                const prevType = i > 0 ? log[i - 1].type : null;
+                const isWizardAnswer = line.type === "input" && prevType === "wizard";
+                if (line.type === "debug") {
+                  return (
+                    <div key={line.id} style={{ fontSize: 10, opacity: 0.6, color: "#d97706", fontFamily: "var(--mono)", whiteSpace: "pre-wrap", lineHeight: 1.3 }}>
+                      ⬡ {line.text}
+                    </div>
+                  );
+                }
+                return (
+                  <div key={line.id} className={`log-line log-${line.type}`}>
+                    {isWizardAnswer ? `> ${line.text}` : line.text}
+                  </div>
+                );
+              })}
+              <div ref={logEndRef} />
+            </div>
+            <div className="console-input-row">
+              <span className="console-prompt">$</span>
+              <input
+                className="console-input"
+                type="text"
+                value={input}
+                placeholder={waitingForInput ? "Type response and press Enter…" : "Enter command…"}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") sendCommand(input);
+                  if (e.key === "c" && e.ctrlKey) {
+                    e.preventDefault();
+                    sendInterrupt();
+                  }
+                }}
+                autoFocus
+              />
+              <button
+                className="btn btn-secondary"
+                title="Send Ctrl+C (interrupt)"
+                onClick={sendInterrupt}
+                style={{ fontFamily: "var(--mono)", fontSize: 11, padding: "4px 8px" }}
+              >
+                ⌃C
+              </button>
+              <button
+                className="btn btn-primary"
+                disabled={!input.trim() && !waitingForInput}
+                onClick={() => sendCommand(input)}
+              >
+                Send
+              </button>
+            </div>
+          </>
+        )}
       </div>
 
       {/* Right — command palette */}
