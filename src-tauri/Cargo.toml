@@ -21,6 +21,10 @@ chrono = "0.4"
 dirs = "5"
 regex = "1"
 serialport = "4"
+windows-sys = { version = "0.59", features = [
+  "Win32_Foundation",
+  "Win32_UI_WindowsAndMessaging",
+] }
 
 [profile.release]
 panic = "abort"

@@ -17,10 +17,11 @@
 3. Click **Refresh** to list COM ports.
 4. Select the COM device (friendly label shown in picker).
 5. Click **Connect**.
-6. Use app send actions/Enter to send commands to the active local serial session.
+6. The app opens `PuTTY` on that COM port at `115200 8N1`.
+7. Use the PuTTY window directly for login, password prompts, and interactive commands.
 
 ## Troubleshooting
 - **Port busy**: another app is using the COM port; close it and reconnect.
 - **Access denied**: run with required permissions or reconnect device.
 - **Device disconnected**: re-seat USB cable and reconnect.
-- **Session not open**: connect local serial first.
+- **PuTTY not found**: install PuTTY or make sure `putty.exe` is in a standard install path.

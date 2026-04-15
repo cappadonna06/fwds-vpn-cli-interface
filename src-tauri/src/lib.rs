@@ -13,6 +13,12 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 use tauri::{Emitter, Manager, State};
+#[cfg(target_os = "windows")]
+use windows_sys::Win32::Foundation::{BOOL, FALSE, HWND, LPARAM, TRUE, WPARAM};
+#[cfg(target_os = "windows")]
+use windows_sys::Win32::UI::WindowsAndMessaging::{
+    EnumWindows, GetClassNameW, GetWindowThreadProcessId, PostMessageW, WM_CHAR,
+};
 
 mod parsers;
 
@@ -67,6 +73,7 @@ struct InnerState {
 
     // External Terminal.app session target (window id) used by Send buttons.
     external_terminal_window_id: Option<i64>,
+    windows_local_terminal_child: Option<Child>,
     windows_local_serial_writer: Option<Arc<Mutex<Box<dyn SerialPort>>>>,
     windows_local_serial_kill: Option<Arc<AtomicBool>>,
 }
@@ -548,6 +555,124 @@ fn local_serial_log_file(device: &str) -> PathBuf {
     dirs::desktop_dir()
         .unwrap_or_else(|| PathBuf::from("~/Desktop"))
         .join(filename)
+}
+
+#[cfg(target_os = "windows")]
+struct PuttyWindowSearch {
+    target_pid: Option<u32>,
+    found: Option<HWND>,
+}
+
+#[cfg(target_os = "windows")]
+unsafe extern "system" fn enum_putty_windows(hwnd: HWND, lparam: LPARAM) -> BOOL {
+    let search = &mut *(lparam as *mut PuttyWindowSearch);
+    let mut class_name = [0u16; 64];
+    let len = unsafe { GetClassNameW(hwnd, class_name.as_mut_ptr(), class_name.len() as i32) };
+    if len <= 0 {
+        return TRUE;
+    }
+
+    let class_name = String::from_utf16_lossy(&class_name[..len as usize]);
+    if class_name != "PuTTY" {
+        return TRUE;
+    }
+
+    if let Some(target_pid) = search.target_pid {
+        let mut window_pid = 0u32;
+        unsafe {
+            GetWindowThreadProcessId(hwnd, &mut window_pid);
+        }
+        if window_pid != target_pid {
+            return TRUE;
+        }
+    }
+
+    search.found = Some(hwnd);
+    FALSE
+}
+
+#[cfg(target_os = "windows")]
+fn find_putty_window(pid: Option<u32>) -> Option<HWND> {
+    let mut search = PuttyWindowSearch {
+        target_pid: pid,
+        found: None,
+    };
+    unsafe {
+        EnumWindows(
+            Some(enum_putty_windows),
+            &mut search as *mut PuttyWindowSearch as LPARAM,
+        );
+    }
+    if search.found.is_some() || pid.is_none() {
+        return search.found;
+    }
+
+    let mut fallback = PuttyWindowSearch {
+        target_pid: None,
+        found: None,
+    };
+    unsafe {
+        EnumWindows(
+            Some(enum_putty_windows),
+            &mut fallback as *mut PuttyWindowSearch as LPARAM,
+        );
+    }
+    fallback.found
+}
+
+#[cfg(target_os = "windows")]
+fn send_text_to_putty_window(pid: Option<u32>, _device: Option<&str>, text: &str) -> Result<(), String> {
+    let hwnd = (0..20)
+        .find_map(|attempt| {
+            let found = find_putty_window(pid);
+            if found.is_none() && attempt < 19 {
+                thread::sleep(Duration::from_millis(100));
+            }
+            found
+        })
+        .ok_or_else(|| "Failed to send command to PuTTY: PuTTY window not found".to_string())?;
+
+    let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
+    let payload = if normalized.is_empty() {
+        "\r".to_string()
+    } else {
+        normalized
+            .split('\n')
+            .map(|line| format!("{line}\r"))
+            .collect::<Vec<_>>()
+            .join("")
+    };
+
+    for unit in payload.encode_utf16() {
+        let ok = unsafe { PostMessageW(hwnd, WM_CHAR, unit as WPARAM, 0) };
+        if ok == 0 {
+            return Err("Failed to send command to PuTTY.".into());
+        }
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn find_putty_executable() -> Option<PathBuf> {
+    if let Some(paths) = std::env::var_os("PATH") {
+        for dir in std::env::split_paths(&paths) {
+            let candidate = dir.join("putty.exe");
+            if candidate.exists() {
+                return Some(candidate);
+            }
+        }
+    }
+
+    [
+        PathBuf::from(r"C:\Program Files\PuTTY\putty.exe"),
+        PathBuf::from(r"C:\Program Files (x86)\PuTTY\putty.exe"),
+        std::env::var_os("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .map(|p| p.join(r"Programs\PuTTY\putty.exe"))
+            .unwrap_or_default(),
+    ]
+    .into_iter()
+    .find(|path| !path.as_os_str().is_empty() && path.exists())
 }
 
 #[cfg(target_os = "windows")]
@@ -1327,29 +1452,28 @@ fn open_local_serial_terminal(device: String, state: State<'_, AppState>) -> Res
     {
         let com_port = normalize_windows_com_label(&device);
         let log_path = local_serial_log_file(&com_port);
+        let putty_path = find_putty_executable()
+            .ok_or_else(|| "PuTTY not found. Install PuTTY to use local serial on Windows.".to_string())?;
+
         {
             let mut inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
             inner.connection_mode = "local".into();
             inner.local_serial_device = Some(com_port.clone());
-            inner.shell_phase = "connecting".into();
-            inner.shell_detail = format!("Opening {com_port} at 115200…");
+            inner.shell_phase = "connected".into();
+            inner.shell_detail = format!("PuTTY opened on {com_port} @ 115200");
             inner.external_terminal_window_id = None;
+            if let Some(mut child) = inner.windows_local_terminal_child.take() {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
             if let Some(kill) = inner.windows_local_serial_kill.take() {
                 kill.store(true, Ordering::Relaxed);
             }
             inner.windows_local_serial_writer = None;
+            inner.shell_logs.push(format!("[PuTTY opening] {com_port} @ 115200"));
+            inner.shell_log_cursor = inner.shell_logs.len();
         }
 
-        let writer = serialport::new(&com_port, 115_200)
-            .timeout(Duration::from_millis(200))
-            .open()
-            .map_err(|e| map_serial_open_error(&e))?;
-
-        let reader = writer
-            .try_clone()
-            .map_err(|e| format!("Failed to clone serial handle: {e}"))?;
-        let writer_arc = Arc::new(Mutex::new(writer));
-        let kill_flag = Arc::new(AtomicBool::new(false));
         let mut transcript = fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -1363,74 +1487,27 @@ fn open_local_serial_terminal(device: String, state: State<'_, AppState>) -> Res
         let _ = writeln!(transcript, "device: {com_port} @ 115200");
         let _ = transcript.flush();
 
+        let child = Command::new(&putty_path)
+            .args([
+                "-serial",
+                &com_port,
+                "-sercfg",
+                "115200,8,n,1,N",
+                "-sessionlog",
+                &log_path.to_string_lossy(),
+                "-logoverwrite",
+            ])
+            .spawn()
+            .map_err(|e| format!("Failed to open PuTTY: {e}"))?;
+
+        let putty_pid = child.id();
         {
             let mut inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
-            inner.windows_local_serial_writer = Some(writer_arc);
-            inner.windows_local_serial_kill = Some(kill_flag.clone());
-            inner.shell_phase = "connected".into();
-            inner.shell_detail = format!("Connected to {com_port} @ 115200");
-            inner
-                .shell_logs
-                .push(format!("[Serial connected] {com_port} @ 115200"));
+            inner.windows_local_terminal_child = Some(child);
+            inner.shell_logs.push(format!("[PuTTY opened] {com_port} @ 115200"));
         }
 
-        let arc = state.inner.clone();
-        thread::spawn(move || {
-            let mut port = reader;
-            let mut buf = [0u8; 2048];
-            let mut partial = String::new();
-            let mut transcript = fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&log_path)
-                .ok();
-
-            while !kill_flag.load(Ordering::Relaxed) {
-                match port.read(&mut buf) {
-                    Ok(0) => continue,
-                    Ok(n) => {
-                        let chunk = normalize_chunk(&String::from_utf8_lossy(&buf[..n]));
-                        if let Some(f) = transcript.as_mut() {
-                            let _ = f.write_all(chunk.as_bytes());
-                            let _ = f.flush();
-                        }
-                        partial.push_str(&chunk);
-                        while let Some(pos) = partial.find('\n') {
-                            let line = partial[..pos].to_string();
-                            partial = partial[pos + 1..].to_string();
-                            if let Ok(mut inner) = arc.lock() {
-                                if !line.is_empty() {
-                                    inner.shell_logs.push(line);
-                                }
-                            }
-                        }
-                    }
-                    Err(e) if e.kind() == IoErrorKind::TimedOut => continue,
-                    Err(e) => {
-                        if let Some(f) = transcript.as_mut() {
-                            let _ = writeln!(f, "\n[serial-disconnected] {e}");
-                            let _ = f.flush();
-                        }
-                        if let Ok(mut inner) = arc.lock() {
-                            inner.shell_phase = "failed".into();
-                            inner.shell_detail = format!("Serial device disconnected: {e}");
-                            inner.shell_logs.push(format!("[Serial disconnected] {e}"));
-                            inner.windows_local_serial_writer = None;
-                            inner.windows_local_serial_kill = None;
-                        }
-                        return;
-                    }
-                }
-            }
-
-            if !partial.trim().is_empty() {
-                if let Ok(mut inner) = arc.lock() {
-                    inner
-                        .shell_logs
-                        .push(partial.trim_end_matches('\n').to_string());
-                }
-            }
-        });
+        let _ = send_text_to_putty_window(Some(putty_pid), Some(&com_port), "");
 
         return Ok(());
     }
@@ -1503,6 +1580,10 @@ fn disconnect_local_controller(state: State<'_, AppState>) -> Result<(), String>
         if let Some(kill) = inner.windows_local_serial_kill.take() {
             kill.store(true, Ordering::Relaxed);
         }
+        if let Some(mut child) = inner.windows_local_terminal_child.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
         inner.windows_local_serial_writer = None;
         inner.local_serial_device = None;
         inner.connection_mode = "local".into();
@@ -1547,12 +1628,16 @@ fn get_app_state(state: State<'_, AppState>) -> Result<serde_json::Value, String
 fn send_external_input(text: String, state: State<'_, AppState>) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
-        let writer_arc = {
+        let (writer_arc, putty_pid, local_device) = {
             let inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
             if inner.connection_mode != "local" {
-                None
+                (None, None, None)
             } else {
-                inner.windows_local_serial_writer.clone()
+                (
+                    inner.windows_local_serial_writer.clone(),
+                    inner.windows_local_terminal_child.as_ref().map(|child| child.id()),
+                    inner.local_serial_device.clone(),
+                )
             }
         };
         if let Some(writer_arc) = writer_arc {
@@ -1576,6 +1661,8 @@ fn send_external_input(text: String, state: State<'_, AppState>) -> Result<(), S
                 .flush()
                 .map_err(|e| format!("Failed to flush command: {e}"))?;
             return Ok(());
+        } else if putty_pid.is_some() || local_device.is_some() {
+            return send_text_to_putty_window(putty_pid, local_device.as_deref(), &text);
         } else {
             return Err("Session not open".into());
         }
@@ -2693,6 +2780,10 @@ fn debug_escape(s: &str) -> String {
 fn kill_shell(inner: &mut InnerState) {
     inner.shell_stdin = None;
     if let Some(mut child) = inner.shell_child.take() {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    if let Some(mut child) = inner.windows_local_terminal_child.take() {
         let _ = child.kill();
         let _ = child.wait();
     }
