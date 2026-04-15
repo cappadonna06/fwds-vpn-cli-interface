@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 
 type VpnStatus = "disconnected" | "starting" | "connected" | "stopping" | "failed" | "unknown";
 type ControllerStatus = "disconnected" | "connecting" | "connected" | "failed";
@@ -283,14 +284,29 @@ export default function SessionTab({ onControllerConnected }: SessionTabProps) {
   async function launchLocalSerialTerminal() {
     if (!serialDevice) return;
     try {
+      setSerialDetail("Connecting…");
       localStorage.setItem("local_serial_device", serialDevice);
       await invoke("open_local_serial_terminal", { device: serialDevice });
       await invoke("start_log_watcher").catch(() => {});
+      if (typeof navigator !== "undefined" && /windows/i.test(navigator.userAgent)) {
+        const label = "controller-terminal";
+        let terminalWin = await WebviewWindow.getByLabel(label);
+        if (!terminalWin) {
+          terminalWin = new WebviewWindow(label, {
+            title: "Controller Terminal",
+            url: "/?terminalWindow=1",
+            width: 980,
+            height: 700,
+            minWidth: 760,
+            minHeight: 420,
+          });
+        }
+      }
       setSerialDetail("Connected");
-      showSuccess("Connection successful — terminal app opened");
+      showSuccess("Connection successful — terminal window opened");
       onControllerConnected?.();
     } catch (e) {
-      setSerialDetail(String(e));
+      setSerialDetail(`Failed: ${String(e)}`);
     }
   }
 

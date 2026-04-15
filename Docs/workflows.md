@@ -148,3 +148,5 @@ End the local session cleanly.
 - Destructive-action confirmations for risky commands
 - Better reboot and reconnect guidance
 - Importing real intake JSON files instead of only using mocked development data
+
+- Windows Surface Pro local serial notes: `Docs/windows-local-serial-notes.md`
