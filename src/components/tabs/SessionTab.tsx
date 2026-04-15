@@ -283,14 +283,16 @@ export default function SessionTab({ onControllerConnected }: SessionTabProps) {
   async function launchLocalSerialTerminal() {
     if (!serialDevice) return;
     try {
+      setSerialDetail("Connecting…");
       localStorage.setItem("local_serial_device", serialDevice);
       await invoke("open_local_serial_terminal", { device: serialDevice });
       await invoke("start_log_watcher").catch(() => {});
-      setSerialDetail("Connected");
-      showSuccess("Connection successful — terminal app opened");
+      const isWindows = typeof navigator !== "undefined" && /windows/i.test(navigator.userAgent);
+      setSerialDetail(isWindows ? "Connected via PuTTY" : "Connected");
+      showSuccess(isWindows ? "Connection successful — PuTTY opened" : "Connection successful — terminal window opened");
       onControllerConnected?.();
     } catch (e) {
-      setSerialDetail(String(e));
+      setSerialDetail(`Failed: ${String(e)}`);
     }
   }
 

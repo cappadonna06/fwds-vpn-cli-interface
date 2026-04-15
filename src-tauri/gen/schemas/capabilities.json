@@ -1,1 +1,1 @@
-{"default":{"identifier":"default","description":"Default capabilities for the FWDS Controller Console","local":true,"windows":["main"],"permissions":["core:default","dialog:default","opener:default"]}}
+{"default":{"identifier":"default","description":"Default capabilities for the FWDS Controller Console","local":true,"windows":["main","controller-terminal"],"permissions":["core:default","core:window:allow-create","core:window:allow-get-all-windows","core:webview:allow-create-webview-window","dialog:default","opener:default"]}}
