@@ -1,5 +1,10 @@
+use serialport::SerialPort;
+#[cfg(target_os = "windows")]
+use serialport::SerialPortType;
 use std::collections::HashMap;
 use std::fs;
+#[cfg(target_os = "windows")]
+use std::io::ErrorKind as IoErrorKind;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
@@ -62,6 +67,8 @@ struct InnerState {
 
     // External Terminal.app session target (window id) used by Send buttons.
     external_terminal_window_id: Option<i64>,
+    windows_local_serial_writer: Option<Arc<Mutex<Box<dyn SerialPort>>>>,
+    windows_local_serial_kill: Option<Arc<AtomicBool>>,
 }
 
 struct AppState {
@@ -541,6 +548,107 @@ fn local_serial_log_file(device: &str) -> PathBuf {
     dirs::desktop_dir()
         .unwrap_or_else(|| PathBuf::from("~/Desktop"))
         .join(filename)
+}
+
+#[cfg(target_os = "windows")]
+fn append_windows_transcript(device: &str, line: &str) {
+    let log_path = local_serial_log_file(device);
+    if let Ok(mut f) = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_path)
+    {
+        let _ = writeln!(f, "{line}");
+        let _ = f.flush();
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn open_windows_transcript_terminal(log_path: &Path) -> Result<(), String> {
+    let path = log_path.to_string_lossy().replace('\'', "''");
+    let script = format!(
+        "$p='{path}'; if (!(Test-Path -LiteralPath $p)) {{ New-Item -ItemType File -Path $p -Force | Out-Null }}; \
+         Write-Host 'FWDS local serial session (live transcript)' -ForegroundColor Cyan; \
+         Write-Host ('Log: ' + $p) -ForegroundColor DarkGray; \
+         Get-Content -LiteralPath $p -Wait"
+    );
+    Command::new("cmd")
+        .args([
+            "/C",
+            "start",
+            "FWDS Local Session",
+            "powershell",
+            "-NoExit",
+            "-Command",
+            &script,
+        ])
+        .spawn()
+        .map_err(|e| format!("Failed to open terminal window: {e}"))?;
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn normalize_windows_com_label(raw: &str) -> String {
+    let trimmed = raw.trim();
+    let upper = trimmed.to_uppercase();
+    if upper.starts_with("COM") {
+        let digits: String = upper
+            .chars()
+            .skip(3)
+            .take_while(|c| c.is_ascii_digit())
+            .collect();
+        if !digits.is_empty() {
+            return format!("COM{digits}");
+        }
+    }
+    trimmed.to_string()
+}
+
+#[cfg(target_os = "windows")]
+fn describe_windows_port(port_type: &SerialPortType) -> String {
+    match port_type {
+        SerialPortType::UsbPort(info) => {
+            let product = info.product.clone().unwrap_or_else(|| "USB Serial".into());
+            let manufacturer = info.manufacturer.clone().unwrap_or_default();
+            if manufacturer.is_empty() {
+                format!("{product} (VID {:04X}:PID {:04X})", info.vid, info.pid)
+            } else {
+                format!(
+                    "{product} ({manufacturer}, VID {:04X}:PID {:04X})",
+                    info.vid, info.pid
+                )
+            }
+        }
+        SerialPortType::BluetoothPort => "Bluetooth Serial".into(),
+        SerialPortType::PciPort => "PCI Serial".into(),
+        SerialPortType::Unknown => "Serial Device".into(),
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn map_serial_open_error(err: &serialport::Error) -> String {
+    match err.kind() {
+        serialport::ErrorKind::Io(kind) => match kind {
+            IoErrorKind::PermissionDenied => "Serial port access denied (check permissions)".into(),
+            IoErrorKind::NotFound => "Serial device not found or disconnected".into(),
+            IoErrorKind::AlreadyExists | IoErrorKind::AddrInUse => {
+                "Serial port is busy (already in use)".into()
+            }
+            _ => format!("Failed to open serial port: {err}"),
+        },
+        _ => {
+            let lower = err.to_string().to_lowercase();
+            if lower.contains("access is denied") {
+                "Serial port access denied (check permissions)".into()
+            } else if lower.contains("busy") {
+                "Serial port is busy (already in use)".into()
+            } else if lower.contains("not found") {
+                "Serial device not found or disconnected".into()
+            } else {
+                format!("Failed to open serial port: {err}")
+            }
+        }
+    }
 }
 
 fn diagnostic_store_path() -> PathBuf {
@@ -1042,8 +1150,23 @@ fn toggle_debug(state: State<'_, AppState>) -> Result<bool, String> {
 #[tauri::command]
 fn send_interrupt(state: State<'_, AppState>) -> Result<(), String> {
     let mut inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
+    if inner.connection_mode == "local" {
+        if let Some(writer) = inner.windows_local_serial_writer.as_ref() {
+            if let Some(device) = inner.local_serial_device.as_deref() {
+                append_windows_transcript(device, "^C");
+            }
+            let mut writer = writer.lock().map_err(|_| "serial lock poisoned")?;
+            writer
+                .write_all(b"\x03")
+                .map_err(|e| format!("Failed to send interrupt: {e}"))?;
+            writer
+                .flush()
+                .map_err(|e| format!("Failed to flush interrupt: {e}"))?;
+            return Ok(());
+        }
+    }
     let Some(stdin) = inner.shell_stdin.as_mut() else {
-        return Err("No active controller shell".into());
+        return Err("Session not open".into());
     };
     stdin
         .write_all(b"\x03")
@@ -1204,17 +1327,34 @@ fn open_controller_terminal(state: State<'_, AppState>) -> Result<(), String> {
 
 #[tauri::command]
 fn list_serial_devices() -> Result<Vec<String>, String> {
-    let entries = fs::read_dir("/dev").map_err(|e| format!("Failed to read /dev: {e}"))?;
-    let mut devices = Vec::new();
-    for entry in entries.flatten() {
-        let name = entry.file_name();
-        let name = name.to_string_lossy();
-        if name.starts_with("cu.") {
-            devices.push(format!("/dev/{name}"));
-        }
+    #[cfg(target_os = "windows")]
+    {
+        let mut devices: Vec<String> = serialport::available_ports()
+            .map_err(|e| format!("Failed to enumerate COM ports: {e}"))?
+            .into_iter()
+            .map(|p| {
+                let summary = describe_windows_port(&p.port_type);
+                format!("{} — {}", p.port_name, summary)
+            })
+            .collect();
+        devices.sort();
+        return Ok(devices);
     }
-    devices.sort();
-    Ok(devices)
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let entries = fs::read_dir("/dev").map_err(|e| format!("Failed to read /dev: {e}"))?;
+        let mut devices = Vec::new();
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if name.starts_with("cu.") {
+                devices.push(format!("/dev/{name}"));
+            }
+        }
+        devices.sort();
+        Ok(devices)
+    }
 }
 
 #[tauri::command]
@@ -1223,46 +1363,162 @@ fn open_local_serial_terminal(device: String, state: State<'_, AppState>) -> Res
         return Err("Serial device is required".into());
     }
 
+    #[cfg(target_os = "windows")]
     {
-        let mut inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
-        inner.connection_mode = "local".into();
-        inner.local_serial_device = Some(device.clone());
+        let com_port = normalize_windows_com_label(&device);
+        let log_path = local_serial_log_file(&com_port);
+        {
+            let mut inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
+            inner.connection_mode = "local".into();
+            inner.local_serial_device = Some(com_port.clone());
+            inner.shell_phase = "connecting".into();
+            inner.shell_detail = format!("Opening {com_port} at 115200…");
+            inner.external_terminal_window_id = None;
+            if let Some(kill) = inner.windows_local_serial_kill.take() {
+                kill.store(true, Ordering::Relaxed);
+            }
+            inner.windows_local_serial_writer = None;
+        }
+
+        let writer = serialport::new(&com_port, 115_200)
+            .timeout(Duration::from_millis(200))
+            .open()
+            .map_err(|e| map_serial_open_error(&e))?;
+
+        let reader = writer
+            .try_clone()
+            .map_err(|e| format!("Failed to clone serial handle: {e}"))?;
+        let writer_arc = Arc::new(Mutex::new(writer));
+        let kill_flag = Arc::new(AtomicBool::new(false));
+        let mut transcript = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_path)
+            .map_err(|e| format!("Failed to open transcript log: {e}"))?;
+        let _ = writeln!(
+            transcript,
+            "\n===== local serial session start ({}) =====",
+            chrono::Local::now().format("%Y-%m-%d %H:%M:%S")
+        );
+        let _ = writeln!(transcript, "device: {com_port} @ 115200");
+        let _ = transcript.flush();
+        open_windows_transcript_terminal(&log_path)?;
+
+        {
+            let mut inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
+            inner.windows_local_serial_writer = Some(writer_arc);
+            inner.windows_local_serial_kill = Some(kill_flag.clone());
+            inner.shell_phase = "connected".into();
+            inner.shell_detail = format!("Connected to {com_port} @ 115200");
+            inner
+                .shell_logs
+                .push(format!("[Serial connected] {com_port} @ 115200"));
+        }
+
+        let arc = state.inner.clone();
+        thread::spawn(move || {
+            let mut port = reader;
+            let mut buf = [0u8; 2048];
+            let mut partial = String::new();
+            let mut transcript = fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&log_path)
+                .ok();
+
+            while !kill_flag.load(Ordering::Relaxed) {
+                match port.read(&mut buf) {
+                    Ok(0) => continue,
+                    Ok(n) => {
+                        let chunk = normalize_chunk(&String::from_utf8_lossy(&buf[..n]));
+                        if let Some(f) = transcript.as_mut() {
+                            let _ = f.write_all(chunk.as_bytes());
+                            let _ = f.flush();
+                        }
+                        partial.push_str(&chunk);
+                        while let Some(pos) = partial.find('\n') {
+                            let line = partial[..pos].to_string();
+                            partial = partial[pos + 1..].to_string();
+                            if let Ok(mut inner) = arc.lock() {
+                                if !line.is_empty() {
+                                    inner.shell_logs.push(line);
+                                }
+                            }
+                        }
+                    }
+                    Err(e) if e.kind() == IoErrorKind::TimedOut => continue,
+                    Err(e) => {
+                        if let Some(f) = transcript.as_mut() {
+                            let _ = writeln!(f, "\n[serial-disconnected] {e}");
+                            let _ = f.flush();
+                        }
+                        if let Ok(mut inner) = arc.lock() {
+                            inner.shell_phase = "failed".into();
+                            inner.shell_detail = format!("Serial device disconnected: {e}");
+                            inner.shell_logs.push(format!("[Serial disconnected] {e}"));
+                            inner.windows_local_serial_writer = None;
+                            inner.windows_local_serial_kill = None;
+                        }
+                        return;
+                    }
+                }
+            }
+
+            if !partial.trim().is_empty() {
+                if let Ok(mut inner) = arc.lock() {
+                    inner
+                        .shell_logs
+                        .push(partial.trim_end_matches('\n').to_string());
+                }
+            }
+        });
+
+        return Ok(());
     }
 
-    let log_path = local_serial_log_file(&device);
-    let command = format!(
-        "clear; script -q {} minicom -D {} -b 115200; exit",
-        shell_quote(&log_path.to_string_lossy()),
-        shell_quote(&device),
-    );
-    let script = format!(
-        "tell application \"Terminal\"\nactivate\ndo script {}\ndelay 0.1\nreturn id of front window\nend tell",
-        applescript_string_literal(&command)
-    );
-
-    let out = Command::new("osascript")
-        .arg("-e")
-        .arg(&script)
-        .output()
-        .map_err(|e| format!("Failed to open Terminal: {e}"))?;
-
-    if out.status.success() {
-        let window_id = String::from_utf8_lossy(&out.stdout)
-            .trim()
-            .parse::<i64>()
-            .ok();
-        if let Ok(mut inner) = state.inner.lock() {
-            inner.external_terminal_window_id = window_id;
+    #[cfg(not(target_os = "windows"))]
+    {
+        {
+            let mut inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
+            inner.connection_mode = "local".into();
+            inner.local_serial_device = Some(device.clone());
         }
-        start_log_watcher_internal(&state, false)?;
-        Ok(())
-    } else {
-        let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
-        Err(if stderr.is_empty() {
-            "Terminal launch failed.".into()
+
+        let log_path = local_serial_log_file(&device);
+        let command = format!(
+            "clear; script -q {} minicom -D {} -b 115200; exit",
+            shell_quote(&log_path.to_string_lossy()),
+            shell_quote(&device),
+        );
+        let script = format!(
+            "tell application \"Terminal\"\nactivate\ndo script {}\ndelay 0.1\nreturn id of front window\nend tell",
+            applescript_string_literal(&command)
+        );
+
+        let out = Command::new("osascript")
+            .arg("-e")
+            .arg(&script)
+            .output()
+            .map_err(|e| format!("Failed to open Terminal: {e}"))?;
+
+        if out.status.success() {
+            let window_id = String::from_utf8_lossy(&out.stdout)
+                .trim()
+                .parse::<i64>()
+                .ok();
+            if let Ok(mut inner) = state.inner.lock() {
+                inner.external_terminal_window_id = window_id;
+            }
+            start_log_watcher_internal(&state, false)?;
+            Ok(())
         } else {
-            format!("Failed to open Terminal: {stderr}")
-        })
+            let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+            Err(if stderr.is_empty() {
+                "Terminal launch failed.".into()
+            } else {
+                format!("Failed to open Terminal: {stderr}")
+            })
+        }
     }
 }
 
@@ -1270,9 +1526,31 @@ fn open_local_serial_terminal(device: String, state: State<'_, AppState>) -> Res
 fn disconnect_local_controller(state: State<'_, AppState>) -> Result<(), String> {
     {
         let mut inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
+        if let Some(device) = inner.local_serial_device.clone() {
+            let log_path = local_serial_log_file(&device);
+            if let Ok(mut f) = fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(log_path)
+            {
+                let _ = writeln!(
+                    f,
+                    "\n===== local serial session end ({}) =====",
+                    chrono::Local::now().format("%Y-%m-%d %H:%M:%S")
+                );
+                let _ = f.flush();
+            }
+        }
+        if let Some(kill) = inner.windows_local_serial_kill.take() {
+            kill.store(true, Ordering::Relaxed);
+        }
+        inner.windows_local_serial_writer = None;
         inner.local_serial_device = None;
         inner.connection_mode = "local".into();
         inner.external_terminal_window_id = None;
+        inner.shell_phase = "disconnected".into();
+        inner.shell_detail = "Local session disconnected".into();
+        inner.shell_logs.push("[Local disconnected]".into());
     }
     stop_log_watcher_internal(&state)?;
     if let Ok(mut diag) = state.diagnostic_state.lock() {
@@ -1308,16 +1586,63 @@ fn get_app_state(state: State<'_, AppState>) -> Result<serde_json::Value, String
 /// Send input to the active external Terminal.app session (window/tab launched by this app).
 #[tauri::command]
 fn send_external_input(text: String, state: State<'_, AppState>) -> Result<(), String> {
-    let window_id = {
-        let inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
-        inner
-            .external_terminal_window_id
-            .ok_or_else(|| "Open session first".to_string())?
-    };
+    #[cfg(target_os = "windows")]
+    {
+        let (writer_arc, local_device) = {
+            let inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
+            if inner.connection_mode != "local" {
+                (None, None)
+            } else {
+                (
+                    inner.windows_local_serial_writer.clone(),
+                    inner.local_serial_device.clone(),
+                )
+            }
+        };
+        if let Some(writer_arc) = writer_arc {
+            let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
+            let mut writer = writer_arc.lock().map_err(|_| "serial lock poisoned")?;
+            if normalized.is_empty() {
+                if let Some(device) = local_device.as_deref() {
+                    append_windows_transcript(device, ">");
+                }
+                writer
+                    .write_all(b"\r\n")
+                    .map_err(|e| format!("Failed to send command: {e}"))?;
+            } else {
+                for line in normalized.split('\n') {
+                    if let Some(device) = local_device.as_deref() {
+                        append_windows_transcript(device, &format!("> {line}"));
+                    }
+                    writer
+                        .write_all(line.as_bytes())
+                        .map_err(|e| format!("Failed to send command: {e}"))?;
+                    writer
+                        .write_all(b"\r\n")
+                        .map_err(|e| format!("Failed to send command: {e}"))?;
+                }
+            }
+            writer
+                .flush()
+                .map_err(|e| format!("Failed to flush command: {e}"))?;
+            return Ok(());
+        } else {
+            return Err("Session not open".into());
+        }
+    }
 
-    let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
-    let script = format!(
-        "set payload to {}\n\
+    #[cfg(not(target_os = "windows"))]
+    {
+        let window_id = {
+            let inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
+            inner
+                .external_terminal_window_id
+                .ok_or_else(|| "Open session first".to_string())?
+        };
+
+        let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
+        let script = format!(
+            "set payload to {}\n\
 set oldDelims to AppleScript's text item delimiters\n\
 set AppleScript's text item delimiters to linefeed\n\
 set payloadLines to text items of payload\n\
@@ -1335,27 +1660,28 @@ do script cmd in targetTab\n\
 end if\n\
 end repeat\n\
 end tell",
-        applescript_string_literal(&normalized)
-    );
-    let out = Command::new("osascript")
-        .arg("-e")
-        .arg(&script)
-        .output()
-        .map_err(|e| format!("Failed to send command: {e}"))?;
+            applescript_string_literal(&normalized)
+        );
+        let out = Command::new("osascript")
+            .arg("-e")
+            .arg(&script)
+            .output()
+            .map_err(|e| format!("Failed to send command: {e}"))?;
 
-    if !out.status.success() {
-        let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
-        if stderr.contains("Not authorized to send Apple events") {
-            return Err("Enable Terminal automation permissions for command send.".into());
+        if !out.status.success() {
+            let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+            if stderr.contains("Not authorized to send Apple events") {
+                return Err("Enable Terminal automation permissions for command send.".into());
+            }
+            return Err(if stderr.is_empty() {
+                "Open session first".into()
+            } else {
+                format!("Failed to send command: {stderr}")
+            });
         }
-        return Err(if stderr.is_empty() {
-            "Open session first".into()
-        } else {
-            format!("Failed to send command: {stderr}")
-        });
-    }
 
-    Ok(())
+        Ok(())
+    }
 }
 
 fn has_any_diag_data(diag: &DiagnosticState) -> bool {
@@ -1507,7 +1833,8 @@ fn start_log_watcher_internal(state: &AppState, start_from_end: bool) -> Result<
                         if prev_sid.is_none() && current_sid.is_some() {
                             if let Ok(h) = app_handle_arc.lock() {
                                 if let Some(handle) = h.as_ref() {
-                                    let _ = handle.emit("controller-sid-detected", current_sid.clone());
+                                    let _ =
+                                        handle.emit("controller-sid-detected", current_sid.clone());
                                 }
                             }
                         }
@@ -1516,14 +1843,21 @@ fn start_log_watcher_internal(state: &AppState, start_from_end: bool) -> Result<
                         // Notify frontend whenever system diagnostic data changes so that
                         // the System Configuration tab refreshes without waiting for its
                         // 2-second poll cycle.
-                        let current_system_sig = diag.system.as_ref().map(|s| {
-                            format!(
-                                "{:?}|{:?}|{:?}|{:?}|{:?}|{}",
-                                s.version, s.sid, s.hydraulic_hardware_configuration,
-                                s.preferred_network, s.zone_count,
-                                s.zones.len()
-                            )
-                        }).unwrap_or_default();
+                        let current_system_sig = diag
+                            .system
+                            .as_ref()
+                            .map(|s| {
+                                format!(
+                                    "{:?}|{:?}|{:?}|{:?}|{:?}|{}",
+                                    s.version,
+                                    s.sid,
+                                    s.hydraulic_hardware_configuration,
+                                    s.preferred_network,
+                                    s.zone_count,
+                                    s.zones.len()
+                                )
+                            })
+                            .unwrap_or_default();
                         if current_system_sig != prev_system_sig && !current_system_sig.is_empty() {
                             if let Ok(h) = app_handle_arc.lock() {
                                 if let Some(handle) = h.as_ref() {
