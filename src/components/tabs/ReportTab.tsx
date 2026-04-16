@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo, useDeferredValue, type DragEvent as ReactDragEvent } from "react";
+import { useState, useEffect, useRef, useMemo, useDeferredValue } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import {
@@ -275,16 +275,13 @@ const STATUS_OPTIONS: Array<{ value: NetworkStatusRow["status"]; label: string }
   { value: "unknown", label: "Gray" },
 ];
 
-type ReorderListKind = "actions" | "recommendedActions";
-
-function moveItemById<T extends { id: string }>(items: T[], draggedId: string, targetId: string): T[] {
-  const fromIndex = items.findIndex((item) => item.id === draggedId);
-  const toIndex = items.findIndex((item) => item.id === targetId);
-  if (fromIndex === -1 || toIndex === -1 || fromIndex === toIndex) return items;
-
+function moveItem<T>(items: T[], fromIndex: number, toIndex: number): T[] {
+  if (fromIndex === toIndex || fromIndex < 0 || toIndex < 0 || fromIndex >= items.length || toIndex >= items.length) {
+    return items;
+  }
   const next = [...items];
-  const [dragged] = next.splice(fromIndex, 1);
-  next.splice(toIndex, 0, dragged);
+  const [moved] = next.splice(fromIndex, 1);
+  next.splice(toIndex, 0, moved);
   return next;
 }
 
@@ -332,12 +329,12 @@ export default function ReportTab() {
   const [diagSnapshot, setDiagSnapshot] = useState<any>(null);
   const [copiedSlack, setCopiedSlack] = useState(false);
   const [copiedJira, setCopiedJira] = useState(false);
-  const [dragState, setDragState] = useState<{ kind: ReorderListKind; id: string } | null>(null);
-  const [dropTarget, setDropTarget] = useState<{ kind: ReorderListKind; id: string } | null>(null);
   const lastEditAtRef = useRef(0);
   const previewReport = useDeferredValue(report);
   const reportRef = useRef(report);
   reportRef.current = report;
+  const visibleActions = report.actions.filter((action) => !action.dismissed);
+  const visibleRecommendedActions = report.recommendedActions.filter((action) => !action.dismissed);
 
   async function fetchAndUpdate() {
     if (Date.now() - lastEditAtRef.current < 1200) {
@@ -522,45 +519,32 @@ export default function ReportTab() {
     }));
   }
 
-  function clearDragState() {
-    setDragState(null);
-    setDropTarget(null);
-  }
-
-  function startReorderDrag(kind: ReorderListKind, id: string, event: ReactDragEvent<HTMLElement>) {
-    event.dataTransfer.effectAllowed = "move";
-    event.dataTransfer.setData("text/plain", `${kind}:${id}`);
-    setDragState({ kind, id });
-    setDropTarget(null);
-  }
-
-  function allowReorderDrop(kind: ReorderListKind, id: string, event: ReactDragEvent<HTMLElement>) {
-    if (!dragState || dragState.kind !== kind || dragState.id === id) return;
-    event.preventDefault();
-    event.dataTransfer.dropEffect = "move";
-    if (dropTarget?.kind !== kind || dropTarget.id !== id) {
-      setDropTarget({ kind, id });
-    }
-  }
-
-  function dropReorderedItem(kind: ReorderListKind, id: string, event: ReactDragEvent<HTMLElement>) {
-    event.preventDefault();
-    if (!dragState || dragState.kind !== kind || dragState.id === id) {
-      clearDragState();
-      return;
-    }
-
+  function moveAction(id: string, offset: -1 | 1) {
     lastEditAtRef.current = Date.now();
-    setReport((current) => ({
-      ...current,
-      actions: kind === "actions"
-        ? moveItemById(current.actions, dragState.id, id)
-        : current.actions,
-      recommendedActions: kind === "recommendedActions"
-        ? moveItemById(current.recommendedActions, dragState.id, id)
-        : current.recommendedActions,
-    }));
-    clearDragState();
+    setReport((current) => {
+      const visible = current.actions.filter((action) => !action.dismissed);
+      const index = visible.findIndex((action) => action.id === id);
+      const target = index + offset;
+      if (index === -1 || target < 0 || target >= visible.length) return current;
+      const fromIndex = current.actions.findIndex((action) => action.id === visible[index].id);
+      const toIndex = current.actions.findIndex((action) => action.id === visible[target].id);
+      if (fromIndex === -1 || toIndex === -1) return current;
+      return { ...current, actions: moveItem(current.actions, fromIndex, toIndex) };
+    });
+  }
+
+  function moveRecommendedAction(id: string, offset: -1 | 1) {
+    lastEditAtRef.current = Date.now();
+    setReport((current) => {
+      const visible = current.recommendedActions.filter((action) => !action.dismissed);
+      const index = visible.findIndex((action) => action.id === id);
+      const target = index + offset;
+      if (index === -1 || target < 0 || target >= visible.length) return current;
+      const fromIndex = current.recommendedActions.findIndex((action) => action.id === visible[index].id);
+      const toIndex = current.recommendedActions.findIndex((action) => action.id === visible[target].id);
+      if (fromIndex === -1 || toIndex === -1) return current;
+      return { ...current, recommendedActions: moveItem(current.recommendedActions, fromIndex, toIndex) };
+    });
   }
 
   function setNetworkStatus(iface: string, next: NetworkStatusRow["status"]) {
@@ -678,28 +662,34 @@ export default function ReportTab() {
                 <span className="report-section-label">Actions Taken</span>
                 <button className="btn-link" onClick={addAction}>+ Add</button>
               </div>
-              {report.actions.filter(a => !a.dismissed).length === 0 && (
+              {visibleActions.length === 0 && (
                 <div className="report-empty-section">No actions taken yet. Add one or use a quick-select below.</div>
               )}
-              {report.actions.map(action => !action.dismissed && (
-                <div
-                  key={action.id}
-                  className={`report-action-row${dragState?.kind === "actions" && dragState.id === action.id ? " report-row-dragging" : ""}${dropTarget?.kind === "actions" && dropTarget.id === action.id ? " report-row-drop-target" : ""}`}
-                  onDragOver={(event) => allowReorderDrop("actions", action.id, event)}
-                  onDrop={(event) => dropReorderedItem("actions", action.id, event)}
-                >
+              {visibleActions.map((action, index) => (
+                <div key={action.id} className="report-action-row">
                   <span className="report-action-bullet">•</span>
-                  <button
-                    type="button"
-                    className="report-reorder-handle"
-                    draggable
-                    onDragStart={(event) => startReorderDrag("actions", action.id, event)}
-                    onDragEnd={clearDragState}
-                    title="Drag to reorder"
-                    aria-label="Reorder action"
-                  >
-                    ⋮⋮
-                  </button>
+                  <div className="report-reorder-controls" aria-label="Reorder action">
+                    <button
+                      type="button"
+                      className="report-reorder-button"
+                      onClick={() => moveAction(action.id, -1)}
+                      disabled={index === 0}
+                      title="Move up"
+                      aria-label="Move action up"
+                    >
+                      ↑
+                    </button>
+                    <button
+                      type="button"
+                      className="report-reorder-button"
+                      onClick={() => moveAction(action.id, 1)}
+                      disabled={index === visibleActions.length - 1}
+                      title="Move down"
+                      aria-label="Move action down"
+                    >
+                      ↓
+                    </button>
+                  </div>
                   <ActionTextInput
                     value={action.text}
                     placeholder="Describe action…"
@@ -822,29 +812,35 @@ export default function ReportTab() {
                 <span className="report-section-label">🔧 RECOMMENDED ACTIONS</span>
                 <button className="btn-link" onClick={addRec}>+ Add</button>
               </div>
-              {report.recommendedActions.filter(a => !a.dismissed).length === 0 && (
+              {visibleRecommendedActions.length === 0 && (
                 <div className="report-empty-section">
                   No recommended actions. Add one or re-run diagnostics.
                 </div>
               )}
-              {report.recommendedActions.map(action => !action.dismissed && (
-                <div
-                  key={action.id}
-                  className={`report-rec-row${dragState?.kind === "recommendedActions" && dragState.id === action.id ? " report-row-dragging" : ""}${dropTarget?.kind === "recommendedActions" && dropTarget.id === action.id ? " report-row-drop-target" : ""}`}
-                  onDragOver={(event) => allowReorderDrop("recommendedActions", action.id, event)}
-                  onDrop={(event) => dropReorderedItem("recommendedActions", action.id, event)}
-                >
-                  <button
-                    type="button"
-                    className="report-reorder-handle"
-                    draggable
-                    onDragStart={(event) => startReorderDrag("recommendedActions", action.id, event)}
-                    onDragEnd={clearDragState}
-                    title="Drag to reorder"
-                    aria-label="Reorder recommended action"
-                  >
-                    ⋮⋮
-                  </button>
+              {visibleRecommendedActions.map((action, index) => (
+                <div key={action.id} className="report-rec-row">
+                  <div className="report-reorder-controls" aria-label="Reorder recommended action">
+                    <button
+                      type="button"
+                      className="report-reorder-button"
+                      onClick={() => moveRecommendedAction(action.id, -1)}
+                      disabled={index === 0}
+                      title="Move up"
+                      aria-label="Move recommended action up"
+                    >
+                      ↑
+                    </button>
+                    <button
+                      type="button"
+                      className="report-reorder-button"
+                      onClick={() => moveRecommendedAction(action.id, 1)}
+                      disabled={index === visibleRecommendedActions.length - 1}
+                      title="Move down"
+                      aria-label="Move recommended action down"
+                    >
+                      ↓
+                    </button>
+                  </div>
                   <input
                     type="checkbox"
                     className="report-rec-check"

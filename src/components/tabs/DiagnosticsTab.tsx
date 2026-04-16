@@ -682,6 +682,23 @@ function cleanCellValue(value?: string | null): string | null {
   return v;
 }
 
+function cleanCellIdentityValue(value?: string | null): string | null {
+  const cleaned = cleanCellValue(value);
+  if (!cleaned) return null;
+  const upper = cleaned.toUpperCase();
+  if (
+    upper === "REGISTERED"
+    || upper === "UNREGISTERED"
+    || upper === "NOSERVICE"
+    || upper === "NO SERVICE"
+    || upper === "SEARCHING"
+  ) {
+    return null;
+  }
+  if (upper.startsWith("RUNNING AT ")) return null;
+  return cleaned;
+}
+
 // Resolves 5–6 digit MCC-MNC codes to human carrier names.
 // Mirrors the Rust resolve_carrier() function in parsers.rs.
 // Non-numeric strings are returned as-is (already a name).
@@ -728,18 +745,34 @@ function cellularConnectedState(cell?: CellularDiagnostic | null): boolean {
   return cell.connman_cell_connected === true || cell.internet_reachable === true;
 }
 
+function cellularExplicitNoService(cell?: CellularDiagnostic | null): boolean {
+  if (!cell) return false;
+  if (cellularConnectedState(cell)) return false;
+  const checkError = (cell.check_error || "").toLowerCase();
+  return cell.no_service === true
+    || (cell.qcsq || "").toUpperCase() === "NOSERVICE"
+    || checkError.includes("network technology is not connected")
+    || checkError.includes("-65554");
+}
+
 function cellularCarrierLabel(cell?: CellularDiagnostic | null): string {
   if (!cell) return "Cellular";
-  const providerCarrier = resolveCarrierCode(cleanCellValue(cell.provider_code) ?? cell.provider_code ?? null)
-    || resolveCarrierCode(cleanCellValue(cell.basic_provider) ?? cell.basic_provider ?? null);
-  const fallbackCarrier = resolveCarrierCode(cleanCellValue(cell.mccmnc) ?? cell.mccmnc ?? null)
-    || resolveCarrierCode(cleanCellValue(cell.operator_name) ?? cell.operator_name ?? null);
-  const apnCarrier = resolveCarrierFromApn(cleanCellValue(cell.at_apn) || cleanCellValue(cell.basic_apn));
+  const noService = cellularExplicitNoService(cell);
+  const providerCarrier = resolveCarrierCode(cleanCellIdentityValue(cell.provider_code) ?? cell.provider_code ?? null)
+    || resolveCarrierCode(cleanCellIdentityValue(cell.operator_name) ?? cell.operator_name ?? null);
+  const fallbackCarrier = noService
+    ? null
+    : resolveCarrierCode(cleanCellIdentityValue(cell.basic_provider) ?? cell.basic_provider ?? null)
+      || resolveCarrierCode(cleanCellIdentityValue(cell.mccmnc) ?? cell.mccmnc ?? null);
+  const apnCarrier = noService
+    ? null
+    : resolveCarrierFromApn(cleanCellIdentityValue(cell.at_apn) || cleanCellIdentityValue(cell.basic_apn));
   return providerCarrier || fallbackCarrier || apnCarrier || "Cellular";
 }
 
 function cellularSignalLabel(cell?: CellularDiagnostic | null): string {
   if (!cell) return "No data";
+  if (cellularExplicitNoService(cell)) return "No service";
   if (cell.strength_label && cell.strength_label.trim()) {
     return cell.strength_label[0].toUpperCase() + cell.strength_label.slice(1).toLowerCase();
   }
@@ -876,10 +909,11 @@ function buildCellularSections(cell?: CellularDiagnostic | null): DiagSection[] 
         { label: "Signal", value: cellularSignalDisplay(cell) },
         { label: "Connection", value: connected ? "Connected" : "Not connected" },
         { label: "Role", value: roleLabel(cell.role) || "Unknown" },
-        { label: "SIM", value: cell.sim_inserted === false ? "Missing" : cell.sim_ready === true ? `Ready${cell.imei ? ` — IMEI ${cell.imei}` : ""}` : "Unknown" },
+        { label: "SIM", value: cell.sim_inserted === false ? "Missing" : cell.sim_ready === true ? "Ready" : cell.imei ? "Detected" : "Unknown" },
+        { label: "IMEI", value: cell.imei || "—" },
         { label: "Modem", value: cell.modem_not_present ? "Not detected" : cell.modem_unreachable ? "Detected — not responding" : cell.cellular_disabled && cell.imei ? "Powered off (detected)" : cell.cellular_disabled ? "Powered off" : cell.modem_present === true ? cell.modem_model ?? "Detected" : "Unknown" },
         { label: "Network", value: [cell.rat, cell.band].filter(Boolean).join(" / ") || "—" },
-        { label: "APN", value: cleanCellValue(cell.at_apn) || cleanCellValue(cell.basic_apn) || "—" },
+        { label: "APN", value: cleanCellIdentityValue(cell.at_apn) || cleanCellIdentityValue(cell.basic_apn) || "—" },
       ],
     },
     {
@@ -1249,7 +1283,7 @@ function summarizeCellular(cell?: CellularDiagnostic | null): CardSummary {
   const connected = cellularConnectedState(cell);
   const carrier = cellularCarrierLabel(cell);
   const sig = cellularSignalLabel(cell);
-  const noService = !connected && !cellularHasAuthoritativeCheck(cell) && (cell.no_service === true || cell.qcsq === "NOSERVICE");
+  const noService = cellularExplicitNoService(cell);
   if (noService) return { health: "error", badgeLabel: "Issue", primaryLine: "No service", secondaryLine: carrier };
   if (!connected && cell.connman_cell_ready === true) {
     return { health: "warning", badgeLabel: "Warning", primaryLine: carrier, secondaryLine: "Registered · not connected", signalLabel: sig, signalScore: cell.strength_score };

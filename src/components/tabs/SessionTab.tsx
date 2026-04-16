@@ -249,7 +249,7 @@ export default function SessionTab({ onControllerConnected }: SessionTabProps) {
   }
 
   async function connectToController() {
-    if (!vpnIp) return;
+    if (!vpnIp) return false;
     localStorage.setItem("vpn_last_octet", lastOctet);
     setSavedOctet(lastOctet);
     setCtrlStatus("connecting");
@@ -257,9 +257,11 @@ export default function SessionTab({ onControllerConnected }: SessionTabProps) {
     prevCtrlPhaseRef.current = "connecting";
     try {
       await invoke("connect_controller", { ip: vpnIp });
+      return true;
     } catch (e) {
       setCtrlStatus("failed");
       setCtrlDetail(String(e));
+      return false;
     }
   }
 
@@ -271,7 +273,8 @@ export default function SessionTab({ onControllerConnected }: SessionTabProps) {
 
   async function connectAndLaunch() {
     if (!canConnect) return;
-    await connectToController();
+    const connected = await connectToController();
+    if (!connected) return;
     try {
       await invoke("open_controller_terminal");
       await invoke("start_log_watcher").catch(() => {});

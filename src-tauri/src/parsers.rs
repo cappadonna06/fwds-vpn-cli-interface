@@ -1377,6 +1377,47 @@ BG96
     }
 
     #[test]
+    fn parse_cellular_no_service_scrubs_placeholder_identity_fields() {
+        let block = r#"
+===== CELLULAR CONNECTIVITY TEST =====
+Testing Cellular...
+Done: Failure: -65554: Network technology is not connected
+
+===== BASIC CELL INFO =====
+863427069139377
+89148000008543969806
+311270028235508
+unregistered
+
+===== MODEM / RADIO DIAGNOSTICS =====
+Running AT commands...
+Quectel
+BG96
++CPIN: READY
+863427069139377
++QCCID: 89148000008543969806
+311270028235508
++CREG: 0,0
++CEREG: 0,0
++CGATT: 0
++COPS: 0
++QCSQ: "NOSERVICE"
++QNWINFO: No Service
++CGDCONT: 1,"IP","","0.0.0.0",0,0,0,0
++QICSGP: 1,"","","",0
++CGPADDR: 1,0.0.0.0
+"#;
+        let cell = parse_cellular(block);
+        assert_eq!(cell.imei.as_deref(), Some("863427069139377"));
+        assert_eq!(cell.hni, None);
+        assert_eq!(cell.basic_provider, None);
+        assert_eq!(cell.basic_apn, None);
+        assert_eq!(cell.at_apn, None);
+        assert!(cell.no_service);
+        assert!(matches!(cell.status, crate::DiagStatus::Red));
+    }
+
+    #[test]
     fn wifi_link_bitrate_parses_without_connected_marker() {
         let mut state = DiagnosticState::default();
         let log = r#"2026-04-09T10:00:00-0600 [18230967]# iw dev wlan0 link
@@ -2421,6 +2462,7 @@ fn parse_cellular_from_latest(blocks: &[CommandBlock]) -> Option<CellularDiagnos
     // OR when cell-support --no-ofono --at was run as a standalone command.
     diag.full_block_run =
         full_section_parsed || find_latest(blocks, &["cell-support --no-ofono --at"]).is_some();
+    scrub_cellular_identity_fields(&mut diag);
     compute_cellular_flags(&mut diag);
     determine_cellular_status(&mut diag);
     Some(diag)
@@ -2429,6 +2471,7 @@ fn parse_cellular_from_latest(blocks: &[CommandBlock]) -> Option<CellularDiagnos
 pub fn parse_cellular(block: &str) -> CellularDiagnostic {
     let mut diag = default_cellular();
     parse_cellular_block(block, &mut diag);
+    scrub_cellular_identity_fields(&mut diag);
     compute_cellular_flags(&mut diag);
     determine_cellular_status(&mut diag);
     diag
@@ -4290,6 +4333,30 @@ fn clean_cell_display_value(value: String) -> Option<String> {
         return None;
     }
     Some(trimmed)
+}
+
+fn clean_cell_identity_value(value: Option<String>) -> Option<String> {
+    let cleaned = value.and_then(clean_cell_display_value)?;
+    let upper = cleaned.to_ascii_uppercase();
+    if matches!(
+        upper.as_str(),
+        "REGISTERED" | "UNREGISTERED" | "NOSERVICE" | "NO SERVICE" | "SEARCHING"
+    ) {
+        return None;
+    }
+    if upper.starts_with("RUNNING AT ") {
+        return None;
+    }
+    Some(cleaned)
+}
+
+fn scrub_cellular_identity_fields(diag: &mut CellularDiagnostic) {
+    diag.provider_code = clean_cell_identity_value(diag.provider_code.clone());
+    diag.basic_provider = clean_cell_identity_value(diag.basic_provider.clone());
+    diag.hni = clean_cell_identity_value(diag.hni.clone());
+    diag.operator_name = clean_cell_identity_value(diag.operator_name.clone());
+    diag.at_apn = clean_cell_identity_value(diag.at_apn.clone());
+    diag.basic_apn = clean_cell_identity_value(diag.basic_apn.clone());
 }
 
 fn parse_connman_cellular(text: &str, diag: &mut CellularDiagnostic) {
