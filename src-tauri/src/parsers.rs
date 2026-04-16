@@ -4933,7 +4933,7 @@ fn determine_cellular_status(diag: &mut CellularDiagnostic) {
 
         diag.summary = "No service — searching for network".into();
         diag.recommended_action = Some("Check coverage area and antenna".into());
-        diag.other_actions = vec!["Reboot controller".into(), "Check antenna connection".into()];
+        diag.other_actions = vec!["Reboot controller".into()];
         return;
     }
 

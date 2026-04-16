@@ -273,6 +273,25 @@ export default function SessionTab({ onControllerConnected }: SessionTabProps) {
 
   async function connectAndLaunch() {
     if (!canConnect) return;
+    localStorage.setItem("vpn_last_octet", lastOctet);
+    setSavedOctet(lastOctet);
+    if (isWindows) {
+      setCtrlStatus("connecting");
+      setCtrlDetail(`Opening PuTTY for ${vpnIp}...`);
+      prevCtrlPhaseRef.current = "connecting";
+      try {
+        await invoke("open_controller_terminal", { ip: vpnIp });
+        await invoke("start_log_watcher").catch(() => {});
+        await pollController();
+        showSuccess("Connection successful - PuTTY opened");
+        onControllerConnected?.();
+      } catch (e) {
+        setCtrlStatus("failed");
+        setCtrlDetail(String(e));
+      }
+      return;
+    }
+
     const connected = await connectToController();
     if (!connected) return;
     try {

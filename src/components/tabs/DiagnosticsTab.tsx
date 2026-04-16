@@ -879,6 +879,7 @@ function buildWifiSections(wifi?: WifiDiagnostic | null): DiagSection[] {
 function buildCellularSections(cell?: CellularDiagnostic | null): DiagSection[] {
   if (!cell) return [{ title: "Details", rows: [{ label: "Details", value: "No recent data" }] }];
   const connected = cellularConnectedState(cell);
+  const noService = cellularExplicitNoService(cell);
   const internetTest = cellularHasAuthoritativeCheck(cell)
     ? cell.check_result === "Success"
       ? "Passed"
@@ -896,6 +897,7 @@ function buildCellularSections(cell?: CellularDiagnostic | null): DiagSection[] 
   if (cell.sim_inserted === false) heuristicOptions.push("Insert SIM card");
   if (cell.modem_present === false) heuristicOptions.push("Check modem hardware/firmware");
   if ((cell.strength_score ?? 0) > 0 && (cell.strength_score ?? 0) < 25) heuristicOptions.push("Check coverage or antenna");
+  if (noService && cell.sim_inserted !== false) heuristicOptions.push("Run SIM Picker to check other carrier coverage");
   const otherOptions = Array.from(new Set([
     ...(cell.other_actions ?? []),
     ...heuristicOptions,
@@ -1573,10 +1575,10 @@ function DiagCard({
           {cardSignalLabel && <span>{cardSignalLabel}</span>}
         </div>
       )}
-      {collapsedRecommendation && <div className="diag-card-collapsed-reco">⚠ {collapsedRecommendation}</div>}
+      {collapsedRecommendation && <div className="diag-card-collapsed-reco">⚠️ {collapsedRecommendation}</div>}
 
       {collapsedRecommendationCardsNormalized.map((recommendation) => (
-        <div key={`${title}-${recommendation}`} className="diag-card-collapsed-reco">Warning: {recommendation}</div>
+        <div key={`${title}-${recommendation}`} className="diag-card-collapsed-reco">⚠️ {recommendation}</div>
       ))}
 
       {expanded && (

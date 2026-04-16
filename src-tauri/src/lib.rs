@@ -700,6 +700,56 @@ fn find_putty_executable() -> Option<PathBuf> {
 }
 
 #[cfg(target_os = "windows")]
+fn sync_windows_terminal_child(inner: &mut InnerState) {
+    let Some(mut child) = inner.windows_local_terminal_child.take() else {
+        return;
+    };
+
+    match child.try_wait() {
+        Ok(Some(_)) => {
+            inner.shell_wizard_input = false;
+            inner.shell_wizard_needs_clear = false;
+            inner.shell_suppress_redraw = false;
+            inner.external_terminal_window_id = None;
+            if matches!(inner.shell_phase.as_str(), "connecting" | "connected") {
+                inner.shell_phase = "disconnected".into();
+                inner.shell_detail = if inner.connection_mode == "local" {
+                    "Local session closed".into()
+                } else {
+                    "Connection closed".into()
+                };
+                inner.shell_logs.push("[Connection closed]".into());
+            }
+        }
+        Ok(None) | Err(_) => {
+            inner.windows_local_terminal_child = Some(child);
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn sync_windows_vpn_shell_phase(inner: &mut InnerState) {
+    if inner.connection_mode != "vpn" || inner.shell_phase != "connecting" {
+        return;
+    }
+    let Some(ip) = inner.controller_ip.clone() else {
+        return;
+    };
+    let log_path = log_file_path(&ip);
+    let Ok(raw) = fs::read_to_string(log_path) else {
+        return;
+    };
+
+    let has_banner = raw.contains("Frontline Wildfire Defense Systems (FWDS) Controller")
+        || raw.contains("Type help for a summary of controller commands.");
+    let has_prompt = raw.contains("]#") || raw.contains("# ");
+    if has_banner || has_prompt {
+        inner.shell_phase = "connected".into();
+        inner.shell_detail = format!("Controller shell ready in PuTTY ({ip})");
+    }
+}
+
+#[cfg(target_os = "windows")]
 fn normalize_windows_com_label(raw: &str) -> String {
     let trimmed = raw.trim();
     let upper = trimmed.to_uppercase();
@@ -1303,6 +1353,11 @@ struct ControllerPoll {
 #[tauri::command]
 fn poll_controller(state: State<'_, AppState>) -> Result<ControllerPoll, String> {
     let mut inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
+    #[cfg(target_os = "windows")]
+    {
+        sync_windows_terminal_child(&mut inner);
+        sync_windows_vpn_shell_phase(&mut inner);
+    }
     let cursor = inner.shell_log_cursor;
     let new_lines = inner.shell_logs[cursor..].to_vec();
     inner.shell_log_cursor = inner.shell_logs.len();
@@ -1391,9 +1446,37 @@ fn send_input(text: String, state: State<'_, AppState>) -> Result<(), String> {
 /// Disconnect the active controller shell.
 #[tauri::command]
 fn disconnect_controller(state: State<'_, AppState>) -> Result<(), String> {
-    let mut inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
-    kill_shell(&mut inner);
-    inner.shell_logs.push("[Disconnected]".into());
+    #[cfg(target_os = "windows")]
+    let log_path = {
+        let inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
+        if inner.connection_mode == "vpn" {
+            inner.controller_ip.clone().map(|ip| log_file_path(&ip))
+        } else {
+            None
+        }
+    };
+
+    {
+        let mut inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
+        kill_shell(&mut inner);
+        inner.shell_logs.push("[Disconnected]".into());
+    }
+
+    #[cfg(target_os = "windows")]
+    if let Some(path) = log_path {
+        append_transcript(
+            &path,
+            &format!(
+                "\n===== vpn ssh session end ({}) =====\n",
+                chrono::Local::now().format("%Y-%m-%d %H:%M:%S")
+            ),
+        );
+        stop_log_watcher_internal(&state)?;
+        if let Ok(mut diag) = state.diagnostic_state.lock() {
+            *diag = DiagnosticState::default();
+        }
+    }
+
     Ok(())
 }
 
@@ -1438,11 +1521,14 @@ fn run_preflight(ip: String) -> Result<serde_json::Value, String> {
 /// Open the active controller connection in Terminal.app for full interactive setup.
 /// SSH session is wrapped with `script` to log output to ~/Desktop/fwds-{IP}-{date}.txt.
 #[tauri::command]
-fn open_controller_terminal(state: State<'_, AppState>) -> Result<(), String> {
+fn open_controller_terminal(state: State<'_, AppState>, ip: Option<String>) -> Result<(), String> {
     let ip = {
         let mut inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
         inner.connection_mode = "vpn".into();
         inner.local_serial_device = None;
+        if let Some(ip) = ip {
+            inner.controller_ip = Some(ip);
+        }
         inner
             .controller_ip
             .clone()
@@ -1458,39 +1544,48 @@ fn open_controller_terminal(state: State<'_, AppState>) -> Result<(), String> {
 
     #[cfg(target_os = "windows")]
     {
+        let putty_path = find_putty_executable().ok_or_else(|| {
+            "PuTTY not found. Install PuTTY to use controller VPN sessions on Windows.".to_string()
+        })?;
         let log_path = log_file_path(&ip);
+        {
+            let mut inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
+            kill_shell(&mut inner);
+            inner.connection_mode = "vpn".into();
+            inner.local_serial_device = None;
+            inner.controller_ip = Some(ip.clone());
+            inner.shell_logs.clear();
+            inner.shell_log_cursor = 0;
+            inner.shell_phase = "connecting".into();
+            inner.shell_detail = format!("Opening PuTTY SSH session to root@{ip}...");
+            inner.shell_logs.push(format!("[PuTTY opening] root@{ip}"));
+        }
         append_transcript(
             &log_path,
             &format!(
-                "\n===== external terminal session start ({}) =====\ncontroller: {ip}\n",
+                "\n===== vpn putty session start ({}) =====\ncontroller: {ip}\n",
                 chrono::Local::now().format("%Y-%m-%d %H:%M:%S")
             ),
         );
-        let ssh_command = format!(
-            "try {{ Start-Transcript -Path {} -Append | Out-Null }} catch {{}}; try {{ $host.UI.RawUI.WindowTitle = 'FWDS Controller {ip}'; ssh -tt -i {} -o LogLevel=ERROR -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ServerAliveInterval=15 -o ServerAliveCountMax=3 root@{ip} }} finally {{ try {{ Stop-Transcript | Out-Null }} catch {{}} }}",
-            powershell_single_quote(&log_path.to_string_lossy()),
-            powershell_single_quote(&station_key.to_string_lossy())
-        );
-        let launch_script = format!(
-            "Start-Process powershell -ArgumentList @('-NoExit', '-Command', {}) -WindowStyle Normal",
-            powershell_single_quote(&ssh_command)
-        );
-        let out = Command::new("powershell")
-            .args(["-NoProfile", "-Command", &launch_script])
-            .output()
-            .map_err(|e| format!("Failed to open terminal window: {e}"))?;
-
-        if !out.status.success() {
-            let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
-            return Err(if stderr.is_empty() {
-                "Terminal launch failed.".into()
-            } else {
-                format!("Failed to open terminal window: {stderr}")
-            });
-        }
+        let child = Command::new(&putty_path)
+            .args([
+                "-ssh",
+                &ip,
+                "-l",
+                "root",
+                "-sessionlog",
+                &log_path.to_string_lossy(),
+                "-logoverwrite",
+            ])
+            .spawn()
+            .map_err(|e| format!("Failed to open PuTTY: {e}"))?;
 
         if let Ok(mut inner) = state.inner.lock() {
+            inner.windows_local_terminal_child = Some(child);
+            inner.shell_phase = "connecting".into();
+            inner.shell_detail = format!("PuTTY opened for root@{ip}; waiting for controller shell...");
             inner.external_terminal_window_id = None;
+            inner.shell_logs.push(format!("[PuTTY opened] root@{ip}"));
         }
         return Ok(());
     }
@@ -1740,7 +1835,12 @@ fn disconnect_local_controller(state: State<'_, AppState>) -> Result<(), String>
 /// Lightweight status for the Session tab — does NOT advance the ConsoleTab cursor.
 #[tauri::command]
 fn get_controller_status(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
-    let inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
+    let mut inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
+    #[cfg(target_os = "windows")]
+    {
+        sync_windows_terminal_child(&mut inner);
+        sync_windows_vpn_shell_phase(&mut inner);
+    }
     Ok(serde_json::json!({
         "phase": inner.shell_phase,
         "detail": inner.shell_detail,
@@ -1750,7 +1850,12 @@ fn get_controller_status(state: State<'_, AppState>) -> Result<serde_json::Value
 /// App-wide snapshot for the header status bar.
 #[tauri::command]
 fn get_app_state(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
-    let inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
+    let mut inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
+    #[cfg(target_os = "windows")]
+    {
+        sync_windows_terminal_child(&mut inner);
+        sync_windows_vpn_shell_phase(&mut inner);
+    }
     Ok(serde_json::json!({
         "vpn_phase": inner.vpn_phase,
         "shell_phase": inner.shell_phase,
@@ -1768,26 +1873,14 @@ fn send_external_input(text: String, state: State<'_, AppState>) -> Result<(), S
     {
         let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
         let mut inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
+        sync_windows_terminal_child(&mut inner);
         if inner.connection_mode == "vpn" {
-            let Some(stdin) = inner.shell_stdin.as_mut() else {
+            let putty_pid = inner.windows_local_terminal_child.as_ref().map(|child| child.id());
+            if putty_pid.is_none() {
                 return Err("Session not open".into());
-            };
-            if normalized.is_empty() {
-                stdin
-                    .write_all(b"\n")
-                    .map_err(|e| format!("Failed to write to shell: {e}"))?;
-            } else {
-                for line in normalized.split('\n') {
-                    stdin
-                        .write_all(line.as_bytes())
-                        .map_err(|e| format!("Failed to write to shell: {e}"))?;
-                    stdin
-                        .write_all(b"\n")
-                        .map_err(|e| format!("Failed to write newline: {e}"))?;
-                }
             }
-            stdin.flush().map_err(|e| format!("Failed to flush: {e}"))?;
-            return Ok(());
+            drop(inner);
+            return send_text_to_putty_window(putty_pid, None, &text);
         }
 
         let (writer_arc, putty_pid, local_device) = {
@@ -2985,20 +3078,34 @@ fn stop_openvpn_pids_force_elevated(pids: &[u32]) -> Result<(), String> {
         if pids.is_empty() {
             return Ok(());
         }
-        let mut cmd = Command::new("taskkill");
-        cmd.args(["/F", "/T"]);
+        let mut taskkill_args = vec!["/F".to_string(), "/T".to_string()];
         for pid in pids {
-            cmd.args(["/PID", &pid.to_string()]);
+            taskkill_args.push("/PID".to_string());
+            taskkill_args.push(pid.to_string());
         }
-        let out = cmd
+        let argument_list = taskkill_args
+            .iter()
+            .map(|arg| powershell_single_quote(arg))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let script = format!(
+            "$process = Start-Process -FilePath 'taskkill.exe' -ArgumentList @({argument_list}) -Verb RunAs -WindowStyle Hidden -Wait -PassThru; exit $process.ExitCode"
+        );
+        let out = Command::new("powershell")
+            .args(["-NoProfile", "-Command", &script])
             .output()
             .map_err(|e| format!("Failed to force-close OpenVPN: {e}"))?;
+
         if out.status.success() {
             return Ok(());
         }
+
         let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
-        return if stderr.is_empty() {
-            Err("Failed to force-close OpenVPN.".into())
+        let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        return if stderr.is_empty() && stdout.is_empty() {
+            Err("Administrator approval was denied or cancelled while closing OpenVPN.".into())
+        } else if stderr.is_empty() {
+            Err(format!("Failed to force-close OpenVPN: {stdout}"))
         } else {
             Err(format!("Failed to force-close OpenVPN: {stderr}"))
         };
@@ -3329,6 +3436,10 @@ fn kill_shell(inner: &mut InnerState) {
         let _ = child.kill();
         let _ = child.wait();
     }
+    if let Some(kill) = inner.windows_local_serial_kill.take() {
+        kill.store(true, Ordering::Relaxed);
+    }
+    inner.windows_local_serial_writer = None;
     inner.shell_wizard_input = false;
     inner.shell_wizard_needs_clear = false;
     inner.shell_suppress_redraw = false;

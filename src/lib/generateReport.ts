@@ -191,7 +191,6 @@ function formatSatelliteSummary(sat: SatelliteDiag): string {
       ? "Loopback failed"
       : sat.summary || "Not validated";
   const details: string[] = [];
-  if (sat.sat_imei) details.push(`IMEI ${sat.sat_imei}`);
   const duration = sat.loopback_duration_seconds ?? sat.total_time_seconds;
   if (duration !== null && duration !== undefined) {
     const rounded = Math.round(duration);
@@ -470,19 +469,17 @@ export function generateRecommendedActions(
               dismissed: false, checked: false, custom: false,
             });
           }
-        } else if (!sp?.scan_attempted) {
-          // Suggest running SIM Picker
-          actions.push({
-            id: mkId(), interface: "Cellular",
-            text: "Run SIM Picker to check carrier coverage",
-            detail: "No service detected. Copy the SIM Picker command block to find out which carrier has coverage at this location.",
-            dismissed: false, checked: false, custom: false,
-          });
         } else {
           actions.push({
             id: mkId(), interface: "Cellular",
             text: "Check coverage area and antenna",
             detail: "SIM detected but no network service. Verify antenna connection and site coverage.",
+            dismissed: false, checked: false, custom: false,
+          });
+          actions.push({
+            id: mkId(), interface: "Cellular",
+            text: "Reboot controller",
+            detail: "After checking coverage and antenna, reboot and retry cellular diagnostics.",
             dismissed: false, checked: false, custom: false,
           });
         }
