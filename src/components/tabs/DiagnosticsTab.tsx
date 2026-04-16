@@ -104,7 +104,9 @@ interface CellularDiagnostic {
   sim_inserted?: boolean | null;
   operator_name?: string | null;
   qcsq?: string | null;
+  rssi_dbm?: number | null;
   rat?: string | null;
+  mccmnc?: string | null;
   band?: string | null;
   at_apn?: string | null;
   recommended_action?: string | null;
@@ -122,6 +124,7 @@ interface CellularDiagnostic {
 interface SatelliteDiagnostic {
   status: DiagStatus;
   summary: string;
+  satellite_state?: string | null;
   controller_sid?: string | null;
   controller_version?: string | null;
   controller_date?: string | null;
@@ -223,6 +226,7 @@ interface PressureDiagnostic {
 interface SystemDiagnostic {
   sid?: string | null;
   version?: string | null;
+  controller_date?: string | null;
   release_date?: string | null;
   preferred_network?: string | null;
   system_type?: string | null;
@@ -614,12 +618,46 @@ function signalLabelFromDbm(dbm?: number | null): string | null {
   return "Poor";
 }
 
+function wifiHasAuthoritativeCheck(wifi?: WifiDiagnostic | null): boolean {
+  return !!wifi && (wifi.check_result !== "Unknown" || !!wifi.check_error);
+}
+
+function wifiCheckConnected(wifi?: WifiDiagnostic | null): boolean {
+  return !!wifi && wifi.check_result === "Success" && wifi.internet_reachable === true;
+}
+
+function wifiConnectedState(wifi?: WifiDiagnostic | null): boolean {
+  if (!wifi) return false;
+  if (wifiHasAuthoritativeCheck(wifi)) return wifiCheckConnected(wifi);
+  return wifi.connected === true || wifi.connman_wifi_connected === true || wifi.internet_reachable === true;
+}
+
 function wifiSignalLabel(wifi?: WifiDiagnostic | null): string {
-  if (!wifi) return "No service";
+  if (!wifi) return "No data";
   if (wifi.strength_label && wifi.strength_label.trim()) {
     return wifi.strength_label[0].toUpperCase() + wifi.strength_label.slice(1).toLowerCase();
   }
-  return signalLabelFromDbm(wifi.signal_dbm) ?? signalLabel(wifi.strength_score);
+  if (wifi.strength_score !== null && wifi.strength_score !== undefined && !Number.isNaN(wifi.strength_score)) {
+    return signalLabel(wifi.strength_score);
+  }
+  if (wifiHasAuthoritativeCheck(wifi) && !wifiCheckConnected(wifi)) return "No data";
+  if (wifi.signal_dbm !== null && wifi.signal_dbm !== undefined && !Number.isNaN(wifi.signal_dbm)) {
+    return signalLabelFromDbm(wifi.signal_dbm) ?? "No data";
+  }
+  return wifiConnectedState(wifi) ? "No data" : "No service";
+}
+
+function wifiSignalDisplay(wifi?: WifiDiagnostic | null): string {
+  if (!wifi) return "No data";
+  const label = wifiSignalLabel(wifi);
+  if (wifi.strength_score !== null && wifi.strength_score !== undefined && !Number.isNaN(wifi.strength_score)) {
+    return `${label} (${wifi.strength_score}/100)`;
+  }
+  if (wifi.signal_dbm !== null && wifi.signal_dbm !== undefined && !Number.isNaN(wifi.signal_dbm)
+    && (!wifiHasAuthoritativeCheck(wifi) || wifiCheckConnected(wifi))) {
+    return `${label} (${wifi.signal_dbm} dBm)`;
+  }
+  return label;
 }
 
 function roleLabel(role?: string | null): string | null {
@@ -667,6 +705,90 @@ function resolveCarrierCode(code?: string | null): string | null {
   return map[code] ?? code;
 }
 
+function resolveCarrierFromApn(apn?: string | null): string | null {
+  if (!apn) return null;
+  const normalized = apn.trim().toLowerCase();
+  if (!normalized) return null;
+  if (normalized.startsWith("vzw") || normalized.includes("vzwinternet")) return "Verizon";
+  if (normalized.includes("broadband") || normalized.includes("nxtgenphone") || normalized === "phone") return "AT&T";
+  return null;
+}
+
+function cellularHasAuthoritativeCheck(cell?: CellularDiagnostic | null): boolean {
+  return !!cell && (cell.check_result !== "Unknown" || !!cell.check_error);
+}
+
+function cellularCheckConnected(cell?: CellularDiagnostic | null): boolean {
+  return !!cell && cell.check_result === "Success" && cell.internet_reachable === true;
+}
+
+function cellularConnectedState(cell?: CellularDiagnostic | null): boolean {
+  if (!cell) return false;
+  if (cellularHasAuthoritativeCheck(cell)) return cellularCheckConnected(cell);
+  return cell.connman_cell_connected === true || cell.internet_reachable === true;
+}
+
+function cellularCarrierLabel(cell?: CellularDiagnostic | null): string {
+  if (!cell) return "Cellular";
+  const providerCarrier = resolveCarrierCode(cleanCellValue(cell.provider_code) ?? cell.provider_code ?? null)
+    || resolveCarrierCode(cleanCellValue(cell.basic_provider) ?? cell.basic_provider ?? null);
+  const fallbackCarrier = resolveCarrierCode(cleanCellValue(cell.mccmnc) ?? cell.mccmnc ?? null)
+    || resolveCarrierCode(cleanCellValue(cell.operator_name) ?? cell.operator_name ?? null);
+  const apnCarrier = resolveCarrierFromApn(cleanCellValue(cell.at_apn) || cleanCellValue(cell.basic_apn));
+  return providerCarrier || fallbackCarrier || apnCarrier || "Cellular";
+}
+
+function cellularSignalLabel(cell?: CellularDiagnostic | null): string {
+  if (!cell) return "No data";
+  if (cell.strength_label && cell.strength_label.trim()) {
+    return cell.strength_label[0].toUpperCase() + cell.strength_label.slice(1).toLowerCase();
+  }
+  if (cell.strength_score !== null && cell.strength_score !== undefined && !Number.isNaN(cell.strength_score)) {
+    return signalLabel(cell.strength_score);
+  }
+  if (cellularHasAuthoritativeCheck(cell) && !cellularCheckConnected(cell)) return "No data";
+  if (cell.rssi_dbm !== null && cell.rssi_dbm !== undefined && !Number.isNaN(cell.rssi_dbm)) {
+    return signalLabelFromDbm(cell.rssi_dbm) ?? (cellularConnectedState(cell) ? "No data" : "No service");
+  }
+  return cellularConnectedState(cell) ? "No data" : "No service";
+}
+
+function cellularSignalDisplay(cell?: CellularDiagnostic | null): string {
+  if (!cell) return "No data";
+  const label = cellularSignalLabel(cell);
+  if (cell.strength_score !== null && cell.strength_score !== undefined && !Number.isNaN(cell.strength_score)) {
+    return `${label} (${cell.strength_score}/100)`;
+  }
+  if (cell.rssi_dbm !== null && cell.rssi_dbm !== undefined && !Number.isNaN(cell.rssi_dbm)
+    && (!cellularHasAuthoritativeCheck(cell) || cellularCheckConnected(cell))) {
+    return `${label} (${cell.rssi_dbm} dBm)`;
+  }
+  return label;
+}
+
+function ethernetHasAuthoritativeCheck(ethernet?: EthernetDiagnostic | null): boolean {
+  return !!ethernet && ethernet.check_result !== "Unknown";
+}
+
+function ethernetCheckDisabled(ethernet?: EthernetDiagnostic | null): boolean {
+  if (!ethernet) return false;
+  const lower = (ethernet.check_result || "").toLowerCase();
+  return ethernet.technology_disabled === true
+    || (lower.startsWith("failure")
+      && (lower.includes("-65553") || lower.includes("network technology is not enabled") || lower.includes("not enabled")));
+}
+
+function ethernetCheckDisconnected(ethernet?: EthernetDiagnostic | null): boolean {
+  if (!ethernet) return false;
+  const lower = (ethernet.check_result || "").toLowerCase();
+  return lower.startsWith("failure")
+    && (lower.includes("-65554") || lower.includes("network technology is not connected"));
+}
+
+function ethernetCheckPassed(ethernet?: EthernetDiagnostic | null): boolean {
+  return !!ethernet && ethernet.check_result === "Success" && ethernet.internet_reachable === true;
+}
+
 function formatLoopback(seconds?: number | null): string {
   if (seconds === null || seconds === undefined) return "—";
   const rounded = Math.round(seconds);
@@ -678,21 +800,21 @@ function formatLoopback(seconds?: number | null): string {
 function buildWifiSections(wifi?: WifiDiagnostic | null): DiagSection[] {
   if (!wifi) return [{ title: "Details", rows: [{ label: "Details", value: "No recent data" }] }];
   const speedMbps = wifi.tx_bitrate_mbps ?? wifi.station_tx_bitrate_mbps;
-  const wifiSig = wifiSignalLabel(wifi);
+  const wifiSig = wifiSignalDisplay(wifi);
   const weakByController = (wifi.strength_label || "").toLowerCase() === "weak";
-  const connected = wifi.connected === true
-    || wifi.connman_wifi_connected === true
-    || wifi.internet_reachable === true;
-  const internetTest = wifi.check_result === "Success"
-    ? "Passed"
-    : wifi.check_result === "Failure"
-      ? "Failed"
+  const connected = wifiConnectedState(wifi);
+  const internetTest = wifiHasAuthoritativeCheck(wifi)
+    ? wifi.check_result === "Success"
+      ? "Passed"
+      : "Failed"
+    : connected
+      ? "Retest"
       : "Not run";
 
   const network: DiagRow[] = [
-    { label: "Network", value: (wifi.ssid && !wifi.ssid.startsWith('=') ? wifi.ssid : null) || wifi.access_point || "Unknown" },
+    { label: "Network", value: wifi.access_point || ((wifi.ssid && !wifi.ssid.startsWith('=') ? wifi.ssid : null) || "Unknown") },
     { label: "Connection", value: connected ? "Connected" : "Not connected" },
-    { label: "Signal", value: `${wifiSig}${wifi.signal_dbm !== null && wifi.signal_dbm !== undefined ? ` (${wifi.signal_dbm} dBm)` : ""}` },
+    { label: "Signal", value: wifiSig },
     { label: "Role", value: wifi.default_via_wlan0 === true ? "Primary" : connected ? "Backup" : "Unknown" },
     { label: "Speed", value: speedMbps !== null && speedMbps !== undefined ? `${speedMbps.toFixed(1)} Mbps` : "—" },
     { label: "Internet test", value: internetTest },
@@ -700,7 +822,10 @@ function buildWifiSections(wifi?: WifiDiagnostic | null): DiagSection[] {
 
   const action: DiagRow[] = [];
   const checkErrorLower = (wifi.check_error || "").toLowerCase();
-  if (wifi.check_error) {
+  const canRecommendWifiSetup = wifiHasAuthoritativeCheck(wifi)
+    ? !wifiCheckConnected(wifi)
+    : !connected && !wifi.internet_reachable;
+  if (wifi.check_error && canRecommendWifiSetup) {
     if (checkErrorLower.includes("-65553") || checkErrorLower.includes("not enabled")) {
       action.push({ label: "Recommended action", value: "Enable Wi-Fi via setup-wifi" });
     } else if (checkErrorLower.includes("-65554") || checkErrorLower.includes("not connected")) {
@@ -720,6 +845,14 @@ function buildWifiSections(wifi?: WifiDiagnostic | null): DiagSection[] {
 
 function buildCellularSections(cell?: CellularDiagnostic | null): DiagSection[] {
   if (!cell) return [{ title: "Details", rows: [{ label: "Details", value: "No recent data" }] }];
+  const connected = cellularConnectedState(cell);
+  const internetTest = cellularHasAuthoritativeCheck(cell)
+    ? cell.check_result === "Success"
+      ? "Passed"
+      : "Failed"
+    : connected
+      ? "Retest"
+      : "Not run";
 
   const primaryAction = cell.recommended_action
     || (cell.sim_inserted === false ? "Insert SIM card" : null)
@@ -739,9 +872,9 @@ function buildCellularSections(cell?: CellularDiagnostic | null): DiagSection[] 
     {
       title: "Details",
       rows: [
-        { label: "Carrier", value: cleanCellValue(cell.operator_name) || resolveCarrierCode(cell.provider_code) || resolveCarrierCode(cell.basic_provider) || "—" },
-        { label: "Signal", value: signalLabel(cell.strength_score) + (cell.strength_score !== null && cell.strength_score !== undefined ? ` (${cell.strength_score}/100)` : "") },
-        { label: "Connection", value: (cell.connman_cell_connected === true || cell.internet_reachable === true) ? "Connected" : "Not connected" },
+        { label: "Carrier", value: cellularCarrierLabel(cell) },
+        { label: "Signal", value: cellularSignalDisplay(cell) },
+        { label: "Connection", value: connected ? "Connected" : "Not connected" },
         { label: "Role", value: roleLabel(cell.role) || "Unknown" },
         { label: "SIM", value: cell.sim_inserted === false ? "Missing" : cell.sim_ready === true ? `Ready${cell.imei ? ` — IMEI ${cell.imei}` : ""}` : "Unknown" },
         { label: "Modem", value: cell.modem_not_present ? "Not detected" : cell.modem_unreachable ? "Detected — not responding" : cell.cellular_disabled && cell.imei ? "Powered off (detected)" : cell.cellular_disabled ? "Powered off" : cell.modem_present === true ? cell.modem_model ?? "Detected" : "Unknown" },
@@ -752,7 +885,7 @@ function buildCellularSections(cell?: CellularDiagnostic | null): DiagSection[] 
     {
       title: "Details",
       rows: [
-        { label: "Internet test", value: cell.internet_reachable ? "Passed" : "Failed" },
+        { label: "Internet test", value: internetTest },
         { label: "Packet loss", value: `${cell.check_packet_loss_pct}%` },
         { label: "Latency", value: cell.check_avg_latency_ms !== null && cell.check_avg_latency_ms !== undefined ? `${cell.check_avg_latency_ms.toFixed(1)} ms` : "—" },
       ],
@@ -771,7 +904,9 @@ function buildSatelliteSections(sat?: SatelliteDiagnostic | null): DiagSection[]
   if (!sat) return [{ title: "Details", rows: [{ label: "Details", value: "No diagnostics run" }, { label: "Last test", value: "—" }] }];
 
   const loopback =
-    sat.loopback_test_success === true
+    sat.satellite_state === "manager_unresponsive"
+      ? "Unavailable"
+      : sat.loopback_test_success === true
       ? "Passed"
       : sat.loopback_test_ran
         ? sat.loopback_test_success === false
@@ -781,16 +916,19 @@ function buildSatelliteSections(sat?: SatelliteDiagnostic | null): DiagSection[]
           : "In progress"
         : "Not run";
 
-  const actions: DiagRow[] = [];
-  if (!sat.loopback_test_ran && sat.modem_present === true) {
-    actions.push({
-      label: "Recommended action",
-      value: sat.light_test_success === true ? "Run loopback for full verification" : "Run full satellite loopback test",
-    });
-  }
-  else if (sat.loopback_test_blocked_in_use) actions.push({ label: "Recommended action", value: "Retry test when interface is idle" });
-  else if (sat.loopback_test_success === false) actions.push({ label: "Recommended action", value: "Check antenna placement and connection" });
-  else if (sat.recommended_action) actions.push({ label: "Recommended action", value: sat.recommended_action });
+  const defaultAction = !sat.loopback_test_ran && sat.modem_present === true
+    ? sat.light_test_success === true ? "Run loopback for full verification" : "Run full satellite loopback test"
+    : sat.loopback_test_blocked_in_use
+      ? "Retry test when interface is idle"
+      : sat.loopback_test_success === false
+        ? "Check antenna placement and connection"
+        : null;
+  const primaryAction = sat.recommended_action || defaultAction;
+  const otherActions = Array.from(new Set((sat.other_actions ?? []).filter((value) => !!value && value !== primaryAction)));
+  const actions: DiagRow[] = [
+    ...(primaryAction ? [{ label: "Recommended action", value: primaryAction }] : []),
+    ...otherActions.map((value) => ({ label: "Additional action", value })),
+  ];
 
   return [
     {
@@ -830,21 +968,49 @@ function buildSatelliteSections(sat?: SatelliteDiagnostic | null): DiagSection[]
 function buildEthernetSections(ethernet?: EthernetDiagnostic | null): DiagSection[] {
   if (!ethernet) return [{ title: "Details", rows: [{ label: "Details", value: "No data yet" }, { label: "Last test", value: "—" }] }];
 
-  const internetPassed = ethernet.check_result === "Success" && ethernet.internet_reachable === true;
-  const connected = internetPassed || ethernet.link_detected === true;
+  const hasAuthoritativeCheck = ethernetHasAuthoritativeCheck(ethernet);
+  const internetPassed = ethernetCheckPassed(ethernet);
+  const disabled = ethernetCheckDisabled(ethernet);
+  const disconnected = ethernetCheckDisconnected(ethernet);
+  const connected = hasAuthoritativeCheck
+    ? internetPassed
+    : internetPassed || ethernet.link_detected === true;
+  const connectionLabel = disabled
+    ? "Disabled"
+    : disconnected
+      ? "Link down"
+      : connected
+        ? "Connected"
+        : ethernet.link_detected === false
+          ? "Link down"
+          : "No data";
+  const roleValue = disabled ? "Inactive" : connected ? "Connected path" : "Inactive";
+  const internetTest = hasAuthoritativeCheck
+    ? internetPassed
+      ? "Passed"
+      : disabled || disconnected
+        ? "Not run"
+        : "Failed"
+    : connected
+      ? "Retest"
+      : "Not run";
   const actions: DiagRow[] = [];
-  if (!internetPassed && ethernet.link_detected === false) actions.push({ label: "Recommended action", value: "Check cable or switch" });
-  else if (!ethernet.ip_address) actions.push({ label: "Recommended action", value: "Check DHCP / static IP configuration" });
+  if (!internetPassed && ethernet.link_detected === false) actions.push({ label: "Recommended action", value: "⚠ If ethernet intended to be configured, check cable or switch" });
+  else if (!hasAuthoritativeCheck && connected && !ethernet.ip_address) actions.push({ label: "Recommended action", value: "Check DHCP / static IP configuration" });
   else if (ethernet.flap_count > 0) actions.push({ label: "Recommended action", value: "Inspect link stability and port health" });
+  if (hasAuthoritativeCheck && disconnected) {
+    actions.length = 0;
+    actions.push({ label: "Recommended action", value: "⚠ If ethernet intended to be configured, check cable or switch" });
+  }
 
   return [
     {
       title: "Details",
       rows: [
-        { label: "Connection", value: connected ? "Connected" : "No link" },
+        { label: "Connection", value: connectionLabel },
         { label: "Speed", value: speedLabel(ethernet.speed) + (ethernet.duplex ? ` (${ethernet.duplex})` : "") },
-        { label: "Role", value: connected ? "Connected path" : "Inactive" },
-        { label: "Internet test", value: internetPassed ? "Passed" : "Failed" },
+        { label: "Role", value: roleValue },
+        { label: "Internet test", value: internetTest },
         { label: "Stability", value: ethernet.flap_count > 0 ? "Recent link flaps" : "Stable" },
       ],
     },
@@ -954,6 +1120,22 @@ function buildPressureMetricCards(pressure?: PressureDiagnostic | null): Array<{
   const hasDistribution = distribution !== null && distribution !== undefined && !Number.isNaN(distribution);
   const cards: Array<{ label: string; value: string; tone: HealthTone }> = [];
   if (hasSource) {
+    cards.push({
+      label: "Source (P3)",
+      value: formatPressureSummaryPsi(source),
+      tone: pressureMetricTone(pressure, "source"),
+    });
+  }
+  if (hasDistribution) {
+    cards.push({
+      label: "Distribution (P2)",
+      value: formatPressureSummaryPsi(distribution),
+      tone: pressureMetricTone(pressure, "distribution"),
+    });
+  }
+  return cards;
+  /*
+  if (hasSource) {
     const sourceIssues = (pressure.issues ?? []).filter((i) => {
       const h = `${i.title} ${i.description}`.toLowerCase();
       return h.includes("p3") || h.includes("source");
@@ -982,6 +1164,7 @@ function buildPressureMetricCards(pressure?: PressureDiagnostic | null): Array<{
     });
   }
   return cards;
+  */
 }
 
 type CardSummary = {
@@ -1032,10 +1215,8 @@ function resolveRole(network: "wifi" | "cellular" | "ethernet", primary: "wifi" 
 
 function summarizeWifi(wifi?: WifiDiagnostic | null): CardSummary {
   if (!wifi) return { health: "neutral", badgeLabel: "No data", primaryLine: "No data yet" };
-  const connected = wifi.connected === true
-    || wifi.connman_wifi_connected === true
-    || wifi.internet_reachable === true;
-  const ssid = wifi.ssid || wifi.access_point || "Wi-Fi";
+  const connected = wifiConnectedState(wifi);
+  const ssid = wifi.access_point || wifi.ssid || "Wi-Fi";
   if (!connected) {
     const checkErrLower = (wifi.check_error || "").toLowerCase();
     const notEnabled = checkErrLower.includes("-65553")
@@ -1065,19 +1246,11 @@ function summarizeCellular(cell?: CellularDiagnostic | null): CardSummary {
   if (cell.modem_unreachable) return { health: "error", badgeLabel: "Issue", primaryLine: "Cellular hardware not responding", secondaryLine: "Reboot controller" };
   if (cell.modem_present === false) return { health: "error", badgeLabel: "Issue", primaryLine: "No modem detected" };
   if (cell.sim_inserted === false) return { health: "error", badgeLabel: "Issue", primaryLine: "No SIM detected" };
-  if (cell.qcsq === "NOSERVICE") return { health: "error", badgeLabel: "Issue", primaryLine: "No service" };
-  // Resolve MCC-MNC codes (e.g. "311480") to human names ("Verizon") for display.
-  // operator_name from +COPS AT command is authoritative; basic_provider/provider_code
-  // from earlier commands may still carry the raw numeric code.
-  const carrier = cell.operator_name
-    || resolveCarrierCode(cell.basic_provider)
-    || resolveCarrierCode(cell.provider_code)
-    || "Cellular";
-  // internet_reachable is set by cellular-check (authoritative connectivity test).
-  // Use it as a fallback for connman connection state, which arrives later in the
-  // diagnostic output and may still be null during streaming.
-  const connected = cell.connman_cell_connected === true || cell.internet_reachable === true;
-  const sig = signalLabel(cell.strength_score);
+  const connected = cellularConnectedState(cell);
+  const carrier = cellularCarrierLabel(cell);
+  const sig = cellularSignalLabel(cell);
+  const noService = !connected && !cellularHasAuthoritativeCheck(cell) && (cell.no_service === true || cell.qcsq === "NOSERVICE");
+  if (noService) return { health: "error", badgeLabel: "Issue", primaryLine: "No service", secondaryLine: carrier };
   if (!connected && cell.connman_cell_ready === true) {
     return { health: "warning", badgeLabel: "Warning", primaryLine: carrier, secondaryLine: "Registered · not connected", signalLabel: sig, signalScore: cell.strength_score };
   }
@@ -1091,24 +1264,15 @@ function summarizeCellular(cell?: CellularDiagnostic | null): CardSummary {
 
 function summarizeEthernet(ethernet?: EthernetDiagnostic | null): CardSummary {
   if (!ethernet) return { health: "neutral", badgeLabel: "No data", primaryLine: "No data yet" };
-  const checkLower = (ethernet.check_result || "").toLowerCase();
-  if (
-    ethernet.technology_disabled === true
-    || (checkLower.startsWith("failure")
-      && (checkLower.includes("-65553") || checkLower.includes("not enabled")))
-  ) {
+  if (ethernetCheckDisabled(ethernet)) {
     return { health: "neutral", badgeLabel: "Inactive", primaryLine: "Ethernet disabled" };
   }
-  if (
-    checkLower.includes("-65554")
-    || checkLower.includes("network technology is not connected")
-    || checkLower.includes("not connected")
-  ) {
-    return { health: "neutral", badgeLabel: "Inactive", primaryLine: "No link detected" };
+  if (ethernetCheckDisconnected(ethernet)) {
+    return { health: "neutral", badgeLabel: "Inactive", primaryLine: "Link down" };
   }
-  const internetPassed = ethernet.check_result === "Success" && ethernet.internet_reachable === true;
+  const internetPassed = ethernetCheckPassed(ethernet);
   if (internetPassed) return { health: "healthy", badgeLabel: "Healthy", primaryLine: "Connected", secondaryLine: "Internet reachable" };
-  if (ethernet.link_detected === false) return { health: "neutral", badgeLabel: "Inactive", primaryLine: "No link detected" };
+  if (ethernet.link_detected === false) return { health: "neutral", badgeLabel: "Inactive", primaryLine: "Link down" };
   if (ethernet.flap_count > 0) return { health: "warning", badgeLabel: "Warning", primaryLine: "Connected", secondaryLine: "Unstable link" };
   if (!ethernet.ip_address) return { health: "error", badgeLabel: "Issue", primaryLine: "Connected", secondaryLine: "No IP assigned" };
   return { health: "warning", badgeLabel: "Warning", primaryLine: "Connected", secondaryLine: "Limited internet" };
@@ -1137,6 +1301,14 @@ function summarizePressure(pressure?: PressureDiagnostic | null): CardSummary {
 function summarizeSatellite(sat?: SatelliteDiagnostic | null): CardSummary {
   if (!sat) return { health: "neutral", badgeLabel: "No data", primaryLine: "No data yet" };
   if (sat.modem_present === false) return { health: "error", badgeLabel: "Issue", primaryLine: "No satellite modem detected" };
+  if (sat.satellite_state === "manager_unresponsive") {
+    return {
+      health: "error",
+      badgeLabel: "Issue",
+      primaryLine: "Satellite test unavailable",
+      secondaryLine: "Network Manager unresponsive",
+    };
+  }
   if (sat.loopback_test_success === true) return { health: "healthy", badgeLabel: "Verified", primaryLine: "Link verified" };
   if (sat.loopback_test_blocked_in_use) return { health: "warning", badgeLabel: "Warning", primaryLine: "Test blocked" };
   if (sat.loopback_test_ran && sat.loopback_test_success === false) return { health: "error", badgeLabel: "Issue", primaryLine: "Loopback failed" };
@@ -1201,13 +1373,28 @@ function DiagCard({
   }, [menuOpen]);
   const hasSignalInfo =
     (signalScore !== null && signalScore !== undefined) || !!cardSignalLabel;
-  const collapsedRecommendation = !expanded
-    ? (
-      sections.find((s) => s.title.toLowerCase() === "recommended actions")?.rows[0]?.value
-      ?? sections.find((s) => ["diagnostics", "next action"].includes(s.title.toLowerCase()))?.rows[0]?.value
-      ?? sections.flatMap((s) => s.rows).find((row) => row.label.toLowerCase().includes("recommended action"))?.value
-    )
-    : null;
+  const collapsedRecommendations = !expanded
+    ? sections
+      .filter((section) => ["recommended actions", "diagnostics", "next action"].includes(section.title.toLowerCase()))
+      .flatMap((section) => section.rows.map((row) => row.value))
+      .concat(
+        sections
+          .flatMap((section) => section.rows)
+          .filter((row) => row.label.toLowerCase().includes("recommended action"))
+          .map((row) => row.value),
+      )
+      .filter((value, index, arr) => !!value && arr.indexOf(value) === index)
+      .join(" • ")
+    : [];
+  const collapsedRecommendationCards = Array.isArray(collapsedRecommendations)
+    ? collapsedRecommendations
+    : collapsedRecommendations
+      ? collapsedRecommendations.split(" â€¢ ").filter(Boolean)
+      : [];
+  const collapsedRecommendation = null;
+  const collapsedRecommendationCardsNormalized = collapsedRecommendationCards
+    .flatMap((recommendation) => recommendation.split(/\s+(?:•|â€¢|Ã¢â‚¬Â¢)\s+/).filter(Boolean))
+    .filter((value, index, arr) => !!value && arr.indexOf(value) === index);
 
   return (
     <article className={`diag-card diag-card-${updating ? "neutral" : health} ${expanded ? "diag-card-open" : "diag-card-collapsed"} ${compact ? "diag-card-compact" : ""} ${emphasizeSecondaryLine ? "diag-card-equal-lines" : ""}`}>
@@ -1353,6 +1540,10 @@ function DiagCard({
         </div>
       )}
       {collapsedRecommendation && <div className="diag-card-collapsed-reco">⚠ {collapsedRecommendation}</div>}
+
+      {collapsedRecommendationCardsNormalized.map((recommendation) => (
+        <div key={`${title}-${recommendation}`} className="diag-card-collapsed-reco">Warning: {recommendation}</div>
+      ))}
 
       {expanded && (
         <div className="diag-details-wrap">
@@ -1894,7 +2085,7 @@ export default function DiagnosticsTab() {
   const systemIdentity = [
     safeSid ? `SID ${safeSid}` : null,
     safeVersion ? `v${safeVersion}` : null,
-    system?.release_date ? system.release_date : null,
+    system?.controller_date || system?.release_date || null,
     system?.system_type ? system.system_type : null,
   ].filter(Boolean).join(" · ");
   const pressureDiagBlockId = pressureHhc === "hp6" ? "pressure-hp6" : "pressure-mp3";

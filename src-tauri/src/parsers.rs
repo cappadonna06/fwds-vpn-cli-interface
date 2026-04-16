@@ -106,9 +106,10 @@ pub fn parse_log_into_state(log: &str, state: &mut DiagnosticState) {
         .and_then(|b| extract_controller_info_section(b));
 
     let mut system = parse_system(
-        find_latest(&blocks, &["sid"]),
+        find_latest(&blocks, &["sid"]).or(controller_info_body.as_deref()),
         find_latest(&blocks, &["version"]).or(controller_info_body.as_deref()),
         find_latest(&blocks, &["release"]),
+        controller_info_body.as_deref(),
         find_latest(&blocks, &["cat /var/etc/fwds/station_info", "cat-station-info"]).or(system_section_body),
         find_latest(&blocks, &["cat /var/etc/fwds/system_info", "cat-system-info"]).or(system_section_body),
     );
@@ -165,6 +166,7 @@ pub fn parse_log_into_state(log: &str, state: &mut DiagnosticState) {
     }
     if system.sid.is_some()
         || system.version.is_some()
+        || system.controller_date.is_some()
         || system.release_date.is_some()
         || system.display_name.is_some()
         || system.location.is_some()
@@ -1322,6 +1324,59 @@ APN: vzwinternet
     }
 
     #[test]
+    fn parse_cellular_prefers_registered_operator_over_scan_list() {
+        let block = r#"
+===== CELLULAR CONNECTIVITY TEST =====
+Internet reachability state: online
+Cellular state: online
+Cellular provider: 311480
+Cellular strength: 80/100 ("strong")
+Done: Success
+
+===== MODEM / RADIO DIAGNOSTICS =====
+Running AT commands...
++CPIN: READY
++COPS: (1,"AT&T","AT&T","310410",8),(2,"Verizon ","Verizon ","311480",8)
++COPS: 0,0,"Verizon ",8
++QCSQ: "CAT-M1",-58,-93,69,-16
++QNWINFO: "CAT-M1","311480","LTE BAND 13",5230
+        "#;
+        let cell = parse_cellular(block);
+        assert_eq!(cell.operator_name.as_deref(), Some("Verizon"));
+        assert!(matches!(cell.status, crate::DiagStatus::Green));
+    }
+
+    #[test]
+    fn parse_cellular_connected_path_does_not_set_no_service() {
+        let block = r#"
+===== CELLULAR CONNECTIVITY TEST =====
+Internet reachability state: online
+Cellular state: online
+Cellular provider: 311480
+Done: Success
+
+===== NETWORK TECHNOLOGY =====
+/net/connman/technology/cellular
+  Name = Cellular
+  Type = cellular
+  Powered = True
+  Connected = True
+
+===== MODEM / RADIO DIAGNOSTICS =====
+Running AT commands...
+Quectel
+BG96
++CPIN: READY
++COPS: 0,0,"Verizon ",8
++QCSQ: "NOSERVICE"
+        "#;
+        let cell = parse_cellular(block);
+        assert_eq!(cell.operator_name.as_deref(), Some("Verizon"));
+        assert_eq!(cell.no_service, false);
+        assert!(matches!(cell.status, crate::DiagStatus::Green));
+    }
+
+    #[test]
     fn wifi_link_bitrate_parses_without_connected_marker() {
         let mut state = DiagnosticState::default();
         let log = r#"2026-04-09T10:00:00-0600 [18230967]# iw dev wlan0 link
@@ -1444,6 +1499,24 @@ successfully completed satellite loopback with status: 0: Success
         assert_eq!(sat.loopback_test_ran, true);
         assert_eq!(sat.loopback_test_success, Some(true));
         assert_eq!(sat.status, crate::DiagStatus::Green);
+    }
+
+    #[test]
+    fn satellite_marks_manager_unresponsive_as_distinct_failure_state() {
+        let mut state = DiagnosticState::default();
+        let log = r#"2026-04-14T17:36:52-0600 [24250115]# satellite-check -t "Network Manager" never responded
+"#;
+        parse_log_into_state(log, &mut state);
+        let sat = state.satellite.expect("satellite diagnostics expected");
+        assert_eq!(sat.satellite_state.as_deref(), Some("manager_unresponsive"));
+        assert_eq!(sat.loopback_test_ran, true);
+        assert_eq!(sat.loopback_test_success, Some(false));
+        assert_eq!(sat.status, crate::DiagStatus::Red);
+        assert_eq!(sat.summary, "Satellite test unavailable");
+        assert_eq!(
+            sat.recommended_action.as_deref(),
+            Some("Reboot controller and retry satellite loopback test")
+        );
     }
 
     #[test]
@@ -2478,6 +2551,7 @@ pub fn parse_satellite(block: &str) -> SatelliteDiagnostic {
         total_time_seconds: None,
         loopback_duration_seconds: None,
         loopback_packet_loss_pct: None,
+        satellite_state: None,
         recommended_action: None,
         other_actions: vec![],
     };
@@ -2630,9 +2704,25 @@ fn parse_satellite_check(text: &str, diag: &mut SatelliteDiagnostic) {
         || lower.contains("status: 0: success");
     let blocked_in_use = lower.contains("network service is in use by another resource")
         || lower.contains("(-65555)");
+    let manager_unresponsive = lower.contains("\"network manager\" never responded")
+        || lower.contains("network manager never responded");
     let timeout_like = lower.contains("timeout")
         || lower.contains("timed out")
         || lower.contains("deadline exceeded");
+
+    if manager_unresponsive {
+        diag.satellite_state = Some("manager_unresponsive".into());
+        if looks_like_loopback {
+            diag.loopback_test_ran = true;
+            diag.loopback_test_success = Some(false);
+            diag.loopback_test_error = Some("\"Network Manager\" never responded".into());
+        } else {
+            diag.light_test_ran = true;
+            diag.light_test_success = Some(false);
+            diag.light_test_error = Some("\"Network Manager\" never responded".into());
+        }
+        return;
+    }
 
     if blocked_in_use {
         if looks_like_loopback {
@@ -2713,6 +2803,17 @@ fn determine_satellite_status(diag: &mut SatelliteDiagnostic) {
         diag.summary = "No satellite modem detected".into();
         diag.recommended_action = Some("Check satellite modem / hardware connection".into());
         diag.other_actions = vec!["Reboot controller".into()];
+        return;
+    }
+
+    if diag.satellite_state.as_deref() == Some("manager_unresponsive") {
+        diag.status = DiagStatus::Red;
+        diag.summary = "Satellite test unavailable".into();
+        diag.recommended_action = Some("Reboot controller and retry satellite loopback test".into());
+        diag.other_actions = vec![
+            "Re-run satellite setup and retry test".into(),
+            "If issue persists, reinstall firmware, reconfigure controller, rerun satellite setup, and retry test".into(),
+        ];
         return;
     }
 
@@ -2874,6 +2975,9 @@ fn parse_ethernet(
         && (check_result_lower.contains("-65553")
             || check_result_lower.contains("network technology is not enabled")
             || check_result_lower.contains("not enabled"));
+    let technology_not_connected = check_result_lower.starts_with("failure")
+        && (check_result_lower.contains("-65554")
+            || check_result_lower.contains("network technology is not connected"));
 
     let speed = ethtool_scoped.and_then(|b| capture_after(b, "Speed:"));
     let duplex = ethtool_scoped.and_then(|b| capture_after(b, "Duplex:"));
@@ -2897,14 +3001,17 @@ fn parse_ethernet(
         .unwrap_or(0);
 
     let check_failed = check_result_lower.starts_with("failure");
+    let check_passed = check_result.eq_ignore_ascii_case("success") && internet_reachable;
     let status = if technology_disabled {
         DiagStatus::Grey
+    } else if technology_not_connected {
+        DiagStatus::Unknown
+    } else if check_passed {
+        DiagStatus::Green
     } else if link_detected == Some(false) {
         DiagStatus::Unknown
     } else if check_failed || (!internet_reachable && check_result != "Unknown") {
         DiagStatus::Red
-    } else if check_result.eq_ignore_ascii_case("success") {
-        DiagStatus::Green
     } else {
         DiagStatus::Unknown
     };
@@ -2915,8 +3022,8 @@ fn parse_ethernet(
         DiagStatus::Red => "Ethernet needs attention".to_string(),
         DiagStatus::Orange => "Ethernet warning".to_string(),
         DiagStatus::Unknown => {
-            if link_detected == Some(false) {
-                "No link detected".to_string()
+            if technology_not_connected || link_detected == Some(false) {
+                "Link down".to_string()
             } else {
                 "No data yet".to_string()
             }
@@ -3470,10 +3577,18 @@ fn extract_controller_info_section(body: &str) -> Option<String> {
     Some(after[..end].to_string())
 }
 
+fn parse_controller_info_date(text: &str) -> Option<String> {
+    text.lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty() && line.contains(':') && (line.contains("UTC") || line.contains("20")))
+        .map(|line| line.to_string())
+}
+
 fn parse_system(
     sid_block: Option<&str>,
     version_block: Option<&str>,
     release_block: Option<&str>,
+    controller_info_block: Option<&str>,
     station_info_block: Option<&str>,
     system_info_block: Option<&str>,
 ) -> SystemDiagnostic {
@@ -3497,6 +3612,7 @@ fn parse_system(
     // that happen to be the last line of a compound block's version/controller-info section.
     let version = version_block
         .and_then(|b| b.lines().rev().find_map(|l| sanitize_version(l.trim())));
+    let controller_date = controller_info_block.and_then(parse_controller_info_date);
     let release_date = release_block.and_then(|b| capture_after(b, "Date:"));
     let system_name = display_name.clone();
     let preferred_network = station_info_block
@@ -3535,6 +3651,7 @@ fn parse_system(
         sid,
         imei,
         version,
+        controller_date,
         release_date,
         display_name,
         location,
@@ -4315,8 +4432,11 @@ fn parse_cell_support_at(text: &str, diag: &mut CellularDiagnostic) {
         diag.registered = Some(v == "1" || v == "5");
     }
     diag.attached = extract_regex(text, r"\+CGATT:\s*(\d)").map(|v| v == "1");
-    diag.operator_name =
-        extract_regex(text, r#"\+COPS:.*?"([^"]+)""#).map(|v| v.trim().to_string());
+    diag.operator_name = Regex::new(r#"(?m)^\+COPS:\s*0,\d,"([^"]+)""#)
+        .ok()
+        .and_then(|re| re.captures(text))
+        .and_then(|cap| cap.get(1))
+        .map(|m| m.as_str().trim().to_string());
     if let Some(mode) = extract_regex(text, r#"\+QCSQ:\s*"([^"]+)""#) {
         diag.qcsq = Some(mode.clone());
         if mode != "NOSERVICE" {
@@ -4380,6 +4500,24 @@ fn resolve_carrier(code: &str) -> String {
         "310000" => "Dish".into(),
         _ => format!("Carrier ({})", code),
     }
+}
+
+fn cellular_provider_label(diag: &CellularDiagnostic) -> String {
+    for candidate in [
+        diag.provider_code.as_deref(),
+        diag.basic_provider.as_deref(),
+        diag.mccmnc.as_deref(),
+        diag.operator_name.as_deref(),
+    ] {
+        if let Some(value) = candidate.map(str::trim).filter(|value| !value.is_empty()) {
+            return if value.chars().all(|ch| ch.is_ascii_digit()) {
+                resolve_carrier(value)
+            } else {
+                value.to_string()
+            };
+        }
+    }
+    "Unknown".into()
 }
 
 pub fn parse_sim_picker(block: &str) -> SimPickerDiagnostic {
@@ -4624,6 +4762,8 @@ fn compute_cellular_flags(diag: &mut CellularDiagnostic) {
             && diag.check_error.is_some());
 
     diag.no_service = diag.modem_present == Some(true)
+        && diag.internet_reachable != true
+        && diag.connman_cell_connected != Some(true)
         && (diag.registered == Some(false) || diag.qcsq.as_deref() == Some("NOSERVICE"));
 
     diag.sim_present = diag.sim_inserted == Some(true);
@@ -4683,14 +4823,20 @@ fn determine_cellular_status(diag: &mut CellularDiagnostic) {
     // FAST PATH: frontline check confirmed live cellular internet.
     // Skip AT-state checks (no_service, registered) — they may reflect stale modem state.
     if diag.check_result == "Success" && diag.internet_reachable {
-        let provider = diag
-            .operator_name
-            .as_deref()
-            .or(diag.basic_provider.as_deref())
-            .or(diag.provider_code.as_deref())
-            .unwrap_or("Unknown");
-        let strength = diag.strength_score.unwrap_or(0);
+        let provider = cellular_provider_label(diag);
+        let strength = diag.strength_score;
         let label = diag.strength_label.as_deref().unwrap_or("");
+        if strength.is_none() {
+            diag.status = DiagStatus::Green;
+            diag.summary = format!("{} - connected", provider);
+            return;
+        }
+        if false && strength.is_none() {
+            diag.status = DiagStatus::Green;
+            diag.summary = format!("{} Â· connected", provider);
+            return;
+        }
+        let strength = strength.unwrap_or(0);
         if strength >= 60 {
             diag.status = DiagStatus::Green;
             diag.summary = format!("{} · {}/100 · {}", provider, strength, label);
@@ -4779,14 +4925,17 @@ fn determine_cellular_status(diag: &mut CellularDiagnostic) {
         diag.recommended_action = None;
         diag.other_actions = vec![];
 
-        let provider = diag
-            .operator_name
-            .as_deref()
-            .or(diag.basic_provider.as_deref())
-            .or(diag.provider_code.as_deref())
-            .unwrap_or("Unknown");
-        let strength = diag.strength_score.unwrap_or(0);
+        diag.recommended_action = None;
+        diag.other_actions = vec![];
+        let provider = cellular_provider_label(diag);
+        let strength = diag.strength_score;
         let label = diag.strength_label.as_deref().unwrap_or("");
+        if strength.is_none() {
+            diag.status = DiagStatus::Green;
+            diag.summary = format!("{} Â· connected", provider);
+            return;
+        }
+        let strength = strength.unwrap_or(0);
         if strength >= 60 {
             diag.status = DiagStatus::Green;
             diag.summary = format!("{} · {}/100 · {}", provider, strength, label);

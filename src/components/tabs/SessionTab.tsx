@@ -1,23 +1,25 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
-type VpnStatus = "disconnected" | "starting" | "connected" | "stopping" | "failed" | "unknown";
+type VpnStatus = "disconnected" | "starting" | "connected" | "manual" | "stopping" | "failed" | "unknown";
 type ControllerStatus = "disconnected" | "connecting" | "connected" | "failed";
 type LocalStatusTone = "neutral" | "ok" | "fail";
 type ConnectionMode = "vpn" | "local";
+type RemoteAccessState = "disabled" | "enabled-unconfigured" | "ready";
 
 const VPN_LABELS: Record<VpnStatus, string> = {
   disconnected: "Not connected",
-  starting: "Starting…",
+  starting: "Starting...",
   connected: "Connected",
-  stopping: "Stopping…",
+  manual: "Ready to finish",
+  stopping: "Stopping...",
   failed: "Failed",
   unknown: "Unknown",
 };
 
 const CTRL_LABELS: Record<ControllerStatus, string> = {
   disconnected: "Not connected",
-  connecting: "Connecting…",
+  connecting: "Connecting...",
   connected: "Connected",
   failed: "Failed",
 };
@@ -40,7 +42,7 @@ interface PreflightResult {
 
 function statusTone(status: VpnStatus | ControllerStatus): "neutral" | "ok" | "warn" | "fail" {
   if (status === "connected") return "ok";
-  if (status === "connecting" || status === "starting" || status === "stopping") return "warn";
+  if (status === "connecting" || status === "starting" || status === "stopping" || status === "manual") return "warn";
   if (status === "failed") return "fail";
   return "neutral";
 }
@@ -50,7 +52,9 @@ interface SessionTabProps {
 }
 
 export default function SessionTab({ onControllerConnected }: SessionTabProps) {
-  const [connectionMode, setConnectionMode] = useState<ConnectionMode>("vpn");
+  const isWindows = typeof navigator !== "undefined" && /windows/i.test(navigator.userAgent);
+  const [connectionMode, setConnectionMode] = useState<ConnectionMode>("local");
+  const [remoteAccessEnabled, setRemoteAccessEnabled] = useState(false);
   const [bundlePath, setBundlePath] = useState("");
   const [validation, setValidation] = useState<Record<string, boolean> | null>(null);
 
@@ -79,6 +83,9 @@ export default function SessionTab({ onControllerConnected }: SessionTabProps) {
   const prevVpnPhaseRef = useRef<string>("disconnected");
 
   useEffect(() => {
+    const savedRemoteEnabled = localStorage.getItem("remote_access_enabled");
+    if (savedRemoteEnabled === "true") setRemoteAccessEnabled(true);
+
     const savedPath = localStorage.getItem("vpn_bundle_path");
     if (savedPath) loadFolder(savedPath);
 
@@ -148,6 +155,20 @@ export default function SessionTab({ onControllerConnected }: SessionTabProps) {
       prevCtrlPhaseRef.current = r.phase;
       setCtrlStatus(r.phase as ControllerStatus);
       setCtrlDetail(r.detail);
+      if (r.phase === "connected") {
+        setPreflight((prev) => {
+          if (!vpnIp) {
+            return prev;
+          }
+          return {
+            ping_ok: prev?.ping_ok ?? false,
+            port_ok: true,
+            detail: prev?.ping_ok
+              ? `${vpnIp} reachable, port 22 open`
+              : `${vpnIp} SSH connected`,
+          };
+        });
+      }
     } catch {
       // ignore
     }
@@ -198,16 +219,17 @@ export default function SessionTab({ onControllerConnected }: SessionTabProps) {
   function handleOctetBlur() {
     const n = parseInt(lastOctet, 10);
     if (!lastOctet || Number.isNaN(n) || n < 1 || n > 254) return;
-    if (vpnStatus === "connected") {
+    if (vpnStatus === "connected" || (isWindows && vpnStatus === "manual")) {
       runPreflight(vpnIp);
     }
   }
 
   async function startVpn() {
     setVpnStatus("starting");
-    setVpnDetail("Requesting administrator privileges…");
+    setVpnDetail(isWindows ? "Opening VPN..." : "Requesting administrator privileges...");
     try {
       await invoke("start_vpn", { folder: bundlePath });
+      await pollVpn();
     } catch (e) {
       setVpnStatus("failed");
       setVpnDetail(String(e));
@@ -215,14 +237,15 @@ export default function SessionTab({ onControllerConnected }: SessionTabProps) {
   }
 
   async function stopVpn() {
+    setVpnStatus("stopping");
+    setVpnDetail(isWindows ? "Closing VPN..." : "Stopping OpenVPN...");
+    setPreflight(null);
     try {
       await invoke("stop_vpn");
+      await pollVpn();
     } catch {
       // best effort
     }
-    setVpnStatus("stopping");
-    setVpnDetail("Stopping OpenVPN…");
-    setPreflight(null);
   }
 
   async function connectToController() {
@@ -230,7 +253,7 @@ export default function SessionTab({ onControllerConnected }: SessionTabProps) {
     localStorage.setItem("vpn_last_octet", lastOctet);
     setSavedOctet(lastOctet);
     setCtrlStatus("connecting");
-    setCtrlDetail(`Connecting to ${vpnIp}…`);
+    setCtrlDetail(`Connecting to ${vpnIp}...`);
     prevCtrlPhaseRef.current = "connecting";
     try {
       await invoke("connect_controller", { ip: vpnIp });
@@ -252,7 +275,7 @@ export default function SessionTab({ onControllerConnected }: SessionTabProps) {
     try {
       await invoke("open_controller_terminal");
       await invoke("start_log_watcher").catch(() => {});
-      showSuccess("Connection successful — terminal app opened");
+      showSuccess(isWindows ? "Connection successful - terminal window opened" : "Connection successful - terminal app opened");
       onControllerConnected?.();
     } catch (e) {
       setCtrlDetail(String(e));
@@ -283,13 +306,13 @@ export default function SessionTab({ onControllerConnected }: SessionTabProps) {
   async function launchLocalSerialTerminal() {
     if (!serialDevice) return;
     try {
-      setSerialDetail("Connecting…");
+      setSerialDetail("Connecting...");
       localStorage.setItem("local_serial_device", serialDevice);
       await invoke("open_local_serial_terminal", { device: serialDevice });
       await invoke("start_log_watcher").catch(() => {});
       const isWindows = typeof navigator !== "undefined" && /windows/i.test(navigator.userAgent);
       setSerialDetail(isWindows ? "Connected via PuTTY" : "Connected");
-      showSuccess(isWindows ? "Connection successful — PuTTY opened" : "Connection successful — terminal window opened");
+      showSuccess(isWindows ? "Connection successful - PuTTY opened" : "Connection successful - terminal window opened");
       onControllerConnected?.();
     } catch (e) {
       setSerialDetail(`Failed: ${String(e)}`);
@@ -310,10 +333,17 @@ export default function SessionTab({ onControllerConnected }: SessionTabProps) {
     () => (validation === null ? [] : BUNDLE_FILES.filter((f) => validation[f] !== true)),
     [validation],
   );
+  const remoteAccessState: RemoteAccessState = !remoteAccessEnabled
+    ? "disabled"
+    : allFilesOk
+      ? "ready"
+      : "enabled-unconfigured";
+  const remoteAccessGated = remoteAccessState !== "ready";
   const octetNum = parseInt(lastOctet, 10);
   const octetValid = lastOctet !== "" && !Number.isNaN(octetNum) && octetNum >= 1 && octetNum <= 254;
-  const canConnect = octetValid && vpnStatus === "connected";
-  const showPreflight = vpnStatus === "connected" && octetValid;
+  const manualVpnReady = isWindows && vpnStatus === "manual" && preflight?.port_ok === true;
+  const canConnect = octetValid && (vpnStatus === "connected" || manualVpnReady);
+  const showPreflight = octetValid && (vpnStatus === "connected" || (isWindows && vpnStatus === "manual"));
 
   const localState: { label: string; tone: LocalStatusTone } = useMemo(() => {
     const normalized = serialDetail.toLowerCase();
@@ -323,9 +353,15 @@ export default function SessionTab({ onControllerConnected }: SessionTabProps) {
     return { label: "Idle", tone: "neutral" };
   }, [serialDetail]);
 
-  function preflightDotClass(ok: boolean | undefined): string {
+  function preflightDotClass(kind: "ping" | "port", ok: boolean | undefined): string {
     if (preflight === null) return "idle";
+    if (kind === "ping" && ok === false && preflight.port_ok) return "warn";
     return ok ? "ok" : "fail";
+  }
+
+  function enableRemoteAccess() {
+    setRemoteAccessEnabled(true);
+    localStorage.setItem("remote_access_enabled", "true");
   }
 
   return (
@@ -334,7 +370,7 @@ export default function SessionTab({ onControllerConnected }: SessionTabProps) {
         <div className="session-success-banner" role="status" aria-live="polite">
           <span className="session-success-icon">✓</span>
           {successBanner}
-          <button className="session-success-dismiss" onClick={() => setSuccessBanner(null)} aria-label="Dismiss">×</button>
+          <button className="session-success-dismiss" onClick={() => setSuccessBanner(null)} aria-label="Dismiss">x</button>
         </div>
       )}
       <div className="session-shell">
@@ -345,14 +381,6 @@ export default function SessionTab({ onControllerConnected }: SessionTabProps) {
 
         <div className="connect-mode-toggle" role="tablist" aria-label="Connection mode">
           <button
-            className={`mode-toggle-btn ${connectionMode === "vpn" ? "active" : ""}`}
-            onClick={() => setConnectionMode("vpn")}
-            role="tab"
-            aria-selected={connectionMode === "vpn"}
-          >
-            VPN
-          </button>
-          <button
             className={`mode-toggle-btn ${connectionMode === "local" ? "active" : ""}`}
             onClick={() => setConnectionMode("local")}
             role="tab"
@@ -360,135 +388,27 @@ export default function SessionTab({ onControllerConnected }: SessionTabProps) {
           >
             Local
           </button>
+          <button
+            className={`mode-toggle-btn ${connectionMode === "vpn" ? "active" : ""} ${remoteAccessGated ? "gated" : ""}`}
+            onClick={() => setConnectionMode("vpn")}
+            role="tab"
+            aria-selected={connectionMode === "vpn"}
+          >
+            <span className="mode-toggle-label">
+              {remoteAccessGated && (
+                <span className="mode-toggle-lock" aria-hidden="true">
+                  <svg viewBox="0 0 16 16" focusable="false">
+                    <path d="M5.5 6V4.75a2.5 2.5 0 1 1 5 0V6" />
+                    <rect x="3.5" y="6" width="9" height="7" rx="1.75" />
+                  </svg>
+                </span>
+              )}
+              <span>Remote (VPN)</span>
+            </span>
+          </button>
         </div>
 
-        {connectionMode === "vpn" ? (
-          <section className="connect-card connect-card-single">
-            <div className="connect-card-head">
-              <div>
-                <h2>Connect via VPN</h2>
-                <p>Main flow: Open VPN → Enter VPN ID → Connect + Launch</p>
-              </div>
-              <div className="status-chip-row">
-                <span className={`status-chip ${allFilesOk ? "ok" : "neutral"}`}>{allFilesOk ? "Bundle ok" : "Bundle needed"}</span>
-                <span className={`status-chip ${statusTone(vpnStatus)}`}>{vpnStatus === "connected" ? "VPN connected" : VPN_LABELS[vpnStatus]}</span>
-                {showPreflight && preflight?.port_ok && <span className="status-chip ok">SSH reachable</span>}
-              </div>
-            </div>
-
-            <div className="flow-group flow-group-soft">
-              <div className="flow-row">
-                <div className="row-context">Bundle</div>
-                {bundlePath ? (
-                  <span className="bundle-path" title={bundlePath}>{bundlePath}</span>
-                ) : (
-                  <span className="muted">No bundle selected</span>
-                )}
-                <button className="btn-link" onClick={selectFolder}>{bundlePath ? "Change bundle" : "Select bundle"}</button>
-              </div>
-              {validation !== null && (
-                !allFilesOk && (
-                  <div className="hint session-hint error">Missing: {missingFiles.join(", ")}</div>
-                )
-              )}
-              <div className="flow-row">
-                <div className="row-context">1) VPN</div>
-                <div className="btn-group">
-                  <button
-                    className="btn btn-primary"
-                    disabled={!allFilesOk || vpnStatus === "connected" || vpnStatus === "starting" || vpnStatus === "stopping"}
-                    onClick={startVpn}
-                  >
-                    Open VPN
-                  </button>
-                  <button
-                    className="btn btn-secondary"
-                    disabled={vpnStatus === "disconnected" || vpnStatus === "stopping"}
-                    onClick={stopVpn}
-                  >
-                    Stop
-                  </button>
-                </div>
-              </div>
-              {vpnDetail && <div className="hint session-hint">{vpnDetail}</div>}
-            </div>
-
-            <div className="flow-group">
-              <div className="flow-row ip-row">
-                <div className="row-context">2) VPN ID</div>
-                <div className="ip-input-group">
-                  <span className="ip-prefix">10.9.0.</span>
-                  <input
-                    className="ip-octet-input"
-                    type="text"
-                    inputMode="numeric"
-                    placeholder="x"
-                    maxLength={3}
-                    value={lastOctet}
-                    onChange={(e) => handleOctetChange(e.target.value)}
-                    onBlur={handleOctetBlur}
-                  />
-                </div>
-                {savedOctet && !lastOctet && (
-                  <button className="btn-link" onClick={() => handleOctetChange(savedOctet)}>
-                    Use last .{savedOctet}
-                  </button>
-                )}
-              </div>
-
-              {showPreflight && (
-                <div className="preflight-row">
-                  <div className="preflight-checks">
-                    <span className={`preflight-dot ${preflightDotClass(preflight?.ping_ok)}`}>Ping</span>
-                    <span className={`preflight-dot ${preflightDotClass(preflight?.port_ok)}`}>Port 22</span>
-                    {preflight && <span className="preflight-detail">{preflight.detail}</span>}
-                    <button className="btn-link preflight-action" onClick={() => runPreflight(vpnIp)} disabled={preflightRunning}>
-                      {preflightRunning ? "Checking…" : preflight ? "Re-check" : "Check"}
-                    </button>
-                  </div>
-                </div>
-              )}
-            </div>
-
-            <div className="card-actions">
-              {ctrlStatus === "disconnected" || ctrlStatus === "failed" ? (
-                <button className="btn btn-primary" disabled={!canConnect} onClick={connectAndLaunch}>
-                  3) Connect + Launch
-                </button>
-              ) : (
-                <button className="btn btn-secondary" onClick={disconnectController}>
-                  Disconnect
-                </button>
-              )}
-            </div>
-
-            <div className="hint session-hint">Controller: {CTRL_LABELS[ctrlStatus]}{ctrlDetail ? ` — ${ctrlDetail}` : ""}</div>
-            {!canConnect && (ctrlStatus === "disconnected" || ctrlStatus === "failed") && Boolean(lastOctet) && vpnStatus !== "connected" && (
-              <div className="hint session-hint">Start VPN first.</div>
-            )}
-            <div className="vpn-help">
-              <button
-                className="btn-link vpn-help-toggle"
-                type="button"
-                onClick={() => setShowVpnHelp((prev) => !prev)}
-                aria-expanded={showVpnHelp}
-              >
-                Having VPN issues?
-              </button>
-              {showVpnHelp && (
-                <ol className="vpn-help-list">
-                  <li>Disconnect controller in app.</li>
-                  <li>Stop VPN in API.</li>
-                  <li>Refresh API page.</li>
-                  <li>Start VPN in API.</li>
-                  <li>Stop OpenVPN in app.</li>
-                  <li>Start OpenVPN in app.</li>
-                  <li>Reconnect + Launch.</li>
-                </ol>
-              )}
-            </div>
-          </section>
-        ) : (
+        {connectionMode === "local" ? (
           <section className="connect-card connect-card-single">
             <div className="connect-card-head">
               <div>
@@ -546,6 +466,184 @@ export default function SessionTab({ onControllerConnected }: SessionTabProps) {
             </div>
 
             {serialDetail && <div className="hint session-hint">{serialDetail}</div>}
+          </section>
+        ) : (
+          <section className="connect-card connect-card-single">
+            <div className="connect-card-head">
+              <div>
+                <h2>Remote Controller Access</h2>
+                <p>Main flow: Bundle ready, Open VPN, enter VPN ID, then Connect + Launch.</p>
+              </div>
+              {remoteAccessState === "ready" && (
+                <div className="status-chip-row">
+                  <span className="status-chip ok">Bundle ready</span>
+                  <span className={`status-chip ${statusTone(vpnStatus)}`}>{vpnStatus === "connected" ? "VPN connected" : VPN_LABELS[vpnStatus]}</span>
+                  {showPreflight && preflight?.port_ok && <span className="status-chip ok">SSH reachable</span>}
+                </div>
+              )}
+            </div>
+
+            {remoteAccessState === "disabled" && (
+              <div className="remote-stage-card">
+                <div className="remote-stage-badge">Approval required</div>
+                <h3>Remote Controller Access</h3>
+                <p>Remote access is disabled by default.</p>
+                <div className="remote-stage-list-label">This feature requires:</div>
+                <ul className="remote-stage-list">
+                  <li>VPN credentials (bundle)</li>
+                  <li>Management / IT approval</li>
+                </ul>
+                <div className="card-actions">
+                  <button className="btn btn-primary" onClick={enableRemoteAccess}>
+                    Enable Remote Access
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {remoteAccessState === "enabled-unconfigured" && (
+              <div className="remote-stage-card remote-stage-card-setup">
+                <div className="status-chip-row">
+                  <span className="status-chip ok">Remote access enabled</span>
+                  <span className="status-chip neutral">No bundle detected</span>
+                </div>
+                <h3>Remote Controller Access</h3>
+                <div className="remote-stage-step">Step 1 - Add VPN bundle</div>
+                <p className="remote-stage-empty">No bundle detected</p>
+                <div className="card-actions">
+                  <button className="btn btn-primary" onClick={selectFolder}>
+                    Select VPN Bundle
+                  </button>
+                </div>
+                <p className="remote-stage-helper">You can get this from your admin.</p>
+                {bundlePath && (
+                  <div className="remote-stage-inline">
+                    <span className="bundle-path" title={bundlePath}>{bundlePath}</span>
+                    <button className="btn-link" onClick={selectFolder}>Change bundle</button>
+                  </div>
+                )}
+                {validation !== null && !allFilesOk && (
+                  <div className="hint session-hint error">Missing: {missingFiles.join(", ")}</div>
+                )}
+              </div>
+            )}
+
+            {remoteAccessState === "ready" && (
+              <>
+                <div className="flow-group flow-group-soft">
+                  <div className="flow-row flow-row-stack-mobile">
+                    <div className="row-context">Bundle</div>
+                    <span className="bundle-path" title={bundlePath}>{bundlePath}</span>
+                    <span className="status-chip ok">Bundle ready</span>
+                    <button className="btn-link" onClick={selectFolder}>Change bundle</button>
+                  </div>
+                  <div className="flow-row">
+                    <div className="row-context">1) VPN</div>
+                    <div className="btn-group">
+                      <button
+                        className="btn btn-primary"
+                        disabled={!allFilesOk || vpnStatus === "connected" || vpnStatus === "starting" || vpnStatus === "stopping"}
+                        onClick={startVpn}
+                      >
+                        Open VPN
+                      </button>
+                      <button
+                        className="btn btn-secondary"
+                        disabled={vpnStatus === "disconnected" || vpnStatus === "stopping"}
+                        onClick={stopVpn}
+                      >
+                        Stop
+                      </button>
+                    </div>
+                  </div>
+                  {vpnDetail && <div className="hint session-hint">{vpnDetail}</div>}
+                  {isWindows && vpnStatus === "manual" && (
+                    <div className="hint session-hint">
+                      VPN app opened. Connect there, then return here and click Check.
+                    </div>
+                  )}
+                </div>
+
+                <div className="flow-group">
+                  <div className="flow-row ip-row flow-row-stack-mobile">
+                    <div className="row-context">2) VPN ID</div>
+                    <div className="ip-input-group">
+                      <span className="ip-prefix">10.9.0.</span>
+                      <input
+                        className="ip-octet-input"
+                        type="text"
+                        inputMode="numeric"
+                        placeholder="x"
+                        maxLength={3}
+                        value={lastOctet}
+                        onChange={(e) => handleOctetChange(e.target.value)}
+                        onBlur={handleOctetBlur}
+                      />
+                    </div>
+                    {savedOctet && !lastOctet && (
+                      <button className="btn-link" onClick={() => handleOctetChange(savedOctet)}>
+                        Use last .{savedOctet}
+                      </button>
+                    )}
+                  </div>
+
+                  {showPreflight && (
+                    <div className="preflight-row">
+                      <div className="preflight-checks">
+                        <span className={`preflight-dot ${preflightDotClass("ping", preflight?.ping_ok)}`}>Ping</span>
+                        <span className={`preflight-dot ${preflightDotClass("port", preflight?.port_ok)}`}>Port 22</span>
+                        {preflight && <span className="preflight-detail">{preflight.detail}</span>}
+                        <button className="btn-link preflight-action" onClick={() => runPreflight(vpnIp)} disabled={preflightRunning}>
+                          {preflightRunning ? "Checking..." : preflight ? "Re-check" : "Check"}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                <div className="card-actions">
+                  {ctrlStatus === "disconnected" || ctrlStatus === "failed" ? (
+                    <button className="btn btn-primary" disabled={!canConnect} onClick={connectAndLaunch}>
+                      3) Connect + Launch
+                    </button>
+                  ) : (
+                    <button className="btn btn-secondary" onClick={disconnectController}>
+                      Disconnect
+                    </button>
+                  )}
+                </div>
+
+                <div className="hint session-hint">Controller: {CTRL_LABELS[ctrlStatus]}{ctrlDetail ? ` - ${ctrlDetail}` : ""}</div>
+                {!canConnect && (ctrlStatus === "disconnected" || ctrlStatus === "failed") && Boolean(lastOctet) && vpnStatus !== "connected" && (
+                  <div className="hint session-hint">
+                    {isWindows && vpnStatus === "manual"
+                      ? "Finish connecting in the VPN app, then click Check."
+                      : "Open VPN first."}
+                  </div>
+                )}
+                <div className="vpn-help">
+                  <button
+                    className="btn-link vpn-help-toggle"
+                    type="button"
+                    onClick={() => setShowVpnHelp((prev) => !prev)}
+                    aria-expanded={showVpnHelp}
+                  >
+                    Having VPN issues?
+                  </button>
+                  {showVpnHelp && (
+                    <ol className="vpn-help-list">
+                      <li>Disconnect controller in app.</li>
+                      <li>Stop VPN in API.</li>
+                      <li>Refresh API page.</li>
+                      <li>Start VPN in API.</li>
+                      <li>Stop OpenVPN in app.</li>
+                      <li>Start OpenVPN in app.</li>
+                      <li>Reconnect + Launch.</li>
+                    </ol>
+                  )}
+                </div>
+              </>
+            )}
           </section>
         )}
       </div>
