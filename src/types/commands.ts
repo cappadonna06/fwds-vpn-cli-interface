@@ -1402,11 +1402,16 @@ echo "===== SATELLITE DIAGNOSTICS END ====="
     label: "All Networking",
     icon: "⚡",
     description: "Runs a quick first-pass check across Ethernet, Wi-Fi, and cellular in a single wrapped block so parser-driven cards update cleanly in real time.",
-    affected_interfaces: ["ethernet", "wifi", "cellular"],
+    affected_interfaces: ["ethernet", "wifi", "cellular", "system"],
     when_to_run: "First-pass network check after install or when multiple interfaces need a quick status sweep (~45 seconds total).",
-    light_command_ids: ["ethernet-check", "wifi-check", "wifi-signal", "cellular-check"],
-    heavy_command_ids: ["ethernet-check", "wifi-check", "wifi-signal", "cellular-check"],
+    light_command_ids: ["date", "version", "sid", "ethernet-check", "wifi-check", "wifi-signal", "cellular-check"],
+    heavy_command_ids: ["date", "version", "sid", "ethernet-check", "wifi-check", "wifi-signal", "cellular-check"],
     heavy_script: `(
+echo "===== CONTROLLER INFO ====="
+date
+version
+sid
+
 echo "===== ETH DIAGNOSTICS START ====="
 ethernet-check
 echo "===== ETH DIAGNOSTICS END ====="

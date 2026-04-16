@@ -6,6 +6,7 @@ use std::fs;
 #[cfg(target_os = "windows")]
 use std::io::ErrorKind as IoErrorKind;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
+use std::net::{TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -378,6 +379,7 @@ pub struct SatelliteDiagnostic {
     pub total_time_seconds: Option<u64>,
     pub loopback_duration_seconds: Option<f64>,
     pub loopback_packet_loss_pct: Option<u8>,
+    pub satellite_state: Option<String>,
 
     // Recommended actions
     pub recommended_action: Option<String>,
@@ -481,6 +483,7 @@ pub struct SystemDiagnostic {
     pub sid: Option<String>,
     pub imei: Option<String>,
     pub version: Option<String>,
+    pub controller_date: Option<String>,
     pub release_date: Option<String>,
     pub display_name: Option<String>,
     pub location: Option<String>,
@@ -537,12 +540,25 @@ const REQUIRED_FILES: &[&str] = &[
 
 // ── Commands ──────────────────────────────────────────────────────────────────
 
+fn controller_logs_dir() -> PathBuf {
+    let base = dirs::desktop_dir()
+        .filter(|path| !path.as_os_str().is_empty())
+        .or_else(|| dirs::document_dir().filter(|path| !path.as_os_str().is_empty()))
+        .or_else(|| {
+            std::env::var_os("USERPROFILE").map(|home| PathBuf::from(home).join("Documents"))
+        })
+        .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
+        .unwrap_or_else(std::env::temp_dir);
+
+    let dir = base.join("FWDS Controller Logs");
+    let _ = fs::create_dir_all(&dir);
+    dir
+}
+
 fn log_file_path(ip: &str) -> PathBuf {
     let date = chrono::Local::now().format("%Y-%m-%d").to_string();
     let filename = format!("fwds-{}-{}.txt", ip, date);
-    dirs::desktop_dir()
-        .unwrap_or_else(|| PathBuf::from("~/Desktop"))
-        .join(filename)
+    controller_logs_dir().join(filename)
 }
 
 fn local_serial_log_file(device: &str) -> PathBuf {
@@ -552,9 +568,17 @@ fn local_serial_log_file(device: &str) -> PathBuf {
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
         .collect::<String>();
     let filename = format!("fwds-serial-{}-{}.txt", safe, date);
-    dirs::desktop_dir()
-        .unwrap_or_else(|| PathBuf::from("~/Desktop"))
-        .join(filename)
+    controller_logs_dir().join(filename)
+}
+
+fn append_transcript(path: &Path, text: &str) {
+    if text.is_empty() {
+        return;
+    }
+    if let Ok(mut file) = fs::OpenOptions::new().create(true).append(true).open(path) {
+        let _ = file.write_all(text.as_bytes());
+        let _ = file.flush();
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -955,6 +979,14 @@ fn connect_controller(ip: String, state: State<'_, AppState>) -> Result<(), Stri
     let stdin = child.stdin.take();
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
+    let transcript_path = log_file_path(&ip);
+    append_transcript(
+        &transcript_path,
+        &format!(
+            "\n===== vpn ssh session start ({}) =====\ncontroller: {ip}\n",
+            chrono::Local::now().format("%Y-%m-%d %H:%M:%S")
+        ),
+    );
 
     {
         let mut inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
@@ -963,6 +995,13 @@ fn connect_controller(ip: String, state: State<'_, AppState>) -> Result<(), Stri
     }
 
     let arc = state.inner.clone();
+    let diag_arc = state.diagnostic_state.clone();
+    let store_arc = state.diagnostic_store.clone();
+    let key_arc = state.current_controller_key.clone();
+    let app_handle_arc = state.app_handle.clone();
+    if let Ok(mut key) = state.current_controller_key.lock() {
+        *key = Some(format!("vpn:{ip}"));
+    }
 
     // Stdout reader — two-thread design:
     //   • A raw reader thread pumps bytes into a channel.
@@ -978,6 +1017,15 @@ fn connect_controller(ip: String, state: State<'_, AppState>) -> Result<(), Stri
     // "input" (prefixed with \x01) in the frontend.
     if let Some(mut stdout) = stdout {
         let arc2 = arc.clone();
+        let transcript_path = transcript_path.clone();
+        let diag_arc = diag_arc.clone();
+        let store_arc = store_arc.clone();
+        let key_arc = key_arc.clone();
+        let app_handle_arc = app_handle_arc.clone();
+        let mut diag_buffer = String::new();
+        let mut active_controller_key = format!("vpn:{ip}");
+        let mut prev_sid: Option<String> = None;
+        let mut prev_system_sig = String::new();
         thread::spawn(move || {
             // Raw reader sub-thread sends Option<Vec<u8>>: Some(bytes) | None (EOF)
             let (tx, rx) = mpsc::channel::<Option<Vec<u8>>>();
@@ -1026,6 +1074,18 @@ fn connect_controller(ip: String, state: State<'_, AppState>) -> Result<(), Stri
                     }
                     Ok(Some(bytes)) => {
                         let chunk = normalize_chunk(&String::from_utf8_lossy(&bytes));
+                        append_transcript(&transcript_path, &chunk);
+                        diag_buffer.push_str(&chunk);
+                        ingest_diagnostic_buffer(
+                            &diag_buffer,
+                            &diag_arc,
+                            &store_arc,
+                            &key_arc,
+                            &app_handle_arc,
+                            &mut active_controller_key,
+                            &mut prev_sid,
+                            &mut prev_system_sig,
+                        );
 
                         // Debug: log each raw normalized chunk so operators can see
                         // exactly what the controller sends and in what order.
@@ -1169,12 +1229,28 @@ fn connect_controller(ip: String, state: State<'_, AppState>) -> Result<(), Stri
                     inner.shell_logs.push("[Connection closed]".into());
                 }
             }
+            append_transcript(
+                &transcript_path,
+                &format!(
+                    "\n===== vpn ssh session end ({}) =====\n",
+                    chrono::Local::now().format("%Y-%m-%d %H:%M:%S")
+                ),
+            );
         });
     }
 
     // Stderr reader — with LogLevel=ERROR only real errors appear here.
     if let Some(stderr) = stderr {
         let arc2 = arc.clone();
+        let transcript_path = transcript_path.clone();
+        let diag_arc = diag_arc.clone();
+        let store_arc = store_arc.clone();
+        let key_arc = key_arc.clone();
+        let app_handle_arc = app_handle_arc.clone();
+        let mut diag_buffer = String::new();
+        let mut active_controller_key = format!("vpn:{ip}");
+        let mut prev_sid: Option<String> = None;
+        let mut prev_system_sig = String::new();
         thread::spawn(move || {
             let reader = BufReader::new(stderr);
             for line in reader.lines().map_while(Result::ok) {
@@ -1182,6 +1258,19 @@ fn connect_controller(ip: String, state: State<'_, AppState>) -> Result<(), Stri
                 if line.is_empty() {
                     continue;
                 }
+                append_transcript(&transcript_path, &format!("[ssh] {line}\n"));
+                diag_buffer.push_str(&line);
+                diag_buffer.push('\n');
+                ingest_diagnostic_buffer(
+                    &diag_buffer,
+                    &diag_arc,
+                    &store_arc,
+                    &key_arc,
+                    &app_handle_arc,
+                    &mut active_controller_key,
+                    &mut prev_sid,
+                    &mut prev_system_sig,
+                );
                 if let Ok(mut inner) = arc2.lock() {
                     if inner.shell_phase == "connecting"
                         && (line.contains("Connection refused")
@@ -1311,24 +1400,31 @@ fn disconnect_controller(state: State<'_, AppState>) -> Result<(), String> {
 /// Ping the target IP and check port 22 reachability for pre-flight diagnostics.
 #[tauri::command]
 fn run_preflight(ip: String) -> Result<serde_json::Value, String> {
-    // Ping: -c 3 pings, -W 1000ms timeout per reply (macOS syntax)
+    #[cfg(target_os = "windows")]
     let ping_ok = Command::new("ping")
-        .args(["-c", "3", "-W", "1000", &ip])
+        .args(["-n", "1", "-w", "1000", &ip])
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false);
 
-    // Port 22: nc -zw1 (zero-I/O, 1s timeout)
-    let port_ok = Command::new("nc")
-        .args(["-zw1", &ip, "22"])
+    #[cfg(not(target_os = "windows"))]
+    let ping_ok = Command::new("ping")
+        .args(["-c", "1", "-W", "1000", &ip])
         .output()
         .map(|o| o.status.success())
+        .unwrap_or(false);
+
+    let port_ok = format!("{ip}:22")
+        .to_socket_addrs()
+        .ok()
+        .and_then(|mut addrs| addrs.next())
+        .map(|addr| TcpStream::connect_timeout(&addr, Duration::from_secs(1)).is_ok())
         .unwrap_or(false);
 
     let detail = match (ping_ok, port_ok) {
         (true, true) => format!("{ip} reachable, port 22 open"),
         (true, false) => format!("{ip} reachable but port 22 closed"),
-        (false, true) => format!("{ip} ping failed, port 22 open"),
+        (false, true) => format!("{ip} ping blocked or failed, but port 22 is open"),
         (false, false) => format!("{ip} unreachable"),
     };
 
@@ -1360,53 +1456,95 @@ fn open_controller_terminal(state: State<'_, AppState>) -> Result<(), String> {
         );
     }
 
-    // Resolve HOME and date in Rust so the path is fully expanded before quoting.
-    // shell_quote wraps in single quotes which would prevent $HOME/$(date) from expanding.
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-    let date_str = Command::new("date")
-        .arg("+%Y-%m-%d")
-        .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .unwrap_or_else(|_| "session".into());
-    let log_path = format!("{}/Desktop/fwds-{}-{}.txt", home, ip, date_str);
-    let ssh_cmd = format!(
-        "ssh -tt -i {} -o LogLevel=ERROR -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -o KexAlgorithms=ecdh-sha2-nistp521 {}",
-        shell_quote(&station_key.to_string_lossy()),
-        shell_quote(&format!("root@{ip}")),
-    );
-    let command = format!(
-        "clear; script -q {} {}; exit",
-        shell_quote(&log_path),
-        &ssh_cmd,
-    );
-    let script = format!(
-        "tell application \"Terminal\"\nactivate\ndo script {}\ndelay 0.1\nreturn id of front window\nend tell",
-        applescript_string_literal(&command)
-    );
+    #[cfg(target_os = "windows")]
+    {
+        let log_path = log_file_path(&ip);
+        append_transcript(
+            &log_path,
+            &format!(
+                "\n===== external terminal session start ({}) =====\ncontroller: {ip}\n",
+                chrono::Local::now().format("%Y-%m-%d %H:%M:%S")
+            ),
+        );
+        let ssh_command = format!(
+            "try {{ Start-Transcript -Path {} -Append | Out-Null }} catch {{}}; try {{ $host.UI.RawUI.WindowTitle = 'FWDS Controller {ip}'; ssh -tt -i {} -o LogLevel=ERROR -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ServerAliveInterval=15 -o ServerAliveCountMax=3 root@{ip} }} finally {{ try {{ Stop-Transcript | Out-Null }} catch {{}} }}",
+            powershell_single_quote(&log_path.to_string_lossy()),
+            powershell_single_quote(&station_key.to_string_lossy())
+        );
+        let launch_script = format!(
+            "Start-Process powershell -ArgumentList @('-NoExit', '-Command', {}) -WindowStyle Normal",
+            powershell_single_quote(&ssh_command)
+        );
+        let out = Command::new("powershell")
+            .args(["-NoProfile", "-Command", &launch_script])
+            .output()
+            .map_err(|e| format!("Failed to open terminal window: {e}"))?;
 
-    let out = Command::new("osascript")
-        .arg("-e")
-        .arg(&script)
-        .output()
-        .map_err(|e| format!("Failed to open Terminal: {e}"))?;
-
-    if out.status.success() {
-        let window_id = String::from_utf8_lossy(&out.stdout)
-            .trim()
-            .parse::<i64>()
-            .ok();
-        if let Ok(mut inner) = state.inner.lock() {
-            inner.external_terminal_window_id = window_id;
+        if !out.status.success() {
+            let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+            return Err(if stderr.is_empty() {
+                "Terminal launch failed.".into()
+            } else {
+                format!("Failed to open terminal window: {stderr}")
+            });
         }
-        start_log_watcher_internal(&state, false)?;
-        Ok(())
-    } else {
-        let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
-        Err(if stderr.is_empty() {
-            "Terminal launch failed.".into()
+
+        if let Ok(mut inner) = state.inner.lock() {
+            inner.external_terminal_window_id = None;
+        }
+        return Ok(());
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        // Resolve HOME and date in Rust so the path is fully expanded before quoting.
+        // shell_quote wraps in single quotes which would prevent $HOME/$(date) from expanding.
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+        let date_str = Command::new("date")
+            .arg("+%Y-%m-%d")
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap_or_else(|_| "session".into());
+        let log_path = format!("{}/Desktop/fwds-{}-{}.txt", home, ip, date_str);
+        let ssh_cmd = format!(
+            "ssh -tt -i {} -o LogLevel=ERROR -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -o KexAlgorithms=ecdh-sha2-nistp521 {}",
+            shell_quote(&station_key.to_string_lossy()),
+            shell_quote(&format!("root@{ip}")),
+        );
+        let command = format!(
+            "clear; script -q {} {}; exit",
+            shell_quote(&log_path),
+            &ssh_cmd,
+        );
+        let script = format!(
+            "tell application \"Terminal\"\nactivate\ndo script {}\ndelay 0.1\nreturn id of front window\nend tell",
+            applescript_string_literal(&command)
+        );
+
+        let out = Command::new("osascript")
+            .arg("-e")
+            .arg(&script)
+            .output()
+            .map_err(|e| format!("Failed to open Terminal: {e}"))?;
+
+        if out.status.success() {
+            let window_id = String::from_utf8_lossy(&out.stdout)
+                .trim()
+                .parse::<i64>()
+                .ok();
+            if let Ok(mut inner) = state.inner.lock() {
+                inner.external_terminal_window_id = window_id;
+            }
+            start_log_watcher_internal(&state, false)?;
+            Ok(())
         } else {
-            format!("Failed to open Terminal: {stderr}")
-        })
+            let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+            Err(if stderr.is_empty() {
+                "Terminal launch failed.".into()
+            } else {
+                format!("Failed to open Terminal: {stderr}")
+            })
+        }
     }
 }
 
@@ -1628,8 +1766,31 @@ fn get_app_state(state: State<'_, AppState>) -> Result<serde_json::Value, String
 fn send_external_input(text: String, state: State<'_, AppState>) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
+        let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
+        let mut inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
+        if inner.connection_mode == "vpn" {
+            let Some(stdin) = inner.shell_stdin.as_mut() else {
+                return Err("Session not open".into());
+            };
+            if normalized.is_empty() {
+                stdin
+                    .write_all(b"\n")
+                    .map_err(|e| format!("Failed to write to shell: {e}"))?;
+            } else {
+                for line in normalized.split('\n') {
+                    stdin
+                        .write_all(line.as_bytes())
+                        .map_err(|e| format!("Failed to write to shell: {e}"))?;
+                    stdin
+                        .write_all(b"\n")
+                        .map_err(|e| format!("Failed to write newline: {e}"))?;
+                }
+            }
+            stdin.flush().map_err(|e| format!("Failed to flush: {e}"))?;
+            return Ok(());
+        }
+
         let (writer_arc, putty_pid, local_device) = {
-            let inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
             if inner.connection_mode != "local" {
                 (None, None, None)
             } else {
@@ -1641,7 +1802,6 @@ fn send_external_input(text: String, state: State<'_, AppState>) -> Result<(), S
             }
         };
         if let Some(writer_arc) = writer_arc {
-            let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
             let mut writer = writer_arc.lock().map_err(|_| "serial lock poisoned")?;
             if normalized.is_empty() {
                 writer
@@ -1752,6 +1912,94 @@ fn merge_non_empty_cards(base: &mut DiagnosticState, incoming: &DiagnosticState)
     base.last_updated = incoming.last_updated.clone().or(base.last_updated.clone());
 }
 
+fn ingest_diagnostic_buffer(
+    buffer: &str,
+    diag_arc: &Arc<Mutex<DiagnosticState>>,
+    store_arc: &Arc<Mutex<DiagnosticStore>>,
+    key_arc: &Arc<Mutex<Option<String>>>,
+    app_handle_arc: &Arc<Mutex<Option<tauri::AppHandle>>>,
+    active_controller_key: &mut String,
+    prev_sid: &mut Option<String>,
+    prev_system_sig: &mut String,
+) {
+    if let Ok(mut diag) = diag_arc.lock() {
+        parse_log_into_state(buffer, &mut diag);
+        diag.last_updated = Some(chrono::Local::now().format("%H:%M:%S").to_string());
+        diag.session_has_data = has_any_diag_data(&diag);
+
+        let current_sid = diag.system.as_ref().and_then(|s| s.sid.clone());
+        if prev_sid.is_none() && current_sid.is_some() {
+            if let Ok(h) = app_handle_arc.lock() {
+                if let Some(handle) = h.as_ref() {
+                    let _ = handle.emit("controller-sid-detected", current_sid.clone());
+                }
+            }
+        }
+        *prev_sid = current_sid;
+
+        let current_system_sig = diag
+            .system
+            .as_ref()
+            .map(|s| {
+                format!(
+                    "{:?}|{:?}|{:?}|{:?}|{:?}|{}",
+                    s.version,
+                    s.sid,
+                    s.hydraulic_hardware_configuration,
+                    s.preferred_network,
+                    s.zone_count,
+                    s.zones.len()
+                )
+            })
+            .unwrap_or_default();
+        if current_system_sig != *prev_system_sig && !current_system_sig.is_empty() {
+            if let Ok(h) = app_handle_arc.lock() {
+                if let Some(handle) = h.as_ref() {
+                    let _ = handle.emit("system-config-updated", ());
+                }
+            }
+        }
+        *prev_system_sig = current_system_sig;
+
+        let mut migrated_from: Option<String> = None;
+        if let Some(sid) = diag
+            .system
+            .as_ref()
+            .and_then(|system| system.sid.as_ref())
+            .map(|sid| sid.trim())
+            .filter(|sid| !sid.is_empty())
+        {
+            let sid_key = format!("vpn:{sid}");
+            if sid_key != *active_controller_key {
+                migrated_from = Some(active_controller_key.clone());
+                *active_controller_key = sid_key.clone();
+                if let Ok(mut key) = key_arc.lock() {
+                    *key = Some(sid_key);
+                }
+            }
+        }
+
+        if let Ok(mut store) = store_arc.lock() {
+            if let Some(old_key) = migrated_from {
+                if let Some(previous) = store.controllers.remove(&old_key) {
+                    let migrated = store
+                        .controllers
+                        .entry(active_controller_key.clone())
+                        .or_insert_with(DiagnosticState::default);
+                    merge_non_empty_cards(migrated, &previous);
+                }
+            }
+
+            let entry = store
+                .controllers
+                .entry(active_controller_key.clone())
+                .or_insert_with(DiagnosticState::default);
+            merge_non_empty_cards(entry, &diag);
+            save_diagnostic_store(&store);
+        }
+    }
+}
+
 fn start_log_watcher_internal(state: &AppState, start_from_end: bool) -> Result<(), String> {
     let (controller_key, log_path) = {
         let inner = state.inner.lock().map_err(|_| "lock poisoned")?;
@@ -1859,88 +2107,16 @@ fn start_log_watcher_internal(state: &AppState, start_from_end: bool) -> Result<
                 Ok(0) => thread::sleep(Duration::from_millis(500)),
                 Ok(_) => {
                     buffer.push_str(&chunk);
-                    if let Ok(mut diag) = diag_arc.lock() {
-                        parse_log_into_state(&buffer, &mut diag);
-                        diag.last_updated =
-                            Some(chrono::Local::now().format("%H:%M:%S").to_string());
-                        diag.session_has_data = has_any_diag_data(&diag);
-
-                        // Notify frontend immediately when SID first appears in the log.
-                        let current_sid = diag.system.as_ref().and_then(|s| s.sid.clone());
-                        if prev_sid.is_none() && current_sid.is_some() {
-                            if let Ok(h) = app_handle_arc.lock() {
-                                if let Some(handle) = h.as_ref() {
-                                    let _ =
-                                        handle.emit("controller-sid-detected", current_sid.clone());
-                                }
-                            }
-                        }
-                        prev_sid = current_sid;
-
-                        // Notify frontend whenever system diagnostic data changes so that
-                        // the System Configuration tab refreshes without waiting for its
-                        // 2-second poll cycle.
-                        let current_system_sig = diag
-                            .system
-                            .as_ref()
-                            .map(|s| {
-                                format!(
-                                    "{:?}|{:?}|{:?}|{:?}|{:?}|{}",
-                                    s.version,
-                                    s.sid,
-                                    s.hydraulic_hardware_configuration,
-                                    s.preferred_network,
-                                    s.zone_count,
-                                    s.zones.len()
-                                )
-                            })
-                            .unwrap_or_default();
-                        if current_system_sig != prev_system_sig && !current_system_sig.is_empty() {
-                            if let Ok(h) = app_handle_arc.lock() {
-                                if let Some(handle) = h.as_ref() {
-                                    let _ = handle.emit("system-config-updated", ());
-                                }
-                            }
-                        }
-                        prev_system_sig = current_system_sig;
-
-                        let mut migrated_from: Option<String> = None;
-                        if let Some(sid) = diag
-                            .system
-                            .as_ref()
-                            .and_then(|system| system.sid.as_ref())
-                            .map(|sid| sid.trim())
-                            .filter(|sid| !sid.is_empty())
-                        {
-                            let sid_key = format!("vpn:{sid}");
-                            if sid_key != active_controller_key {
-                                migrated_from = Some(active_controller_key.clone());
-                                active_controller_key = sid_key.clone();
-                                if let Ok(mut key) = key_arc.lock() {
-                                    *key = Some(sid_key);
-                                }
-                            }
-                        }
-
-                        if let Ok(mut store) = store_arc.lock() {
-                            if let Some(old_key) = migrated_from {
-                                if let Some(previous) = store.controllers.remove(&old_key) {
-                                    let migrated = store
-                                        .controllers
-                                        .entry(active_controller_key.clone())
-                                        .or_insert_with(DiagnosticState::default);
-                                    merge_non_empty_cards(migrated, &previous);
-                                }
-                            }
-
-                            let entry = store
-                                .controllers
-                                .entry(active_controller_key.clone())
-                                .or_insert_with(DiagnosticState::default);
-                            merge_non_empty_cards(entry, &diag);
-                            save_diagnostic_store(&store);
-                        }
-                    }
+                    ingest_diagnostic_buffer(
+                        &buffer,
+                        &diag_arc,
+                        &store_arc,
+                        &key_arc,
+                        &app_handle_arc,
+                        &mut active_controller_key,
+                        &mut prev_sid,
+                        &mut prev_system_sig,
+                    );
                 }
                 Err(_) => break,
             }
@@ -2096,8 +2272,91 @@ fn do_vpn_start_transition(
 
     let stage_dir = stage_bundle(folder)?;
     let staged_config = stage_dir.join("ovpn.conf");
-    let log_path = vpn_log_path();
     let openvpn_binary = resolve_openvpn()?;
+    #[cfg(target_os = "windows")]
+    {
+        let binary_name = openvpn_binary
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        if binary_name == "openvpnconnect.exe" {
+            let pid = launch_openvpn_connect_windows(&staged_config)?;
+            with_vpn_state(inner_state, transition_token, |inner| {
+                inner.managed_openvpn_pid = Some(pid);
+                inner.managed_openvpn_log_path = None;
+                inner.managed_openvpn_log_offset = 0;
+                inner.managed_openvpn_stage_dir = Some(stage_dir.to_string_lossy().into_owned());
+                inner.vpn_phase = "manual".into();
+                inner.vpn_detail = "VPN app opened. Connect there, then return here and click Check."
+                    .into();
+                push_vpn_log(inner, format!("Staged bundle -> {}", stage_dir.display()));
+                push_vpn_log(
+                    inner,
+                    "Imported profile into the VPN app and opened it.".into(),
+                );
+                push_vpn_log(inner, format!("VPN app PID: {pid}"));
+                inner.vpn_transition_in_flight = false;
+            })?;
+            return Ok(());
+        }
+
+        let log_path = vpn_log_path();
+        let pid = launch_openvpn_windows(&stage_dir, &staged_config, &log_path, &openvpn_binary)?;
+
+        with_vpn_state(inner_state, transition_token, |inner| {
+            inner.managed_openvpn_pid = Some(pid);
+            inner.managed_openvpn_log_path = Some(log_path.to_string_lossy().into_owned());
+            inner.managed_openvpn_log_offset = 0;
+            inner.managed_openvpn_stage_dir = Some(stage_dir.to_string_lossy().into_owned());
+            inner.vpn_phase = "starting".into();
+            inner.vpn_detail = "OpenVPN starting with administrator privileges".into();
+            push_vpn_log(inner, format!("Staged bundle -> {}", stage_dir.display()));
+            push_vpn_log(inner, format!("OpenVPN PID: {pid}"));
+            push_vpn_log(inner, format!("Log file: {}", log_path.display()));
+        })?;
+
+        let started = std::time::Instant::now();
+        while started.elapsed() < VPN_CONNECT_TIMEOUT {
+            thread::sleep(Duration::from_millis(250));
+            let mut should_stop = false;
+            let mut done = false;
+            with_vpn_state(inner_state, transition_token, |inner| {
+                sync_vpn_logs(inner);
+                if inner.vpn_cancel_requested {
+                    should_stop = true;
+                    inner.vpn_detail = "Startup cancelled; stopping OpenVPN...".into();
+                } else if inner.vpn_phase == "connected" {
+                    inner.vpn_transition_in_flight = false;
+                    done = true;
+                    push_vpn_log(inner, "OpenVPN transition complete: connected".into());
+                } else if inner.vpn_phase == "failed" {
+                    inner.vpn_transition_in_flight = false;
+                    done = true;
+                }
+            })?;
+            if done {
+                return Ok(());
+            }
+            if should_stop {
+                return do_vpn_stop_transition(inner_state, transition_token);
+            }
+        }
+
+        with_vpn_state(inner_state, transition_token, |inner| {
+            inner.vpn_phase = "failed".into();
+            inner.vpn_detail = format!(
+                "OpenVPN did not become ready within {} seconds",
+                VPN_CONNECT_TIMEOUT.as_secs()
+            );
+            push_vpn_log(inner, inner.vpn_detail.clone());
+        })?;
+        return do_vpn_stop_transition(inner_state, transition_token);
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+    let log_path = vpn_log_path();
     let launcher = write_launcher_script(&stage_dir, &staged_config, &log_path, &openvpn_binary)?;
     let pid = launch_openvpn_elevated(&launcher, &[])?;
 
@@ -2149,6 +2408,7 @@ fn do_vpn_start_transition(
         push_vpn_log(inner, inner.vpn_detail.clone());
     })?;
     do_vpn_stop_transition(inner_state, transition_token)
+    }
 }
 
 fn run_vpn_stop_transition(inner_state: Arc<Mutex<InnerState>>) {
@@ -2172,6 +2432,17 @@ fn do_vpn_stop_transition(
     inner_state: &Arc<Mutex<InnerState>>,
     transition_token: u64,
 ) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        let should_stop_connect = inner_state
+            .lock()
+            .ok()
+            .map(|inner| inner.vpn_phase == "manual")
+            .unwrap_or(false);
+        if should_stop_connect {
+            stop_openvpn_connect_windows()?;
+        }
+    }
     let pids = collect_known_openvpn_pids(inner_state);
     if !pids.is_empty() {
         stop_openvpn_pids_elevated(&pids)?;
@@ -2236,11 +2507,11 @@ fn wait_for_processes_to_exit(pids: &[u32], timeout: Duration) -> Result<(), Str
 }
 
 fn can_start_from(phase: &str) -> bool {
-    matches!(phase, "disconnected" | "failed" | "unknown")
+    matches!(phase, "disconnected" | "failed" | "manual" | "unknown")
 }
 
 fn can_stop_from(phase: &str) -> bool {
-    matches!(phase, "connected" | "starting")
+    matches!(phase, "connected" | "manual" | "starting")
 }
 
 fn stage_bundle(folder_path: &str) -> Result<PathBuf, String> {
@@ -2249,7 +2520,7 @@ fn stage_bundle(folder_path: &str) -> Result<PathBuf, String> {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
-    let stage_dir = PathBuf::from(format!("/private/tmp/fwds-vpn-stage-{ts}"));
+    let stage_dir = std::env::temp_dir().join(format!("fwds-vpn-stage-{ts}"));
 
     fs::create_dir_all(&stage_dir).map_err(|e| format!("Failed to create stage directory: {e}"))?;
 
@@ -2349,9 +2620,10 @@ fn rewrite_ovpn_config(config: &str, source: &Path, stage_dir: &Path) -> Result<
 }
 
 fn home_ssh_dir() -> PathBuf {
-    std::env::var("HOME")
+    std::env::var_os("USERPROFILE")
         .map(|h| PathBuf::from(h).join(".ssh"))
-        .unwrap_or_else(|_| PathBuf::from("/tmp/.ssh"))
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".ssh")))
+        .unwrap_or_else(|| std::env::temp_dir().join(".ssh"))
 }
 
 fn vpn_log_path() -> PathBuf {
@@ -2359,10 +2631,68 @@ fn vpn_log_path() -> PathBuf {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
-    PathBuf::from(format!("/private/tmp/fwds-openvpn-{ts}.log"))
+    std::env::temp_dir().join(format!("fwds-openvpn-{ts}.log"))
 }
 
 fn resolve_openvpn() -> Result<PathBuf, String> {
+    #[cfg(target_os = "windows")]
+    {
+        let mut candidates = vec![
+            PathBuf::from(r"C:\Program Files\OpenVPN\bin\openvpn.exe"),
+            PathBuf::from(r"C:\Program Files (x86)\OpenVPN\bin\openvpn.exe"),
+            PathBuf::from(r"C:\Program Files\OpenVPN Connect\OpenVPNConnect.exe"),
+            PathBuf::from(r"C:\Program Files (x86)\OpenVPN Connect\OpenVPNConnect.exe"),
+        ];
+        if let Some(program_files) = std::env::var_os("ProgramFiles") {
+            candidates.push(PathBuf::from(&program_files).join("OpenVPN").join("bin").join("openvpn.exe"));
+            candidates.push(PathBuf::from(program_files).join("OpenVPN Connect").join("OpenVPNConnect.exe"));
+        }
+        if let Some(program_files_x86) = std::env::var_os("ProgramFiles(x86)") {
+            candidates.push(PathBuf::from(&program_files_x86).join("OpenVPN").join("bin").join("openvpn.exe"));
+            candidates.push(PathBuf::from(program_files_x86).join("OpenVPN Connect").join("OpenVPNConnect.exe"));
+        }
+        for candidate in candidates {
+            if candidate.exists() {
+                return Ok(candidate);
+            }
+        }
+        let out = Command::new("where")
+            .arg("openvpn.exe")
+            .output()
+            .map_err(|e| format!("Failed to locate OpenVPN: {e}"))?;
+        if out.status.success() {
+            let path = String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .find(|line| !line.trim().is_empty())
+                .map(str::trim)
+                .unwrap_or_default()
+                .to_string();
+            if !path.is_empty() {
+                return Ok(PathBuf::from(path));
+            }
+        }
+        let out = Command::new("where")
+            .arg("OpenVPNConnect.exe")
+            .output()
+            .map_err(|e| format!("Failed to locate OpenVPN Connect: {e}"))?;
+        if out.status.success() {
+            let path = String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .find(|line| !line.trim().is_empty())
+                .map(str::trim)
+                .unwrap_or_default()
+                .to_string();
+            if !path.is_empty() {
+                return Ok(PathBuf::from(path));
+            }
+        }
+        return Err(
+            "OpenVPN was not found. Install OpenVPN Community or OpenVPN Connect and try again.".into(),
+        );
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
     for candidate in &[
         "/opt/homebrew/sbin/openvpn",
         "/usr/local/sbin/openvpn",
@@ -2383,6 +2713,121 @@ fn resolve_openvpn() -> Result<PathBuf, String> {
         }
     }
     Err("openvpn not found. Install with: brew install openvpn".into())
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn resolve_openvpn_connect() -> Result<PathBuf, String> {
+    let mut candidates = vec![
+        PathBuf::from(r"C:\Program Files\OpenVPN Connect\OpenVPNConnect.exe"),
+        PathBuf::from(r"C:\Program Files (x86)\OpenVPN Connect\OpenVPNConnect.exe"),
+    ];
+    if let Some(program_files) = std::env::var_os("ProgramFiles") {
+        candidates.push(PathBuf::from(program_files).join("OpenVPN Connect").join("OpenVPNConnect.exe"));
+    }
+    if let Some(program_files_x86) = std::env::var_os("ProgramFiles(x86)") {
+        candidates.push(PathBuf::from(program_files_x86).join("OpenVPN Connect").join("OpenVPNConnect.exe"));
+    }
+    for candidate in candidates {
+        if candidate.exists() {
+            return Ok(candidate);
+        }
+    }
+    let out = Command::new("where")
+        .arg("OpenVPNConnect.exe")
+        .output()
+        .map_err(|e| format!("Failed to locate OpenVPN Connect: {e}"))?;
+    if out.status.success() {
+        let path = String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .find(|line| !line.trim().is_empty())
+            .map(str::trim)
+            .unwrap_or_default()
+            .to_string();
+        if !path.is_empty() {
+            return Ok(PathBuf::from(path));
+        }
+    }
+    Err("OpenVPN Connect was not found.".into())
+}
+
+#[cfg(target_os = "windows")]
+fn launch_openvpn_connect_windows(profile_path: &Path) -> Result<u32, String> {
+    let openvpn_connect = resolve_openvpn_connect()?;
+    let profile_arg = format!("--import-profile={}", profile_path.to_string_lossy());
+    let profile_name = "FWDS Remote";
+    let _ = Command::new(&openvpn_connect)
+        .arg(format!("--remove-profile={profile_name}"))
+        .status();
+
+    let import_status = Command::new(&openvpn_connect)
+        .args(["--accept-gdpr", "--skip-startup-dialogs"])
+        .arg(profile_arg)
+        .arg(format!("--name={profile_name}"))
+        .status()
+        .map_err(|e| format!("Failed to import profile into OpenVPN Connect: {e}"))?;
+
+    if !import_status.success() {
+        return Err(
+            "OpenVPN Connect could not import the profile. Open OpenVPN Connect and import ovpn.conf manually."
+                .into(),
+        );
+    }
+
+    let child = Command::new(&openvpn_connect)
+        .spawn()
+        .map_err(|e| format!("Failed to open OpenVPN Connect: {e}"))?;
+    Ok(child.id())
+}
+
+#[cfg(target_os = "windows")]
+fn powershell_single_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
+}
+
+#[cfg(target_os = "windows")]
+fn launch_openvpn_windows(
+    stage_dir: &Path,
+    config_path: &Path,
+    log_path: &Path,
+    openvpn_binary: &Path,
+) -> Result<u32, String> {
+    let pid_path = stage_dir.join("openvpn.pid");
+    let _ = fs::remove_file(log_path);
+    let _ = fs::remove_file(&pid_path);
+
+    let script = format!(
+        "$process = Start-Process -FilePath {} -ArgumentList @({}, {}, {}, {}, {}, {}, {}, {}) -Verb RunAs -WindowStyle Hidden -PassThru; $process.Id",
+        powershell_single_quote(&openvpn_binary.to_string_lossy()),
+        powershell_single_quote("--cd"),
+        powershell_single_quote(&stage_dir.to_string_lossy()),
+        powershell_single_quote("--config"),
+        powershell_single_quote(&config_path.to_string_lossy()),
+        powershell_single_quote("--log"),
+        powershell_single_quote(&log_path.to_string_lossy()),
+        powershell_single_quote("--writepid"),
+        powershell_single_quote(&pid_path.to_string_lossy()),
+    );
+
+    let out = Command::new("powershell")
+        .args(["-NoProfile", "-Command", &script])
+        .output()
+        .map_err(|e| format!("Failed to start OpenVPN with administrator privileges: {e}"))?;
+
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        return Err(if stderr.is_empty() {
+            "Administrator approval was denied or cancelled.".into()
+        } else {
+            format!("Failed to start OpenVPN with administrator privileges: {stderr}")
+        });
+    }
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    stdout
+        .trim()
+        .parse::<u32>()
+        .map_err(|_| format!("Unexpected output from PowerShell: '{}'", stdout.trim()))
 }
 
 fn write_launcher_script(
@@ -2451,6 +2896,26 @@ fn launch_openvpn_elevated(launcher: &Path, existing_pids: &[u32]) -> Result<u32
         .map_err(|_| format!("Unexpected output from osascript: '{}'", stdout.trim()))
 }
 
+#[cfg(target_os = "windows")]
+fn stop_openvpn_connect_windows() -> Result<(), String> {
+    let openvpn_connect = resolve_openvpn_connect()?;
+    let quit_status = Command::new(&openvpn_connect)
+        .arg("--quit")
+        .status()
+        .map_err(|e| format!("Failed to close OpenVPN Connect: {e}"))?;
+
+    if quit_status.success() {
+        return Ok(());
+    }
+
+    let pids = detect_openvpn_pids();
+    if pids.is_empty() {
+        Ok(())
+    } else {
+        stop_openvpn_pids_force_elevated(&pids)
+    }
+}
+
 fn stop_openvpn_elevated(pid: u32) -> Result<(), String> {
     let script = format!(
         "do shell script \"kill {}\" with administrator privileges",
@@ -2476,6 +2941,13 @@ fn stop_openvpn_elevated(pid: u32) -> Result<(), String> {
 }
 
 fn stop_openvpn_pids_elevated(pids: &[u32]) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        return stop_openvpn_pids_force_elevated(pids);
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
     if pids.is_empty() {
         return Ok(());
     }
@@ -2504,9 +2976,36 @@ fn stop_openvpn_pids_elevated(pids: &[u32]) -> Result<(), String> {
             Err(format!("Failed to stop OpenVPN: {stderr}"))
         }
     }
+    }
 }
 
 fn stop_openvpn_pids_force_elevated(pids: &[u32]) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        if pids.is_empty() {
+            return Ok(());
+        }
+        let mut cmd = Command::new("taskkill");
+        cmd.args(["/F", "/T"]);
+        for pid in pids {
+            cmd.args(["/PID", &pid.to_string()]);
+        }
+        let out = cmd
+            .output()
+            .map_err(|e| format!("Failed to force-close OpenVPN: {e}"))?;
+        if out.status.success() {
+            return Ok(());
+        }
+        let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        return if stderr.is_empty() {
+            Err("Failed to force-close OpenVPN.".into())
+        } else {
+            Err(format!("Failed to force-close OpenVPN: {stderr}"))
+        };
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
     if pids.is_empty() {
         return Ok(());
     }
@@ -2534,6 +3033,7 @@ fn stop_openvpn_pids_force_elevated(pids: &[u32]) -> Result<(), String> {
         } else {
             Err(format!("Failed to force-stop OpenVPN: {stderr}"))
         }
+    }
     }
 }
 
@@ -2606,6 +3106,27 @@ fn update_vpn_status(inner: &mut InnerState, line: &str) {
 }
 
 fn detect_openvpn_pids() -> Vec<u32> {
+    #[cfg(target_os = "windows")]
+    {
+        return Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-Command",
+                "Get-Process openvpn,OpenVPNConnect,ovpnconnector -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Id",
+            ])
+            .output()
+            .ok()
+            .map(|o| {
+                String::from_utf8_lossy(&o.stdout)
+                    .lines()
+                    .filter_map(|l| l.trim().parse::<u32>().ok())
+                    .collect()
+            })
+            .unwrap_or_default();
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
     Command::new("pgrep")
         .args(["-x", "openvpn"])
         .output()
@@ -2617,15 +3138,36 @@ fn detect_openvpn_pids() -> Vec<u32> {
                 .collect()
         })
         .unwrap_or_default()
+    }
 }
 
 fn process_alive(pid: u32) -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        return Command::new("tasklist")
+            .args(["/FI", &format!("PID eq {pid}"), "/NH"])
+            .output()
+            .ok()
+            .map(|o| {
+                let stdout = String::from_utf8_lossy(&o.stdout);
+                o.status.success()
+                    && stdout.lines().any(|line| {
+                        let trimmed = line.trim();
+                        !trimmed.is_empty() && !trimmed.starts_with("INFO:")
+                    })
+            })
+            .unwrap_or(false);
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
     Command::new("ps")
         .args(["-p", &pid.to_string(), "-o", "pid="])
         .output()
         .ok()
         .map(|o| o.status.success() && !String::from_utf8_lossy(&o.stdout).trim().is_empty())
         .unwrap_or(false)
+    }
 }
 
 fn push_vpn_log(inner: &mut InnerState, msg: String) {

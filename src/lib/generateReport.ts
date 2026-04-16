@@ -72,6 +72,7 @@ interface SimPickerDiag {
 interface SatelliteDiag {
   status: DiagStatus;
   summary: string;
+  satellite_state?: string | null;
   loopback_test_ran?: boolean;
   loopback_test_success?: boolean | null;
   sat_imei?: string | null;
@@ -182,7 +183,9 @@ function formatWifiSummary(wifi: WifiDiag): string {
 }
 
 function formatSatelliteSummary(sat: SatelliteDiag): string {
-  const state = sat.loopback_test_success === true
+  const state = sat.satellite_state === "manager_unresponsive"
+    ? "Satellite test unavailable"
+    : sat.loopback_test_success === true
     ? "Link verified"
     : sat.loopback_test_ran
       ? "Loopback failed"
@@ -498,7 +501,26 @@ export function generateRecommendedActions(
   if (diag.satellite) {
     const sat = diag.satellite;
 
-    if (sat.status === "red" && sat.loopback_test_success === false) {
+    if (sat.satellite_state === "manager_unresponsive") {
+      actions.push({
+        id: mkId(), interface: "Satellite",
+        text: "Reboot controller and retry satellite loopback test",
+        detail: "satellite-check -t returned \"Network Manager\" never responded.",
+        dismissed: false, checked: false, custom: false,
+      });
+      actions.push({
+        id: mkId(), interface: "Satellite",
+        text: "Re-run satellite setup and retry test",
+        detail: "Refresh satellite configuration before rerunning the loopback test.",
+        dismissed: false, checked: false, custom: false,
+      });
+      actions.push({
+        id: mkId(), interface: "Satellite",
+        text: "If issue persists, reinstall firmware, reconfigure controller, rerun satellite setup, and retry test",
+        detail: "Use this when the Network Manager response failure survives reboot and setup retry.",
+        dismissed: false, checked: false, custom: false,
+      });
+    } else if (sat.status === "red" && sat.loopback_test_success === false) {
       actions.push({
         id: mkId(), interface: "Satellite",
         text: "Check antenna cabling and sky view",
