@@ -6,6 +6,37 @@ import { sendCommandText } from "../../lib/commandActions";
 
 type DiagStatus = "grey" | "green" | "orange" | "red" | "unknown";
 type HealthTone = "healthy" | "warning" | "error" | "neutral";
+type GlobalDiagTier = "quick" | "full" | "no-satellite";
+
+const GLOBAL_DIAG_MODES: Record<GlobalDiagTier, {
+  label: string;
+  blockId: string;
+  tooltipTitle: string;
+  summary: string;
+  eta: string;
+}> = {
+  quick: {
+    label: "Quick",
+    blockId: "networking-all",
+    tooltipTitle: "Quick diagnostics",
+    summary: "Ethernet, Wi-Fi, cellular, and satellite basic checks. Skips the satellite loopback test.",
+    eta: "~1-2 minutes",
+  },
+  full: {
+    label: "Full",
+    blockId: "full-diags",
+    tooltipTitle: "Full diagnostics",
+    summary: "All network diagnostics, satellite loopback, pressure readings, and system configuration checks.",
+    eta: "~10-12 minutes",
+  },
+  "no-satellite": {
+    label: "Full (No Loopback)",
+    blockId: "full-diags-no-sat",
+    tooltipTitle: "Full diagnostics without loopback",
+    summary: "Full diagnostics with satellite basic checks, pressure readings, and system configuration. Skips the long satellite loopback test.",
+    eta: "~2-3 minutes",
+  },
+};
 
 interface WifiDiagnostic {
   status: DiagStatus;
@@ -530,6 +561,10 @@ function simPickerBadge(sp?: SimPickerDiagnostic | null): string {
   return "Not run";
 }
 
+function stripLeadingWarningIcon(value: string): string {
+  return value.replace(/^(?:\s*(?:⚠️|⚠|△)\s*)+/, "").trim();
+}
+
 function simPickerPrimary(sp?: SimPickerDiagnostic | null): string {
   if (!sp || !sp.scan_attempted) return "Check which carrier has coverage here";
   if (sp.scan_failed) return "Network scan failed";
@@ -623,7 +658,8 @@ function wifiHasAuthoritativeCheck(wifi?: WifiDiagnostic | null): boolean {
 }
 
 function wifiCheckConnected(wifi?: WifiDiagnostic | null): boolean {
-  return !!wifi && wifi.check_result === "Success" && wifi.internet_reachable === true;
+  return !!wifi && wifi.check_result === "Success"
+    && (wifi.internet_reachable !== false || wifi.wifi_state === "online");
 }
 
 function wifiConnectedState(wifi?: WifiDiagnostic | null): boolean {
@@ -682,6 +718,23 @@ function cleanCellValue(value?: string | null): string | null {
   return v;
 }
 
+function cleanCellIdentityValue(value?: string | null): string | null {
+  const cleaned = cleanCellValue(value);
+  if (!cleaned) return null;
+  const upper = cleaned.toUpperCase();
+  if (
+    upper === "REGISTERED"
+    || upper === "UNREGISTERED"
+    || upper === "NOSERVICE"
+    || upper === "NO SERVICE"
+    || upper === "SEARCHING"
+  ) {
+    return null;
+  }
+  if (upper.startsWith("RUNNING AT ")) return null;
+  return cleaned;
+}
+
 // Resolves 5–6 digit MCC-MNC codes to human carrier names.
 // Mirrors the Rust resolve_carrier() function in parsers.rs.
 // Non-numeric strings are returned as-is (already a name).
@@ -719,7 +772,8 @@ function cellularHasAuthoritativeCheck(cell?: CellularDiagnostic | null): boolea
 }
 
 function cellularCheckConnected(cell?: CellularDiagnostic | null): boolean {
-  return !!cell && cell.check_result === "Success" && cell.internet_reachable === true;
+  return !!cell && cell.check_result === "Success"
+    && (cell.internet_reachable !== false || cell.cell_state === "ready");
 }
 
 function cellularConnectedState(cell?: CellularDiagnostic | null): boolean {
@@ -728,18 +782,34 @@ function cellularConnectedState(cell?: CellularDiagnostic | null): boolean {
   return cell.connman_cell_connected === true || cell.internet_reachable === true;
 }
 
+function cellularExplicitNoService(cell?: CellularDiagnostic | null): boolean {
+  if (!cell) return false;
+  if (cellularConnectedState(cell)) return false;
+  const checkError = (cell.check_error || "").toLowerCase();
+  return cell.no_service === true
+    || (cell.qcsq || "").toUpperCase() === "NOSERVICE"
+    || checkError.includes("network technology is not connected")
+    || checkError.includes("-65554");
+}
+
 function cellularCarrierLabel(cell?: CellularDiagnostic | null): string {
   if (!cell) return "Cellular";
-  const providerCarrier = resolveCarrierCode(cleanCellValue(cell.provider_code) ?? cell.provider_code ?? null)
-    || resolveCarrierCode(cleanCellValue(cell.basic_provider) ?? cell.basic_provider ?? null);
-  const fallbackCarrier = resolveCarrierCode(cleanCellValue(cell.mccmnc) ?? cell.mccmnc ?? null)
-    || resolveCarrierCode(cleanCellValue(cell.operator_name) ?? cell.operator_name ?? null);
-  const apnCarrier = resolveCarrierFromApn(cleanCellValue(cell.at_apn) || cleanCellValue(cell.basic_apn));
+  const noService = cellularExplicitNoService(cell);
+  const providerCarrier = resolveCarrierCode(cleanCellIdentityValue(cell.provider_code) ?? cell.provider_code ?? null)
+    || resolveCarrierCode(cleanCellIdentityValue(cell.operator_name) ?? cell.operator_name ?? null);
+  const fallbackCarrier = noService
+    ? null
+    : resolveCarrierCode(cleanCellIdentityValue(cell.basic_provider) ?? cell.basic_provider ?? null)
+      || resolveCarrierCode(cleanCellIdentityValue(cell.mccmnc) ?? cell.mccmnc ?? null);
+  const apnCarrier = noService
+    ? null
+    : resolveCarrierFromApn(cleanCellIdentityValue(cell.at_apn) || cleanCellIdentityValue(cell.basic_apn));
   return providerCarrier || fallbackCarrier || apnCarrier || "Cellular";
 }
 
 function cellularSignalLabel(cell?: CellularDiagnostic | null): string {
   if (!cell) return "No data";
+  if (cellularExplicitNoService(cell)) return "No service";
   if (cell.strength_label && cell.strength_label.trim()) {
     return cell.strength_label[0].toUpperCase() + cell.strength_label.slice(1).toLowerCase();
   }
@@ -804,7 +874,7 @@ function buildWifiSections(wifi?: WifiDiagnostic | null): DiagSection[] {
   const weakByController = (wifi.strength_label || "").toLowerCase() === "weak";
   const connected = wifiConnectedState(wifi);
   const internetTest = wifiHasAuthoritativeCheck(wifi)
-    ? wifi.check_result === "Success"
+    ? (wifi.check_result === "Success" || (connected && wifi.internet_reachable === true))
       ? "Passed"
       : "Failed"
     : connected
@@ -846,8 +916,9 @@ function buildWifiSections(wifi?: WifiDiagnostic | null): DiagSection[] {
 function buildCellularSections(cell?: CellularDiagnostic | null): DiagSection[] {
   if (!cell) return [{ title: "Details", rows: [{ label: "Details", value: "No recent data" }] }];
   const connected = cellularConnectedState(cell);
+  const noService = cellularExplicitNoService(cell);
   const internetTest = cellularHasAuthoritativeCheck(cell)
-    ? cell.check_result === "Success"
+    ? (cell.check_result === "Success" || (connected && cell.internet_reachable === true))
       ? "Passed"
       : "Failed"
     : connected
@@ -863,6 +934,7 @@ function buildCellularSections(cell?: CellularDiagnostic | null): DiagSection[] 
   if (cell.sim_inserted === false) heuristicOptions.push("Insert SIM card");
   if (cell.modem_present === false) heuristicOptions.push("Check modem hardware/firmware");
   if ((cell.strength_score ?? 0) > 0 && (cell.strength_score ?? 0) < 25) heuristicOptions.push("Check coverage or antenna");
+  if (noService && cell.sim_inserted !== false) heuristicOptions.push("Run SIM Picker to check other carrier coverage");
   const otherOptions = Array.from(new Set([
     ...(cell.other_actions ?? []),
     ...heuristicOptions,
@@ -876,10 +948,11 @@ function buildCellularSections(cell?: CellularDiagnostic | null): DiagSection[] 
         { label: "Signal", value: cellularSignalDisplay(cell) },
         { label: "Connection", value: connected ? "Connected" : "Not connected" },
         { label: "Role", value: roleLabel(cell.role) || "Unknown" },
-        { label: "SIM", value: cell.sim_inserted === false ? "Missing" : cell.sim_ready === true ? `Ready${cell.imei ? ` — IMEI ${cell.imei}` : ""}` : "Unknown" },
+        { label: "SIM", value: cell.sim_inserted === false ? "Missing" : cell.sim_ready === true ? "Ready" : cell.imei ? "Detected" : "Unknown" },
+        { label: "IMEI", value: cell.imei || "—" },
         { label: "Modem", value: cell.modem_not_present ? "Not detected" : cell.modem_unreachable ? "Detected — not responding" : cell.cellular_disabled && cell.imei ? "Powered off (detected)" : cell.cellular_disabled ? "Powered off" : cell.modem_present === true ? cell.modem_model ?? "Detected" : "Unknown" },
         { label: "Network", value: [cell.rat, cell.band].filter(Boolean).join(" / ") || "—" },
-        { label: "APN", value: cleanCellValue(cell.at_apn) || cleanCellValue(cell.basic_apn) || "—" },
+        { label: "APN", value: cleanCellIdentityValue(cell.at_apn) || cleanCellIdentityValue(cell.basic_apn) || "—" },
       ],
     },
     {
@@ -978,11 +1051,11 @@ function buildEthernetSections(ethernet?: EthernetDiagnostic | null): DiagSectio
   const connectionLabel = disabled
     ? "Disabled"
     : disconnected
-      ? "Link down"
+      ? "No Ethernet link"
       : connected
         ? "Connected"
         : ethernet.link_detected === false
-          ? "Link down"
+          ? "No Ethernet link"
           : "No data";
   const roleValue = disabled ? "Inactive" : connected ? "Connected path" : "Inactive";
   const internetTest = hasAuthoritativeCheck
@@ -1249,7 +1322,7 @@ function summarizeCellular(cell?: CellularDiagnostic | null): CardSummary {
   const connected = cellularConnectedState(cell);
   const carrier = cellularCarrierLabel(cell);
   const sig = cellularSignalLabel(cell);
-  const noService = !connected && !cellularHasAuthoritativeCheck(cell) && (cell.no_service === true || cell.qcsq === "NOSERVICE");
+  const noService = cellularExplicitNoService(cell);
   if (noService) return { health: "error", badgeLabel: "Issue", primaryLine: "No service", secondaryLine: carrier };
   if (!connected && cell.connman_cell_ready === true) {
     return { health: "warning", badgeLabel: "Warning", primaryLine: carrier, secondaryLine: "Registered · not connected", signalLabel: sig, signalScore: cell.strength_score };
@@ -1268,11 +1341,11 @@ function summarizeEthernet(ethernet?: EthernetDiagnostic | null): CardSummary {
     return { health: "neutral", badgeLabel: "Inactive", primaryLine: "Ethernet disabled" };
   }
   if (ethernetCheckDisconnected(ethernet)) {
-    return { health: "neutral", badgeLabel: "Inactive", primaryLine: "Link down" };
+    return { health: "neutral", badgeLabel: "Inactive", primaryLine: "No Ethernet link" };
   }
   const internetPassed = ethernetCheckPassed(ethernet);
   if (internetPassed) return { health: "healthy", badgeLabel: "Healthy", primaryLine: "Connected", secondaryLine: "Internet reachable" };
-  if (ethernet.link_detected === false) return { health: "neutral", badgeLabel: "Inactive", primaryLine: "Link down" };
+  if (ethernet.link_detected === false) return { health: "neutral", badgeLabel: "Inactive", primaryLine: "No Ethernet link" };
   if (ethernet.flap_count > 0) return { health: "warning", badgeLabel: "Warning", primaryLine: "Connected", secondaryLine: "Unstable link" };
   if (!ethernet.ip_address) return { health: "error", badgeLabel: "Issue", primaryLine: "Connected", secondaryLine: "No IP assigned" };
   return { health: "warning", badgeLabel: "Warning", primaryLine: "Connected", secondaryLine: "Limited internet" };
@@ -1394,6 +1467,7 @@ function DiagCard({
   const collapsedRecommendation = null;
   const collapsedRecommendationCardsNormalized = collapsedRecommendationCards
     .flatMap((recommendation) => recommendation.split(/\s+(?:•|â€¢|Ã¢â‚¬Â¢)\s+/).filter(Boolean))
+    .map(stripLeadingWarningIcon)
     .filter((value, index, arr) => !!value && arr.indexOf(value) === index);
 
   return (
@@ -1539,10 +1613,10 @@ function DiagCard({
           {cardSignalLabel && <span>{cardSignalLabel}</span>}
         </div>
       )}
-      {collapsedRecommendation && <div className="diag-card-collapsed-reco">⚠ {collapsedRecommendation}</div>}
+      {collapsedRecommendation && <div className="diag-card-collapsed-reco">⚠️ {collapsedRecommendation}</div>}
 
       {collapsedRecommendationCardsNormalized.map((recommendation) => (
-        <div key={`${title}-${recommendation}`} className="diag-card-collapsed-reco">Warning: {recommendation}</div>
+        <div key={`${title}-${recommendation}`} className="diag-card-collapsed-reco">⚠️ {recommendation}</div>
       ))}
 
       {expanded && (
@@ -1739,7 +1813,8 @@ export default function DiagnosticsTab() {
   const [copiedCommandId, setCopiedCommandId] = useState<string | null>(null);
   const [sentCommandId, setSentCommandId] = useState<string | null>(null);
   const [sendError, setSendError] = useState<string | null>(null);
-  const [globalDiagTier, setGlobalDiagTier] = useState<"quick" | "full" | "no-satellite">("quick");
+  const [globalDiagTier, setGlobalDiagTier] = useState<GlobalDiagTier>("quick");
+  const [globalDiagTooltipTier, setGlobalDiagTooltipTier] = useState<GlobalDiagTier | null>(null);
   const [pressureHhc, setPressureHhc] = useState<"mp3" | "hp6">("mp3");
   const [cardHolds, setCardHolds] = useState<Partial<Record<InterfaceKey, HoldState>>>({});
   const cardHoldsRef = useRef<Partial<Record<InterfaceKey, HoldState>>>({});
@@ -1961,8 +2036,8 @@ export default function DiagnosticsTab() {
   const currentFirmware = displayDiag?.system?.version ?? null;
   const firmwareSummary = buildFirmwareSummary(currentFirmware, latestFirmwareVersion);
   const primaryNetwork = resolvePrimaryNetwork({ wifi, cellular, satellite, ethernet, system });
-  const wifiRole = resolveRole("wifi", primaryNetwork, !!(wifi?.connected || wifi?.connman_wifi_connected));
-  const cellularRole = resolveRole("cellular", primaryNetwork, !!(cellular?.connman_cell_connected || cellular?.internet_reachable));
+  const wifiRole = resolveRole("wifi", primaryNetwork, wifiConnectedState(wifi));
+  const cellularRole = resolveRole("cellular", primaryNetwork, cellularConnectedState(cellular));
   const ethernetRole = resolveRole("ethernet", primaryNetwork, !!(ethernet?.link_detected || ethernet?.internet_reachable));
   const isUpdating = (iface: InterfaceKey) => {
     // Pressure has no reliable backend in_progress tracking (no end marker in
@@ -2013,6 +2088,9 @@ export default function DiagnosticsTab() {
     if (!block) return;
     const script = resolveBlockScript(block, "heavy");
     if (!script) return;
+    const rawDiagSnapshot = rawDiag;
+    const displayDiagSnapshot = displayDiag;
+    const cardUpdatedAtSnapshot = cardUpdatedAt;
     try {
       const now = Date.now();
       const touchedInterfaces = interfacesForBlock(block, script);
@@ -2036,6 +2114,36 @@ export default function DiagnosticsTab() {
         supply:       pressureSnap?.sensors?.supply?.count       ?? 0,
       };
       const satelliteBaselineImei = rawDiag?.satellite?.sat_imei ?? null;
+
+      await Promise.all(
+        touchedInterfaces.map((iface) =>
+          invoke("clear_diagnostic_interface", { interface: iface }).catch(() => {}),
+        ),
+      );
+
+      setRawDiag((prev) => {
+        if (!prev) return prev;
+        const next = { ...prev };
+        touchedInterfaces.forEach((iface) => {
+          (next as any)[iface] = null;
+        });
+        return next;
+      });
+      setDisplayDiag((prev) => {
+        if (!prev) return prev;
+        const next = { ...prev };
+        touchedInterfaces.forEach((iface) => {
+          (next as any)[iface] = null;
+        });
+        return next;
+      });
+      setCardUpdatedAt((prev) => {
+        const next = { ...prev };
+        touchedInterfaces.forEach((iface) => {
+          next[iface] = null;
+        });
+        return next;
+      });
 
       setCardHolds((prev) => {
         const next = { ...prev };
@@ -2063,6 +2171,9 @@ export default function DiagnosticsTab() {
       setTimeout(() => setSentCommandId((prev) => (prev === blockId ? null : prev)), 1400);
       setSendError(null);
     } catch (e) {
+      setRawDiag(rawDiagSnapshot);
+      setDisplayDiag(displayDiagSnapshot);
+      setCardUpdatedAt(cardUpdatedAtSnapshot);
       setSendError(String(e) || "Open session first");
     }
   }
@@ -2089,11 +2200,8 @@ export default function DiagnosticsTab() {
     system?.system_type ? system.system_type : null,
   ].filter(Boolean).join(" · ");
   const pressureDiagBlockId = pressureHhc === "hp6" ? "pressure-hp6" : "pressure-mp3";
-  const globalDiagBlockId = globalDiagTier === "full"
-    ? "full-diags"
-    : globalDiagTier === "no-satellite"
-      ? "full-diags-no-sat"
-      : "networking-all";
+  const globalDiagBlockId = GLOBAL_DIAG_MODES[globalDiagTier].blockId;
+  const globalDiagModes = Object.entries(GLOBAL_DIAG_MODES) as [GlobalDiagTier, (typeof GLOBAL_DIAG_MODES)[GlobalDiagTier]][];
 
   function releaseCardHold(iface: InterfaceKey) {
     setCardHolds((prev) => {
@@ -2126,24 +2234,66 @@ export default function DiagnosticsTab() {
           {systemIdentity && <div className="diag-system-line">{systemIdentity}</div>}
           {systemUpdatedAt && <div className="diag-system-line">System updated {systemUpdatedAt}</div>}
           <div className="diag-header-toolbar">
-            <div className="diag-global-tier-group" role="group" aria-label="Diagnostics mode">
-              <button type="button" className={`diag-tier-btn ${globalDiagTier === "quick" ? "diag-tier-btn-active" : ""}`} onClick={() => setGlobalDiagTier("quick")}>Quick</button>
-              <button type="button" className={`diag-tier-btn ${globalDiagTier === "full" ? "diag-tier-btn-active" : ""}`} onClick={() => setGlobalDiagTier("full")}>Full</button>
-              <button type="button" className={`diag-tier-btn ${globalDiagTier === "no-satellite" ? "diag-tier-btn-active" : ""}`} onClick={() => setGlobalDiagTier("no-satellite")}>No satellite</button>
+            <div className="diag-toolbar-section diag-toolbar-section-mode">
+              <span className="diag-toolbar-label">Mode</span>
+              <div className="btn-group" role="group" aria-label="Diagnostics mode">
+                {globalDiagModes.map(([tier, mode], index) => {
+                  const tooltipText = `${mode.label} (${mode.eta})`;
+                  const tooltipId = `diag-mode-tooltip-${tier}`;
+                  const tooltipAlignClass = index === 0
+                    ? "diag-mode-tooltip-align-left"
+                    : index === globalDiagModes.length - 1
+                      ? "diag-mode-tooltip-align-right"
+                      : "";
+                  return (
+                    <div
+                      key={tier}
+                      className="diag-mode-btn-wrap"
+                      onMouseEnter={() => setGlobalDiagTooltipTier(tier)}
+                      onMouseLeave={() => setGlobalDiagTooltipTier((current) => (current === tier ? null : current))}
+                    >
+                      <button
+                        type="button"
+                        className={`btn ${globalDiagTier === tier ? "btn-primary" : "btn-secondary"} diag-mode-btn`}
+                        onClick={() => setGlobalDiagTier(tier)}
+                        onFocus={() => setGlobalDiagTooltipTier(tier)}
+                        onBlur={() => setGlobalDiagTooltipTier((current) => (current === tier ? null : current))}
+                        aria-pressed={globalDiagTier === tier}
+                        aria-describedby={tooltipId}
+                      >
+                        {mode.label}
+                      </button>
+                      <div
+                        id={tooltipId}
+                        role="tooltip"
+                        className={`diag-mode-tooltip ${tooltipAlignClass} ${globalDiagTooltipTier === tier ? "diag-mode-tooltip-visible" : ""}`}
+                      >
+                        <strong>{tooltipText}</strong>
+                        <span>{mode.summary}</span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
             </div>
-            <button className="btn btn-secondary" onClick={() => copyDiagnosticBlock(globalDiagBlockId)}>
-              {copiedCommandId === globalDiagBlockId ? "Copied" : "Copy"}
-            </button>
-            <button className="btn btn-secondary" onClick={() => sendDiagnosticBlock(globalDiagBlockId)}>
-              {sentCommandId === globalDiagBlockId ? "Sent" : "Send"}
-            </button>
+            <div className="diag-toolbar-section">
+              <span className="diag-toolbar-label">Request</span>
+              <div className="btn-group">
+                <button className="btn btn-secondary" onClick={clearCards}>Clear</button>
+                <button className="btn btn-secondary" onClick={() => copyDiagnosticBlock(globalDiagBlockId)}>
+                  {copiedCommandId === globalDiagBlockId ? "Copied" : "Copy"}
+                </button>
+                <button className="btn btn-secondary" onClick={() => sendDiagnosticBlock(globalDiagBlockId)}>
+                  {sentCommandId === globalDiagBlockId ? "Sent" : "Send"}
+                </button>
+              </div>
+            </div>
             {sendError && <div className="warning-item">⚠ {sendError}</div>}
           </div>
         </div>
 
         <div className="diag-header-right">
           <div className="diag-updated">Last updated {lastUpdated ?? "—"}</div>
-          <button className="btn btn-secondary" onClick={clearCards}>Clear</button>
         </div>
       </div>
       {showNoSessionBanner && <div className="diag-empty-sub">Run diagnostics from terminal to populate live cards.</div>}

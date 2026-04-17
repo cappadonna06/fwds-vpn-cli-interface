@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -33,7 +33,9 @@ let closeUnlisten: (() => void) | null = null;
 
 interface AppStatus {
   vpn_phase: string;
+  vpn_detail?: string;
   shell_phase: string;
+  shell_detail?: string;
   controller_ip: string | null;
   connection_mode?: string;
   local_serial_device?: string | null;
@@ -86,6 +88,8 @@ export default function App() {
     sid: null,
     version: null,
   });
+  const [connectionAlert, setConnectionAlert] = useState<string | null>(null);
+  const previousStatusRef = useRef<AppStatus | null>(null);
 
   useEffect(() => {
     const appWindow = getCurrentWindow();
@@ -135,6 +139,55 @@ export default function App() {
     async function fetchStatus() {
       try {
         const s = await invoke<AppStatus>("get_app_state");
+        const previous = previousStatusRef.current;
+        const vpnReady = s.vpn_phase === "connected" || s.vpn_phase === "manual";
+        const previousVpnReady =
+          previous?.vpn_phase === "connected" || previous?.vpn_phase === "manual";
+        const lostVpnUnexpectedly =
+          previous?.connection_mode === "vpn" &&
+          s.connection_mode === "vpn" &&
+          ["starting", "connected", "manual"].includes(previous.vpn_phase) &&
+          ["failed", "disconnected"].includes(s.vpn_phase) &&
+          previous.vpn_phase !== "stopping";
+        const lostControllerUnexpectedly =
+          previous?.connection_mode === "vpn" &&
+          s.connection_mode === "vpn" &&
+          previousVpnReady &&
+          vpnReady &&
+          ["connecting", "connected"].includes(previous.shell_phase) &&
+          ["failed", "disconnected"].includes(s.shell_phase);
+        const lostLocalUnexpectedly =
+          previous?.connection_mode === "local" &&
+          s.connection_mode === "local" &&
+          ["connecting", "connected"].includes(previous.shell_phase) &&
+          ["failed", "disconnected"].includes(s.shell_phase);
+
+        if (lostVpnUnexpectedly && s.vpn_detail) {
+          setConnectionAlert(`OpenVPN connection lost: ${s.vpn_detail}`);
+        } else if (lostControllerUnexpectedly) {
+          if (s.shell_detail === "Controller disconnected") {
+            setConnectionAlert(null);
+          } else if (s.shell_detail === "Terminal window closed" || s.shell_detail === "PuTTY window closed") {
+            setConnectionAlert("Controller window closed. Relaunch from the Connect page.");
+          } else if (s.shell_detail) {
+            setConnectionAlert(`Controller session lost while VPN is still connected: ${s.shell_detail}`);
+          }
+        } else if (lostLocalUnexpectedly) {
+          if (s.shell_detail === "Local session disconnected") {
+            setConnectionAlert(null);
+          } else if (s.shell_detail === "Local session closed") {
+            setConnectionAlert("Local terminal window closed. Reconnect from the Connect page.");
+          } else if (s.shell_detail) {
+            setConnectionAlert(`Local controller session lost: ${s.shell_detail}`);
+          }
+        } else if (
+          (s.connection_mode === "local" && s.shell_phase === "connected") ||
+          (s.connection_mode === "vpn" && vpnReady && s.shell_phase === "connected")
+        ) {
+          setConnectionAlert(null);
+        }
+
+        previousStatusRef.current = s;
         setAppStatus(s);
 
         const diagData = await invoke<DiagnosticStateSnapshot>("get_diagnostic_state");
@@ -150,7 +203,7 @@ export default function App() {
       }
     }
     fetchStatus();
-    const id = setInterval(fetchStatus, 2000);
+    const id = setInterval(fetchStatus, 1000);
     const unlistenSid = listen("controller-sid-detected", () => { fetchStatus(); });
     return () => {
       clearInterval(id);
@@ -158,13 +211,24 @@ export default function App() {
     };
   }, []);
 
-  const showVpn = appStatus.vpn_phase !== "disconnected";
+  const vpnReady = appStatus.vpn_phase === "connected" || appStatus.vpn_phase === "manual";
+  const happyVpnPath =
+    appStatus.connection_mode === "vpn"
+    && Boolean(appStatus.controller_ip)
+    && vpnReady
+    && appStatus.shell_phase === "connected";
   const showLocal = appStatus.connection_mode === "local";
+  const localConnected = showLocal && Boolean(appStatus.local_serial_device);
+  const showVpn = happyVpnPath;
   const vpnState = mapVpnState(appStatus.vpn_phase);
   const localState = mapLocalState(appStatus.connection_mode, appStatus.local_serial_device);
-
-  const controllerDisplay = appStatus.controller_ip ?? appStatus.local_serial_device ?? "No controller";
-  const controllerValid = Boolean(appStatus.controller_ip) || Boolean(appStatus.local_serial_device);
+  const controllerDisplay = localConnected
+    ? appStatus.local_serial_device ?? "No controller"
+    : happyVpnPath
+      ? appStatus.controller_ip ?? "No controller"
+      : "No controller";
+  const controllerTone = happyVpnPath || localConnected ? "valid" : "neutral";
+  const showSystemInfo = happyVpnPath || localConnected;
 
   return (
     <div className="app">
@@ -174,10 +238,24 @@ export default function App() {
         showLocal={showLocal}
         localState={localState}
         controllerDisplay={controllerDisplay}
-        controllerValid={controllerValid}
-        systemSid={systemInfo.sid}
-        systemVersion={systemInfo.version}
+        controllerTone={controllerTone}
+        systemSid={showSystemInfo ? systemInfo.sid : null}
+        systemVersion={showSystemInfo ? systemInfo.version : null}
       />
+
+      {connectionAlert && (
+        <div className="app-alert app-alert-danger" role="alert" aria-live="assertive">
+          <span className="app-alert-copy">{connectionAlert}</span>
+          <button
+            type="button"
+            className="app-alert-dismiss"
+            onClick={() => setConnectionAlert(null)}
+            aria-label="Dismiss connection alert"
+          >
+            ×
+          </button>
+        </div>
+      )}
 
       <div className="app-shell">
         <Sidebar

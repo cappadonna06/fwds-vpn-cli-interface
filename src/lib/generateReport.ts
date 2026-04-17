@@ -13,9 +13,11 @@ type DiagStatus = "unknown" | "grey" | "green" | "orange" | "red";
 interface EthernetDiag {
   status: DiagStatus;
   summary: string;
+  technology_disabled?: boolean;
   link_detected?: boolean | null;
   flap_count?: number;
   internet_reachable?: boolean | null;
+  check_result?: string | null;
 }
 
 interface WifiDiag {
@@ -39,8 +41,12 @@ interface WifiDiag {
 interface CellularDiag {
   status: DiagStatus;
   summary: string;
+  check_result?: string | null;
+  check_error?: string | null;
   connman_cell_connected?: boolean | null;
+  connman_cell_powered?: boolean | null;
   pdp_active?: boolean | null;
+  internet_reachable?: boolean | null;
   sim_inserted?: boolean | null;
   provider_code?: string | null;
   imsi?: string | null;
@@ -72,13 +78,19 @@ interface SimPickerDiag {
 interface SatelliteDiag {
   status: DiagStatus;
   summary: string;
+  modem_present?: boolean | null;
   satellite_state?: string | null;
+  satellites_seen?: number | null;
+  light_test_ran?: boolean;
+  light_test_success?: boolean | null;
   loopback_test_ran?: boolean;
   loopback_test_success?: boolean | null;
   sat_imei?: string | null;
   loopback_duration_seconds?: number | null;
   total_time_seconds?: number | null;
   loopback_packet_loss_pct?: number | null;
+  recommended_action?: string | null;
+  other_actions?: string[] | null;
 }
 
 interface SystemDiag {
@@ -113,10 +125,25 @@ interface AppState {
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function statusEmoji(status: DiagStatus | string): string {
-  return status === "green" ? "✓"
-    : status === "orange" ? "⚠"
-    : status === "red" ? "✗"
-    : "—";
+  if (status === "green") return "✅";
+  if (status === "orange") return "⚠️";
+  if (status === "red") return "❌";
+  return "⏺";
+}
+
+function toReportStatus(status?: DiagStatus | null): "green" | "orange" | "red" | "unknown" {
+  if (status === "green") return "green";
+  if (status === "orange") return "orange";
+  if (status === "red") return "red";
+  return "unknown";
+}
+
+function normalizePressureIssueTitle(title: string): string {
+  return title
+    .replace(/^P3 Source Pressure\b/i, "P3")
+    .replace(/^P2 Distribution Pressure\b/i, "P2")
+    .replace(/^P1 Supply Pressure\b/i, "P1")
+    .trim();
 }
 
 function titleCase(value?: string | null): string | null {
@@ -137,8 +164,33 @@ function qualityLabel(score?: number | null, label?: string | null): string {
   return "No service";
 }
 
+function resolveCarrierCode(code?: string | null): string | null {
+  if (!code) return null;
+  if (!/^\d{5,6}$/.test(code)) return code;
+  const map: Record<string, string> = {
+    "311270": "Verizon", "311271": "Verizon", "311272": "Verizon", "311273": "Verizon",
+    "311274": "Verizon", "311275": "Verizon", "311276": "Verizon", "311277": "Verizon",
+    "311278": "Verizon", "311279": "Verizon", "311280": "Verizon", "311480": "Verizon",
+    "311481": "Verizon", "311482": "Verizon", "311483": "Verizon", "311484": "Verizon",
+    "311485": "Verizon", "311486": "Verizon", "311487": "Verizon", "311488": "Verizon",
+    "311489": "Verizon",
+    "310260": "T-Mobile", "310026": "T-Mobile", "310490": "T-Mobile", "310660": "T-Mobile",
+    "312250": "T-Mobile", "310230": "T-Mobile", "310240": "T-Mobile", "310250": "T-Mobile",
+    "310410": "AT&T", "310380": "AT&T", "310980": "AT&T", "311180": "AT&T",
+    "310030": "AT&T", "310560": "AT&T", "310680": "AT&T",
+    "313100": "FirstNet (AT&T)",
+    "310000": "Dish",
+  };
+  return map[code] ?? code;
+}
+
 function formatEthernetSummary(eth: EthernetDiag): string {
-  if (eth.link_detected === false) return "No link detected";
+  const checkResultLower = (eth.check_result || "").toLowerCase();
+  const notConnected = checkResultLower.startsWith("failure")
+    && (checkResultLower.includes("-65554")
+      || checkResultLower.includes("network technology is not connected"));
+  if (notConnected) return "No Ethernet link";
+  if (eth.link_detected === false) return "No Ethernet link";
   if (eth.status === "grey") return "Inactive — technology disabled";
   if (eth.status === "green") return "Connected";
   if (eth.status === "red") return "No connection";
@@ -146,9 +198,7 @@ function formatEthernetSummary(eth: EthernetDiag): string {
 }
 
 function formatWifiSummary(wifi: WifiDiag): string {
-  const connected = wifi.connected === true
-    || wifi.connman_wifi_connected === true
-    || wifi.internet_reachable === true;
+  const connected = wifiConnectedState(wifi);
 
   if (!connected) {
     // Extract a human-readable reason from the check_result/check_error, e.g.
@@ -191,7 +241,6 @@ function formatSatelliteSummary(sat: SatelliteDiag): string {
       ? "Loopback failed"
       : sat.summary || "Not validated";
   const details: string[] = [];
-  if (sat.sat_imei) details.push(`IMEI ${sat.sat_imei}`);
   const duration = sat.loopback_duration_seconds ?? sat.total_time_seconds;
   if (duration !== null && duration !== undefined) {
     const rounded = Math.round(duration);
@@ -209,24 +258,88 @@ function formatCellSummary(cell: CellularDiag): string {
   if (cell.modem_not_present) return "No modem detected";
   if (cell.modem_unreachable) return "Modem not responding — reboot controller";
 
-  const connected = cell.connman_cell_connected === true || cell.pdp_active === true;
+  const connected = cellularConnectedState(cell);
+  const carrierLabel = resolveCarrierCode(cell.operator_name || cell.provider_code) || "Cellular";
 
   if (!connected) {
     if (cell.sim_inserted === false) return "No SIM detected";
-    if (cell.no_service) {
-      const carrier = cell.operator_name || cell.provider_code || null;
+    if (cellularExplicitNoService(cell)) {
+      const carrier = resolveCarrierCode(cell.operator_name || cell.provider_code);
       return carrier ? `${carrier} — No service` : "No service";
     }
-    const carrier = cell.operator_name || cell.provider_code || null;
+    const carrier = resolveCarrierCode(cell.operator_name || cell.provider_code);
     return carrier ? `${carrier} — Not connected` : "Not connected";
   }
 
-  const carrier = cell.operator_name || cell.provider_code || "Cellular";
   const quality = qualityLabel(cell.strength_score, cell.strength_label);
   const scorePart = cell.strength_score !== null && cell.strength_score !== undefined
     ? ` ${cell.strength_score}/100`
     : "";
-  return `${carrier} · 📶 ${quality}${scorePart}`;
+  return `${carrierLabel} · 📶 ${quality}${scorePart}`;
+}
+
+function wifiHasAuthoritativeCheck(wifi?: WifiDiag | null): boolean {
+  return !!wifi && ((wifi.check_result ?? "Unknown") !== "Unknown" || !!wifi.check_error);
+}
+
+function wifiCheckConnected(wifi?: WifiDiag | null): boolean {
+  return !!wifi
+    && wifi.check_result === "Success"
+    && (wifi.internet_reachable !== false);
+}
+
+function wifiConnectedState(wifi?: WifiDiag | null): boolean {
+  if (!wifi) return false;
+  if (wifiHasAuthoritativeCheck(wifi)) return wifiCheckConnected(wifi);
+  return wifi.connected === true || wifi.connman_wifi_connected === true || wifi.internet_reachable === true;
+}
+
+function wifiReportStatus(wifi?: WifiDiag | null): "green" | "orange" | "red" | "unknown" {
+  if (!wifi) return "unknown";
+  const connected = wifiConnectedState(wifi);
+  const weakByLabel = (wifi.strength_label ?? "").toLowerCase() === "weak";
+  const weakByScore = (wifi.strength_score ?? 0) > 0 && (wifi.strength_score ?? 0) < 25;
+  const notEnabled = (wifi.check_error || "").toLowerCase().includes("-65553")
+    || (wifi.check_error || "").toLowerCase().includes("not enabled")
+    || wifi.connman_wifi_powered === false;
+  if (!connected) return notEnabled ? "orange" : "unknown";
+  if (weakByLabel || weakByScore) return "orange";
+  if (wifi.check_result === "Failure") return "orange";
+  return "green";
+}
+
+function cellularHasAuthoritativeCheck(cell?: CellularDiag | null): boolean {
+  return !!cell && ((cell.check_result ?? "Unknown") !== "Unknown" || !!cell.check_error);
+}
+
+function cellularCheckConnected(cell?: CellularDiag | null): boolean {
+  return !!cell
+    && cell.check_result === "Success"
+    && (cell.internet_reachable !== false);
+}
+
+function cellularConnectedState(cell?: CellularDiag | null): boolean {
+  if (!cell) return false;
+  if (cellularHasAuthoritativeCheck(cell)) return cellularCheckConnected(cell);
+  return cell.connman_cell_connected === true || cell.pdp_active === true || cell.internet_reachable === true;
+}
+
+function cellularExplicitNoService(cell?: CellularDiag | null): boolean {
+  if (!cell) return false;
+  if (cellularConnectedState(cell)) return false;
+  const checkError = (cell.check_error || "").toLowerCase();
+  return cell.no_service === true
+    || checkError.includes("network technology is not connected")
+    || checkError.includes("-65554");
+}
+
+function cellularReportStatus(cell?: CellularDiag | null): "green" | "orange" | "red" | "unknown" {
+  if (!cell) return "unknown";
+  if (cell.modem_not_present || cell.modem_unreachable || cellularExplicitNoService(cell)) return "red";
+  if (cell.sim_inserted === false || cell.connman_cell_powered === false) return "unknown";
+  if (!cellularConnectedState(cell)) return "unknown";
+  if ((cell.strength_score ?? 0) > 0 && (cell.strength_score ?? 0) < 25) return "orange";
+  return "green";
 }
 
 // ── generateActions ───────────────────────────────────────────────────────────
@@ -241,17 +354,19 @@ export function generateActions(
 
   // Diagnostics run — auto-updated each poll, marked so polling can replace just this row
   const diagRun: string[] = [];
-  if (diag.ethernet) diagRun.push(`Ethernet ${statusEmoji(diag.ethernet.status)}`);
-  if (diag.wifi) diagRun.push(`Wi-Fi ${statusEmoji(diag.wifi.status)}`);
-  if (diag.cellular) diagRun.push(`Cellular ${statusEmoji(diag.cellular.status)}`);
-  if (diag.satellite) diagRun.push(`Satellite ${statusEmoji(diag.satellite.status)}`);
-  if (diag.pressure) diagRun.push(`Pressure ${statusEmoji(diag.pressure.status)}`);
+  const networkRows = generateNetworkRows(diag);
+  const networkStatus = Object.fromEntries(networkRows.map(row => [row.interface, row.status])) as Record<NetworkStatusRow["interface"], NetworkStatusRow["status"]>;
+  if (diag.ethernet) diagRun.push(`Ethernet ${statusEmoji(networkStatus.Ethernet)}`);
+  if (diag.wifi) diagRun.push(`Wi-Fi ${statusEmoji(networkStatus["Wi-Fi"])}`);
+  if (diag.cellular) diagRun.push(`Cellular ${statusEmoji(networkStatus.Cellular)}`);
+  if (diag.satellite) diagRun.push(`Satellite ${statusEmoji(networkStatus.Satellite)}`);
+  if (diag.pressure) diagRun.push(`Pressure ${statusEmoji(toReportStatus(diag.pressure.status))}`);
 
   if (diagRun.length > 0) {
     actions.push({
       id: mkId(),
       key: "diagnostics-run",
-      text: `Diagnostics run — ${diagRun.join(" · ")}`,
+      text: `Diagnostics run: ${diagRun.join(" · ")}`,
       dismissed: false,
       autoGenerated: true,
     });
@@ -263,20 +378,11 @@ export function generateActions(
 // ── generateNetworkRows ───────────────────────────────────────────────────────
 
 export function generateNetworkRows(diag: DiagnosticState): NetworkStatusRow[] {
-  const toStatus = (s?: DiagStatus | null): "green" | "orange" | "red" | "unknown" => {
-    if (s === "green") return "green";
-    if (s === "orange") return "orange";
-    if (s === "red") return "red";
-    return "unknown";
-  };
-
   // Mirror the diag card summarize logic: inactive / no-link interfaces show
   // gray ("unknown") rather than the raw backend "red" status, which the backend
   // emits even for simply-unconfigured interfaces. This keeps the report status
   // dots consistent with what the diag cards display.
-  const wifiConnected = diag.wifi?.connected === true
-    || diag.wifi?.connman_wifi_connected === true
-    || diag.wifi?.internet_reachable === true;
+  const wifiConnected = wifiConnectedState(diag.wifi);
   const ethLinked = diag.ethernet?.link_detected === true
     || diag.ethernet?.internet_reachable === true;
 
@@ -290,28 +396,26 @@ export function generateNetworkRows(diag: DiagnosticState): NetworkStatusRow[] {
   return [
     {
       interface: "Ethernet",
-      status: !diag.ethernet ? "unknown" : (ethLinked ? toStatus(diag.ethernet.status) : "unknown"),
+      status: !diag.ethernet ? "unknown" : (ethLinked ? toReportStatus(diag.ethernet.status) : "unknown"),
       summary: diag.ethernet ? formatEthernetSummary(diag.ethernet) : "Diagnostics not collected",
     },
     {
       interface: "Wi-Fi",
       status: !diag.wifi
-        ? "unknown"
-        : wifiConnected
-          ? toStatus(diag.wifi.status)
-          : wifiNotEnabled
-            ? "orange"
+          ? "unknown"
+          : wifiConnected || wifiNotEnabled
+            ? wifiReportStatus(diag.wifi)
             : "unknown",
       summary: diag.wifi ? formatWifiSummary(diag.wifi) : "Diagnostics not collected",
     },
     {
       interface: "Cellular",
-      status: toStatus(diag.cellular?.status),
+      status: cellularReportStatus(diag.cellular),
       summary: diag.cellular ? formatCellSummary(diag.cellular) : "Diagnostics not collected",
     },
     {
       interface: "Satellite",
-      status: toStatus(diag.satellite?.status),
+      status: toReportStatus(diag.satellite?.status),
       summary: diag.satellite ? formatSatelliteSummary(diag.satellite) : "Diagnostics not collected",
     },
   ];
@@ -319,12 +423,6 @@ export function generateNetworkRows(diag: DiagnosticState): NetworkStatusRow[] {
 
 export function generatePressureRows(diag: DiagnosticState): PressureStatusRow[] {
   const PRESSURE_NEAR_ZERO_DISPLAY_THRESHOLD = 0.5;
-  const toStatus = (s?: DiagStatus | null): "green" | "orange" | "red" | "unknown" => {
-    if (s === "green") return "green";
-    if (s === "orange") return "orange";
-    if (s === "red") return "red";
-    return "unknown";
-  };
   const pressure = diag.pressure;
   const source = pressure?.sensors?.source?.latest;
   const distribution = pressure?.sensors?.distribution?.latest;
@@ -337,16 +435,16 @@ export function generatePressureRows(diag: DiagnosticState): PressureStatusRow[]
   const formatDistribution = (v: number) =>
     Math.abs(v) < PRESSURE_NEAR_ZERO_DISPLAY_THRESHOLD ? "~0.0 PSI" : `${v.toFixed(2)} PSI`;
   const readingParts: string[] = [];
-  if (hasValidSource(source)) readingParts.push(`P3 Source Pressure ${source!.toFixed(2)} PSI`);
-  if (hasReportableDistribution(distribution)) readingParts.push(`P2 Distribution Pressure ${formatDistribution(distribution!)}`);
-  const issueTitles = (pressure?.issues ?? []).map((i) => i.title).join(", ");
+  if (hasValidSource(source)) readingParts.push(`P3 ${source!.toFixed(2)} PSI`);
+  if (hasReportableDistribution(distribution)) readingParts.push(`P2 ${formatDistribution(distribution!)}`);
+  const issueTitles = (pressure?.issues ?? []).map((i) => normalizePressureIssueTitle(i.title)).join(" · ");
   const summary = readingParts.length > 0
     ? `${issueTitles ? `${issueTitles} · ` : ""}${readingParts.join(" · ")}`
     : pressure?.summary ?? "Diagnostics not collected";
 
   return [{
     label: "System Pressure",
-    status: toStatus(pressure?.status),
+    status: toReportStatus(pressure?.status),
     summary,
   }];
 }
@@ -443,7 +541,7 @@ export function generateRecommendedActions(
 
       const noService = !cell.connman_cell_connected && !cell.pdp_active;
 
-      if (noService && !cell.sim_inserted) {
+      if (noService && cell.sim_inserted === false) {
         actions.push({
           id: mkId(), interface: "Cellular",
           text: "Check SIM card is seated correctly",
@@ -470,19 +568,17 @@ export function generateRecommendedActions(
               dismissed: false, checked: false, custom: false,
             });
           }
-        } else if (!sp?.scan_attempted) {
-          // Suggest running SIM Picker
-          actions.push({
-            id: mkId(), interface: "Cellular",
-            text: "Run SIM Picker to check carrier coverage",
-            detail: "No service detected. Copy the SIM Picker command block to find out which carrier has coverage at this location.",
-            dismissed: false, checked: false, custom: false,
-          });
         } else {
           actions.push({
             id: mkId(), interface: "Cellular",
             text: "Check coverage area and antenna",
             detail: "SIM detected but no network service. Verify antenna connection and site coverage.",
+            dismissed: false, checked: false, custom: false,
+          });
+          actions.push({
+            id: mkId(), interface: "Cellular",
+            text: "Reboot controller",
+            detail: "After checking coverage and antenna, reboot and retry cellular diagnostics.",
             dismissed: false, checked: false, custom: false,
           });
         }
@@ -500,40 +596,82 @@ export function generateRecommendedActions(
   // ── SATELLITE ─────────────────────────────────────────────────────────────
   if (diag.satellite) {
     const sat = diag.satellite;
+    const addSatelliteAction = (text: string, detail = "") => {
+      if (!text.trim()) return;
+      const exists = actions.some((action) =>
+        action.interface === "Satellite"
+        && action.text === text
+        && action.detail === detail
+      );
+      if (exists) return;
+      actions.push({
+        id: mkId(), interface: "Satellite",
+        text,
+        detail,
+        dismissed: false, checked: false, custom: false,
+      });
+    };
 
+    const satelliteDetails = new Map<string, string>();
+    if (sat.modem_present === false) {
+      satelliteDetails.set("Check satellite modem / hardware connection", "No satellite modem detected. Verify the modem is present, seated, and connected.");
+      satelliteDetails.set("Reboot controller", "After checking the modem/hardware connection, reboot and rerun satellite diagnostics.");
+    }
     if (sat.satellite_state === "manager_unresponsive") {
-      actions.push({
-        id: mkId(), interface: "Satellite",
-        text: "Reboot controller and retry satellite loopback test",
-        detail: "satellite-check -t returned \"Network Manager\" never responded.",
-        dismissed: false, checked: false, custom: false,
-      });
-      actions.push({
-        id: mkId(), interface: "Satellite",
-        text: "Re-run satellite setup and retry test",
-        detail: "Refresh satellite configuration before rerunning the loopback test.",
-        dismissed: false, checked: false, custom: false,
-      });
-      actions.push({
-        id: mkId(), interface: "Satellite",
-        text: "If issue persists, reinstall firmware, reconfigure controller, rerun satellite setup, and retry test",
-        detail: "Use this when the Network Manager response failure survives reboot and setup retry.",
-        dismissed: false, checked: false, custom: false,
-      });
-    } else if (sat.status === "red" && sat.loopback_test_success === false) {
-      actions.push({
-        id: mkId(), interface: "Satellite",
-        text: "Check antenna cabling and sky view",
-        detail: "Loopback test failed. Verify N-type connector is hand-tight, cable has no sharp bends, and antenna has clear unobstructed sky view.",
-        dismissed: false, checked: false, custom: false,
-      });
-    } else if (sat.status === "orange" && !sat.loopback_test_ran) {
-      actions.push({
-        id: mkId(), interface: "Satellite",
-        text: "Run satellite-check -t to verify connectivity",
-        detail: "Satellite configured but loopback not yet tested this session.",
-        dismissed: false, checked: false, custom: false,
-      });
+      satelliteDetails.set("Reboot controller and retry satellite loopback test", "satellite-check -t returned \"Network Manager\" never responded.");
+      satelliteDetails.set("Re-run satellite setup and retry test", "Refresh satellite configuration before rerunning the loopback test.");
+      satelliteDetails.set("If issue persists, reinstall firmware, reconfigure controller, rerun satellite setup, and retry test", "Use this when the Network Manager response failure survives reboot and setup retry.");
+    }
+    if (sat.loopback_test_ran && sat.loopback_test_success === false) {
+      satelliteDetails.set("Check antenna placement and provisioning", "Loopback test failed. Verify provisioning, connector integrity, and unobstructed sky view.");
+      satelliteDetails.set("Move antenna to clear sky", "Ensure the antenna has a clear, unobstructed view of the sky.");
+      satelliteDetails.set("Retry loopback test", "Re-run the full loopback test after correcting antenna placement or provisioning issues.");
+      satelliteDetails.set("Retry when satellite service is not in use", "Retry once the satellite service is idle so the loopback test can run.");
+    }
+    if ((sat.satellites_seen ?? null) === 0) {
+      satelliteDetails.set("Check antenna placement and connection", "No satellites are visible. Verify cable connection and antenna placement.");
+      satelliteDetails.set("Move antenna to clear sky", "Ensure the antenna has a clear, unobstructed view of the sky.");
+      satelliteDetails.set("Retry quick satellite check", "Run a quick satellite check again after improving placement.");
+    }
+    if (sat.light_test_ran && sat.light_test_success === false) {
+      satelliteDetails.set("Run full loopback test for details", "Quick satellite check failed. Run the full loopback test for a more specific diagnosis.");
+    }
+    if (sat.modem_present === true && sat.status !== "green") {
+      satelliteDetails.set("Run full satellite loopback test", "Satellite hardware is present but this session does not yet include a full loopback verification.");
+    }
+
+    const parserDrivenActions = [
+      sat.recommended_action,
+      ...((sat.other_actions ?? []).filter(Boolean)),
+    ].filter((value): value is string => !!value);
+
+    for (const text of parserDrivenActions) {
+      addSatelliteAction(text, satelliteDetails.get(text) ?? "");
+    }
+
+    if (parserDrivenActions.length === 0 && sat.satellite_state === "manager_unresponsive") {
+      addSatelliteAction(
+        "Reboot controller and retry satellite loopback test",
+        "satellite-check -t returned \"Network Manager\" never responded.",
+      );
+      addSatelliteAction(
+        "Re-run satellite setup and retry test",
+        "Refresh satellite configuration before rerunning the loopback test.",
+      );
+      addSatelliteAction(
+        "If issue persists, reinstall firmware, reconfigure controller, rerun satellite setup, and retry test",
+        "Use this when the Network Manager response failure survives reboot and setup retry.",
+      );
+    } else if (parserDrivenActions.length === 0 && sat.status === "red" && sat.loopback_test_success === false) {
+      addSatelliteAction(
+        "Check antenna cabling and sky view",
+        "Loopback test failed. Verify N-type connector is hand-tight, cable has no sharp bends, and antenna has clear unobstructed sky view.",
+      );
+    } else if (parserDrivenActions.length === 0 && sat.status === "orange" && !sat.loopback_test_ran) {
+      addSatelliteAction(
+        "Run satellite-check -t to verify connectivity",
+        "Satellite configured but loopback not yet tested this session.",
+      );
     }
   }
 
@@ -567,6 +705,41 @@ export function generateRecommendedActions(
   });
 }
 
+function slackStatusDot(status: "green" | "orange" | "red" | "unknown"): string {
+  if (status === "green") return "🟢";
+  if (status === "orange") return "🟠";
+  if (status === "red") return "🔴";
+  return "⚪";
+}
+
+function parsePressureSummary(row: PressureStatusRow): {
+  dot: string;
+  label: string;
+  statusText: string;
+  details: Array<{ label: string; value: string }>;
+} {
+  const parts = row.summary.split(" · ").map(part => part.trim()).filter(Boolean);
+  const measurementParts = parts.filter(part => /^P\d\s+.+\bPSI$/i.test(part));
+  const statusParts = parts.filter(part => !/^P\d\s+.+\bPSI$/i.test(part));
+  const details = measurementParts.map((part) => {
+    const match = /^P(\d)\s+(.+)$/i.exec(part);
+    if (!match) return { label: part, value: "" };
+    const label = match[1] === "1"
+      ? "P1 Supply"
+      : match[1] === "2"
+        ? "P2 Distribution"
+        : "P3 Source";
+    return { label, value: match[2] };
+  });
+
+  return {
+    dot: slackStatusDot(row.status),
+    label: row.label,
+    statusText: statusParts.join(" · ").trim(),
+    details,
+  };
+}
+
 // ── formatSlack ───────────────────────────────────────────────────────────────
 
 export function formatSlack(report: SessionReport): string {
@@ -579,16 +752,18 @@ export function formatSlack(report: SessionReport): string {
   const visibleActions = report.actions.filter(a => !a.dismissed);
   if (visibleActions.length > 0) {
     lines.push("*Actions*");
-    visibleActions.forEach(a => lines.push(`• ${a.text}`));
+    visibleActions.forEach(a => {
+      const text = a.text.startsWith("Diagnostics run:")
+        ? a.text.replace("Diagnostics run:", "*Diagnostics run:*")
+        : a.text;
+      lines.push(`• ${text}`);
+    });
     lines.push("");
   }
 
   lines.push("*Network*");
   report.networkRows.forEach(row => {
-    const dot = row.status === "green" ? "🟢"
-      : row.status === "orange" ? "🟠"
-      : row.status === "red" ? "🔴"
-      : "⚪";
+    const dot = slackStatusDot(row.status);
     const note = report.networkNotes[row.interface];
     const noteSuffix = note ? ` — ${note}` : "";
     lines.push(`${dot} *${row.interface}*: ${row.summary}${noteSuffix}`);
@@ -598,11 +773,11 @@ export function formatSlack(report: SessionReport): string {
   if (report.pressureRows.length > 0) {
     lines.push("*Pressure Readings*");
     report.pressureRows.forEach(row => {
-      const dot = row.status === "green" ? "🟢"
-        : row.status === "orange" ? "🟠"
-        : row.status === "red" ? "🔴"
-        : "⚪";
-      lines.push(`${dot} *${row.label}*: ${row.summary}`);
+      const pressure = parsePressureSummary(row);
+      lines.push(pressure.statusText
+        ? `${pressure.dot}*${pressure.label}* — ${pressure.statusText}`
+        : `${pressure.dot}*${pressure.label}*`);
+      pressure.details.forEach(detail => lines.push(`• *${detail.label}:* ${detail.value}`));
     });
     lines.push("");
   }
@@ -612,8 +787,8 @@ export function formatSlack(report: SessionReport): string {
     lines.push("*Recommended Actions*");
     visibleRecs.forEach(a => {
       const checkbox = a.checked ? "✓" : "☐";
-      lines.push(`${checkbox} ${a.interface} — ${a.text}`);
-      if (a.detail) lines.push(`  ${a.detail}`);
+      lines.push(`${checkbox} *${a.interface}* — ${a.text}`);
+      if (a.detail) lines.push(`  • ${a.detail}`);
     });
     lines.push("");
   }
@@ -630,6 +805,86 @@ export function formatSlack(report: SessionReport): string {
   lines.push(`*Outcome:* ${outcomeLabel}`);
 
   return lines.join("\n");
+}
+
+function escapeSlackHtml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+export function formatSlackHtml(report: SessionReport): string {
+  const blocks: string[] = [];
+  const pushLine = (content = "") => {
+    blocks.push(content ? `<div>${content}</div>` : "<div><br></div>");
+  };
+
+  pushLine(`<b>${escapeSlackHtml(`Controller Session — ${report.date}`)}</b>`);
+  pushLine(`<b>SID:</b> ${escapeSlackHtml(report.sid || "—")} · ${escapeSlackHtml(report.version || "—")}`);
+  pushLine();
+
+  const visibleActions = report.actions.filter(a => !a.dismissed);
+  if (visibleActions.length > 0) {
+    pushLine("<b><u>Actions</u></b>");
+    visibleActions.forEach(a => {
+      if (a.text.startsWith("Diagnostics run:")) {
+        const suffix = a.text.slice("Diagnostics run:".length);
+        pushLine(`• <b>Diagnostics run:</b>${escapeSlackHtml(suffix)}`);
+        return;
+      }
+      pushLine(escapeSlackHtml(`• ${a.text}`));
+    });
+    pushLine();
+  }
+
+  pushLine("<b><u>Network</u></b>");
+  report.networkRows.forEach(row => {
+    const note = report.networkNotes[row.interface];
+    const noteSuffix = note ? ` — ${note}` : "";
+    pushLine(`${escapeSlackHtml(`${slackStatusDot(row.status)} `)}<b>${escapeSlackHtml(`${row.interface}:`)}</b> ${escapeSlackHtml(`${row.summary}${noteSuffix}`)}`);
+  });
+  pushLine();
+
+  if (report.pressureRows.length > 0) {
+    pushLine("<b><u>Pressure Readings</u></b>");
+    report.pressureRows.forEach(row => {
+      const pressure = parsePressureSummary(row);
+      pushLine(
+        pressure.statusText
+          ? `${escapeSlackHtml(`${pressure.dot}`)}<b>${escapeSlackHtml(pressure.label)}</b> — ${escapeSlackHtml(pressure.statusText)}`
+          : `${escapeSlackHtml(`${pressure.dot}`)}<b>${escapeSlackHtml(pressure.label)}</b>`
+      );
+      pressure.details.forEach(detail => {
+        pushLine(`• <b>${escapeSlackHtml(`${detail.label}:`)}</b> ${escapeSlackHtml(detail.value)}`);
+      });
+    });
+    pushLine();
+  }
+
+  const visibleRecs = report.recommendedActions.filter(a => !a.dismissed);
+  if (visibleRecs.length > 0) {
+    pushLine("<b><u>Recommended Actions</u></b>");
+    visibleRecs.forEach(a => {
+      const checkbox = a.checked ? "✓" : "☐";
+      pushLine(`${escapeSlackHtml(`${checkbox} `)}<b>${escapeSlackHtml(a.interface)}</b> ${escapeSlackHtml(`— ${a.text}`)}`);
+      if (a.detail) pushLine(escapeSlackHtml(`  • ${a.detail}`));
+    });
+    pushLine();
+  }
+
+  if (report.notes.trim()) {
+    pushLine("<b>Notes</b>");
+    pushLine(escapeSlackHtml(report.notes.trim()));
+    pushLine();
+  }
+
+  const outcomeLabel = report.outcome === "complete" ? "Complete"
+    : report.outcome === "escalated" ? "Escalated"
+    : "Follow-up needed";
+  pushLine(`<b>Outcome:</b> ${escapeSlackHtml(outcomeLabel)}`);
+
+  return `<meta charset="utf-8">${blocks.join("")}`;
 }
 
 // ── formatJira ────────────────────────────────────────────────────────────────
