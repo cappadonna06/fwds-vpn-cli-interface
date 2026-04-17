@@ -13,6 +13,7 @@ import {
   generatePressureRows,
   generateRecommendedActions,
   formatSlack,
+  formatSlackHtml,
   formatJira,
 } from "../../lib/generateReport";
 
@@ -35,7 +36,7 @@ const STATUS_EMOJI: Record<string, string> = {
 
 // ── SlackPreview ──────────────────────────────────────────────────────────────
 
-function SlackPreview({ report }: { report: SessionReport }) {
+export function SlackPreview({ report }: { report: SessionReport }) {
   const visibleActions = report.actions.filter(a => !a.dismissed && a.text.trim());
   const visibleRecs = report.recommendedActions.filter(a => !a.dismissed);
 
@@ -148,14 +149,13 @@ function SlackPreview({ report }: { report: SessionReport }) {
 
 // ── Clipboard helper ──────────────────────────────────────────────────────────
 
-function slackToHtml(text: string): string {
-  const safe = text
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
-  return '<meta charset="utf-8">' + safe
-    .replace(/\*([^*\n]+)\*/g, "<b>$1</b>")
-    .replace(/\n/g, "<br>\n");
+function SlackPreviewExact({ report }: { report: SessionReport }) {
+  return (
+    <div
+      className="report-preview-body"
+      dangerouslySetInnerHTML={{ __html: formatSlackHtml(report) }}
+    />
+  );
 }
 
 // ── Quick-select action templates ─────────────────────────────────────────────
@@ -237,11 +237,19 @@ function NetworkNoteInput({ value, onChange }: { value: string; onChange: (v: st
 function ActionTextInput({ value, onCommit, placeholder }: { value: string; onCommit: (v: string) => void; placeholder: string }) {
   const [local, setLocal] = useState(value);
   const focused = useRef(false);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   useEffect(() => { if (!focused.current) setLocal(value); }, [value]);
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = "0px";
+    el.style.height = `${el.scrollHeight}px`;
+  }, [local]);
   return (
-    <input
+    <textarea
+      ref={textareaRef}
       className="report-action-input"
-      type="text"
+      rows={1}
       value={local}
       placeholder={placeholder}
       onChange={e => setLocal(e.target.value)}
@@ -904,7 +912,7 @@ export default function ReportTab() {
             <div className="report-preview-label">
               <span>📨</span> Slack Preview
             </div>
-            <SlackPreview report={previewReport} />
+            <SlackPreviewExact report={previewReport} />
           </div>
 
         </div>
@@ -919,7 +927,7 @@ export default function ReportTab() {
               const text = formatSlack(report);
               navigator.clipboard.write([
                 new ClipboardItem({
-                  "text/html":  new Blob([slackToHtml(text)], { type: "text/html" }),
+                  "text/html":  new Blob([formatSlackHtml(report)], { type: "text/html" }),
                   "text/plain": new Blob([text],              { type: "text/plain" }),
                 }),
               ]).catch(() => navigator.clipboard.writeText(text));
