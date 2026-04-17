@@ -27,6 +27,8 @@ use parsers::parse_log_into_state;
 
 const VPN_CONNECT_TIMEOUT: Duration = Duration::from_secs(25);
 const VPN_STOP_TIMEOUT: Duration = Duration::from_secs(8);
+#[cfg(target_os = "windows")]
+const VPN_STALE_CLEANUP_TIMEOUT: Duration = Duration::from_secs(4);
 const VPN_LOG_LIMIT: usize = 500;
 
 // ── State ─────────────────────────────────────────────────────────────────────
