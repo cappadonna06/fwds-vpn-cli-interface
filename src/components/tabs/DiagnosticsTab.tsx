@@ -6,6 +6,37 @@ import { sendCommandText } from "../../lib/commandActions";
 
 type DiagStatus = "grey" | "green" | "orange" | "red" | "unknown";
 type HealthTone = "healthy" | "warning" | "error" | "neutral";
+type GlobalDiagTier = "quick" | "full" | "no-satellite";
+
+const GLOBAL_DIAG_MODES: Record<GlobalDiagTier, {
+  label: string;
+  blockId: string;
+  tooltipTitle: string;
+  summary: string;
+  eta: string;
+}> = {
+  quick: {
+    label: "Quick",
+    blockId: "networking-all",
+    tooltipTitle: "Quick diagnostics",
+    summary: "Ethernet, Wi-Fi, cellular, and satellite basic checks. Skips the satellite loopback test.",
+    eta: "~1-2 minutes",
+  },
+  full: {
+    label: "Full",
+    blockId: "full-diags",
+    tooltipTitle: "Full diagnostics",
+    summary: "All network diagnostics, satellite loopback, pressure readings, and system configuration checks.",
+    eta: "~10-12 minutes",
+  },
+  "no-satellite": {
+    label: "Full (No Loopback)",
+    blockId: "full-diags-no-sat",
+    tooltipTitle: "Full diagnostics without loopback",
+    summary: "Full diagnostics with satellite basic checks, pressure readings, and system configuration. Skips the long satellite loopback test.",
+    eta: "~2-3 minutes",
+  },
+};
 
 interface WifiDiagnostic {
   status: DiagStatus;
@@ -1782,7 +1813,8 @@ export default function DiagnosticsTab() {
   const [copiedCommandId, setCopiedCommandId] = useState<string | null>(null);
   const [sentCommandId, setSentCommandId] = useState<string | null>(null);
   const [sendError, setSendError] = useState<string | null>(null);
-  const [globalDiagTier, setGlobalDiagTier] = useState<"quick" | "full" | "no-satellite">("quick");
+  const [globalDiagTier, setGlobalDiagTier] = useState<GlobalDiagTier>("quick");
+  const [globalDiagTooltipTier, setGlobalDiagTooltipTier] = useState<GlobalDiagTier | null>(null);
   const [pressureHhc, setPressureHhc] = useState<"mp3" | "hp6">("mp3");
   const [cardHolds, setCardHolds] = useState<Partial<Record<InterfaceKey, HoldState>>>({});
   const cardHoldsRef = useRef<Partial<Record<InterfaceKey, HoldState>>>({});
@@ -2168,11 +2200,8 @@ export default function DiagnosticsTab() {
     system?.system_type ? system.system_type : null,
   ].filter(Boolean).join(" · ");
   const pressureDiagBlockId = pressureHhc === "hp6" ? "pressure-hp6" : "pressure-mp3";
-  const globalDiagBlockId = globalDiagTier === "full"
-    ? "full-diags"
-    : globalDiagTier === "no-satellite"
-      ? "full-diags-no-sat"
-      : "networking-all";
+  const globalDiagBlockId = GLOBAL_DIAG_MODES[globalDiagTier].blockId;
+  const globalDiagModes = Object.entries(GLOBAL_DIAG_MODES) as [GlobalDiagTier, (typeof GLOBAL_DIAG_MODES)[GlobalDiagTier]][];
 
   function releaseCardHold(iface: InterfaceKey) {
     setCardHolds((prev) => {
@@ -2205,24 +2234,66 @@ export default function DiagnosticsTab() {
           {systemIdentity && <div className="diag-system-line">{systemIdentity}</div>}
           {systemUpdatedAt && <div className="diag-system-line">System updated {systemUpdatedAt}</div>}
           <div className="diag-header-toolbar">
-            <div className="diag-global-tier-group" role="group" aria-label="Diagnostics mode">
-              <button type="button" className={`diag-tier-btn ${globalDiagTier === "quick" ? "diag-tier-btn-active" : ""}`} onClick={() => setGlobalDiagTier("quick")}>Quick</button>
-              <button type="button" className={`diag-tier-btn ${globalDiagTier === "full" ? "diag-tier-btn-active" : ""}`} onClick={() => setGlobalDiagTier("full")}>Full</button>
-              <button type="button" className={`diag-tier-btn ${globalDiagTier === "no-satellite" ? "diag-tier-btn-active" : ""}`} onClick={() => setGlobalDiagTier("no-satellite")}>No satellite</button>
+            <div className="diag-toolbar-section diag-toolbar-section-mode">
+              <span className="diag-toolbar-label">Mode</span>
+              <div className="btn-group" role="group" aria-label="Diagnostics mode">
+                {globalDiagModes.map(([tier, mode], index) => {
+                  const tooltipText = `${mode.label} (${mode.eta})`;
+                  const tooltipId = `diag-mode-tooltip-${tier}`;
+                  const tooltipAlignClass = index === 0
+                    ? "diag-mode-tooltip-align-left"
+                    : index === globalDiagModes.length - 1
+                      ? "diag-mode-tooltip-align-right"
+                      : "";
+                  return (
+                    <div
+                      key={tier}
+                      className="diag-mode-btn-wrap"
+                      onMouseEnter={() => setGlobalDiagTooltipTier(tier)}
+                      onMouseLeave={() => setGlobalDiagTooltipTier((current) => (current === tier ? null : current))}
+                    >
+                      <button
+                        type="button"
+                        className={`btn ${globalDiagTier === tier ? "btn-primary" : "btn-secondary"} diag-mode-btn`}
+                        onClick={() => setGlobalDiagTier(tier)}
+                        onFocus={() => setGlobalDiagTooltipTier(tier)}
+                        onBlur={() => setGlobalDiagTooltipTier((current) => (current === tier ? null : current))}
+                        aria-pressed={globalDiagTier === tier}
+                        aria-describedby={tooltipId}
+                      >
+                        {mode.label}
+                      </button>
+                      <div
+                        id={tooltipId}
+                        role="tooltip"
+                        className={`diag-mode-tooltip ${tooltipAlignClass} ${globalDiagTooltipTier === tier ? "diag-mode-tooltip-visible" : ""}`}
+                      >
+                        <strong>{tooltipText}</strong>
+                        <span>{mode.summary}</span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
             </div>
-            <button className="btn btn-secondary" onClick={() => copyDiagnosticBlock(globalDiagBlockId)}>
-              {copiedCommandId === globalDiagBlockId ? "Copied" : "Copy"}
-            </button>
-            <button className="btn btn-secondary" onClick={() => sendDiagnosticBlock(globalDiagBlockId)}>
-              {sentCommandId === globalDiagBlockId ? "Sent" : "Send"}
-            </button>
+            <div className="diag-toolbar-section">
+              <span className="diag-toolbar-label">Request</span>
+              <div className="btn-group">
+                <button className="btn btn-secondary" onClick={clearCards}>Clear</button>
+                <button className="btn btn-secondary" onClick={() => copyDiagnosticBlock(globalDiagBlockId)}>
+                  {copiedCommandId === globalDiagBlockId ? "Copied" : "Copy"}
+                </button>
+                <button className="btn btn-secondary" onClick={() => sendDiagnosticBlock(globalDiagBlockId)}>
+                  {sentCommandId === globalDiagBlockId ? "Sent" : "Send"}
+                </button>
+              </div>
+            </div>
             {sendError && <div className="warning-item">⚠ {sendError}</div>}
           </div>
         </div>
 
         <div className="diag-header-right">
           <div className="diag-updated">Last updated {lastUpdated ?? "—"}</div>
-          <button className="btn btn-secondary" onClick={clearCards}>Clear</button>
         </div>
       </div>
       {showNoSessionBanner && <div className="diag-empty-sub">Run diagnostics from terminal to populate live cards.</div>}

@@ -177,7 +177,7 @@
 }
 
 .app-sidebar {
-  width: 260px;
+  width: clamp(224px, 16vw, 248px);
   background: var(--bg-1);
   border-right: 1px solid var(--border);
   display: flex;

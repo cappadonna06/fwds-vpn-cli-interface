@@ -2628,40 +2628,90 @@
 .diag-header-toolbar {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 16px;
   flex-wrap: wrap;
 }
 
-.diag-global-tier-group {
-  display: inline-flex;
+.diag-toolbar-section {
+  display: flex;
   align-items: center;
-  gap: 0;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: var(--bg-2);
-  padding: 2px;
+  gap: 10px;
+  flex-wrap: wrap;
 }
 
-.diag-tier-btn {
-  border: none;
-  background: transparent;
-  color: var(--text-secondary);
-  border-radius: 999px;
-  padding: 5px 11px;
+.diag-toolbar-section-mode {
+  align-items: center;
+}
+
+.diag-toolbar-label {
   font-size: 12px;
-  font-weight: 560;
-  cursor: pointer;
-  transition: background 120ms ease, color 120ms ease;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
 }
 
-.diag-tier-btn:not(.diag-tier-btn-active):hover {
-  background: color-mix(in srgb, var(--accent) 8%, transparent);
+.diag-mode-btn {
+  white-space: nowrap;
+}
+
+.diag-mode-btn-wrap {
+  position: relative;
+  display: inline-flex;
+}
+
+.diag-mode-tooltip {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%) translateY(-2px);
+  min-width: 240px;
+  max-width: 320px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border-soft);
+  background: color-mix(in srgb, var(--bg-1) 96%, white);
+  box-shadow: 0 8px 22px rgba(15, 23, 42, 0.12);
+  font-size: 12px;
+  line-height: 1.4;
   color: var(--text-primary);
+  opacity: 0;
+  pointer-events: none;
+  visibility: hidden;
+  transition: opacity 100ms ease, transform 100ms ease;
+  z-index: 260;
 }
 
-.diag-tier-btn-active {
-  color: #fff;
-  background: var(--accent);
+.diag-mode-tooltip-align-left {
+  left: 0;
+  transform: translateX(0) translateY(-2px);
+}
+
+.diag-mode-tooltip-align-right {
+  left: auto;
+  right: 0;
+  transform: translateX(0) translateY(-2px);
+}
+
+.diag-mode-tooltip strong,
+.diag-mode-tooltip span {
+  display: block;
+}
+
+.diag-mode-tooltip span {
+  margin-top: 2px;
+  color: var(--text-secondary);
+}
+
+.diag-mode-tooltip-visible {
+  opacity: 1;
+  visibility: visible;
+  transform: translateX(-50%) translateY(0);
+}
+
+.diag-mode-tooltip-align-left.diag-mode-tooltip-visible,
+.diag-mode-tooltip-align-right.diag-mode-tooltip-visible {
+  transform: translateX(0) translateY(0);
 }
 
 .diag-empty-title {
