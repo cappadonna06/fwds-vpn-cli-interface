@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo, useDeferredValue } from "react";
+import { useState, useEffect, useRef, useMemo, useDeferredValue, useLayoutEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import {
@@ -238,13 +238,44 @@ function ActionTextInput({ value, onCommit, placeholder }: { value: string; onCo
   const [local, setLocal] = useState(value);
   const focused = useRef(false);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
-  useEffect(() => { if (!focused.current) setLocal(value); }, [value]);
-  useEffect(() => {
+  const resizeTextarea = () => {
     const el = textareaRef.current;
     if (!el) return;
-    el.style.height = "0px";
+    el.style.height = "auto";
     el.style.height = `${el.scrollHeight}px`;
-  }, [local]);
+  };
+
+  useLayoutEffect(() => {
+    if (!focused.current) setLocal(value);
+  }, [value]);
+
+  useLayoutEffect(() => {
+    resizeTextarea();
+    const raf = window.requestAnimationFrame(resizeTextarea);
+    return () => window.cancelAnimationFrame(raf);
+  }, [local, value]);
+
+  useLayoutEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+
+    const handleResize = () => resizeTextarea();
+    const observer = typeof ResizeObserver !== "undefined"
+      ? new ResizeObserver(() => handleResize())
+      : null;
+
+    observer?.observe(el);
+    if (el.parentElement) observer?.observe(el.parentElement);
+    window.addEventListener("resize", handleResize);
+
+    const raf = window.requestAnimationFrame(handleResize);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener("resize", handleResize);
+      window.cancelAnimationFrame(raf);
+    };
+  }, []);
+
   return (
     <textarea
       ref={textareaRef}
@@ -252,7 +283,10 @@ function ActionTextInput({ value, onCommit, placeholder }: { value: string; onCo
       rows={1}
       value={local}
       placeholder={placeholder}
-      onChange={e => setLocal(e.target.value)}
+      onChange={e => {
+        setLocal(e.target.value);
+        resizeTextarea();
+      }}
       onFocus={() => { focused.current = true; }}
       onBlur={() => { focused.current = false; onCommit(local); }}
     />
@@ -675,7 +709,6 @@ export default function ReportTab() {
               )}
               {visibleActions.map((action, index) => (
                 <div key={action.id} className="report-action-row">
-                  <span className="report-action-bullet">•</span>
                   <div className="report-reorder-controls" aria-label="Reorder action">
                     <button
                       type="button"
@@ -698,6 +731,7 @@ export default function ReportTab() {
                       ↓
                     </button>
                   </div>
+                  <span className="report-action-bullet">•</span>
                   <ActionTextInput
                     value={action.text}
                     placeholder="Describe action…"

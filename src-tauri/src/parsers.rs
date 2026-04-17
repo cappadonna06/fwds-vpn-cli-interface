@@ -1265,6 +1265,40 @@ Done: Success
     }
 
     #[test]
+    fn wifi_partial_full_block_scopes_past_ethernet_not_connected_failure() {
+        let mut state = DiagnosticState::default();
+        let log = r#"2026-04-17T15:09:09-0600 [45230110]# (
+> echo "===== ETH DIAGNOSTICS START ====="
+> ethernet-check
+> echo "===== ETH DIAGNOSTICS END ====="
+> echo "===== WIFI DIAGNOSTICS START ====="
+> wifi-check
+> wifi-signal
+> )
+===== ETH DIAGNOSTICS START =====
+Testing Ethernet...
+Done: Failure: -65554: Network technology is not connected
+===== ETH DIAGNOSTICS END =====
+===== WIFI DIAGNOSTICS START =====
+Testing Wi-Fi...
+Internet reachability state: online
+Wi-Fi state: online
+Wi-Fi access point: lieberells
+Wi-Fi strength: 39/100 ("weak")
+Done: Success
+"wlan0" signal strength: -81 dBm
+"#;
+        parse_log_into_state(log, &mut state);
+
+        let wifi = state.wifi.expect("wifi should parse from partial scoped section");
+        assert_eq!(wifi.check_result, "Success");
+        assert!(wifi.check_error.is_none());
+        assert!(wifi.internet_reachable);
+        assert_ne!(wifi.connected, Some(false));
+        assert_eq!(wifi.status, crate::DiagStatus::Orange);
+    }
+
+    #[test]
     fn wifi_merge_keeps_bitrate_on_non_authoritative_followup() {
         let mut state = DiagnosticState::default();
         let wifi_full = r#"2026-04-08T16:47:11-0600 [18230967]# (
@@ -1950,7 +1984,7 @@ fn parse_wifi_section(text: &str, w: &mut WifiDiagnostic) {
     // wifi-check
     w.internet_reachable = capture_after(text, "Internet reachability state:")
         .map(|v| v.eq_ignore_ascii_case("online"))
-        .unwrap_or(false);
+        .unwrap_or(w.internet_reachable);
     w.wifi_state = capture_after(text, "Wi-Fi state:").unwrap_or_else(|| "unknown".into());
     w.access_point = capture_after(text, "Wi-Fi access point:");
     let (score, label) = parse_strength_line(capture_line(text, "Wi-Fi strength:"));
@@ -1964,6 +1998,7 @@ fn parse_wifi_section(text: &str, w: &mut WifiDiagnostic) {
     if let Some(done) = capture_after(text, "Done:") {
         if done.to_ascii_lowercase().starts_with("success") {
             w.check_result = "Success".into();
+            w.check_error = None;
         } else if done.to_ascii_lowercase().starts_with("failure") {
             w.check_result = "Failure".into();
             w.check_error = Some(done.trim_start_matches("Failure:").trim().to_string());
@@ -2006,7 +2041,13 @@ fn parse_wifi_section(text: &str, w: &mut WifiDiagnostic) {
     });
 
     // iw dev wlan0 link
-    if text.contains("Not connected") {
+    let has_explicit_not_connected_line = text.lines().any(|line| {
+        matches!(
+            line.trim(),
+            "Not connected" | "Not connected." | "Not connected (on wlan0)." | "Not connected (on wlan0)"
+        )
+    });
+    if has_explicit_not_connected_line {
         w.connected = Some(false);
     } else if text.contains("Connected to ") {
         w.connected = Some(true);
@@ -2226,46 +2267,43 @@ fn parse_wifi(blocks: &[CommandBlock]) -> Option<WifiDiagnostic> {
         proc_tx_errs: None,
     };
 
-    let wifi_block = find_latest_body_contains(
+    let wifi_block = find_latest_body_contains_any(
         blocks,
         &[
             "===== wifi diagnostics start =====",
-            "===== wifi diagnostics end =====",
+            "wifi-check",
+            "wifi-signal",
+            "iw dev wlan0",
         ],
-    )
-    .or_else(|| {
-        find_latest_body_contains_any(
-            blocks,
-            &[
-                "===== wifi diagnostics start =====",
-                "wifi-check",
-                "wifi-signal",
-                "iw dev wlan0",
-            ],
-        )
-    });
+    );
 
-    // When the full WiFi block ran (both START and END markers present), extract just
-    // the WiFi section. This prevents ETH section "Done: Failure: -65553" and cellular
-    // section output from contaminating WiFi field parsing when all sections run in the
-    // same (…) subshell — which makes find_latest() return the entire combined body for
-    // every command key lookup. Mirrors the parse_cellular_block() approach.
+    // When a compound multi-interface block is in flight, scope parsing to the Wi-Fi
+    // section as soon as its START marker appears. Waiting for the END marker leaves a
+    // window where Ethernet/Cellular "Done: Failure ... not connected" text earlier in
+    // the same body can be misread as Wi-Fi state during polling.
     if let Some(block) = wifi_block {
         let lower = block.to_ascii_lowercase();
-        if lower.contains("===== wifi diagnostics start =====")
-            && lower.contains("===== wifi diagnostics end =====")
-        {
+        if lower.contains("===== wifi diagnostics start =====") {
             if let Some(section) = extract_between(
                 block,
                 "===== WIFI DIAGNOSTICS START =====",
                 "===== WIFI DIAGNOSTICS END =====",
             ) {
-                parse_wifi_section(&section, &mut w);
-                w.signal_dbm_trusted = w.connected == Some(true)
-                    || w.connman_wifi_connected == Some(true)
-                    || (w.check_result == "Success" && w.wifi_state == "online");
-                determine_wifi_status(&mut w);
-                return Some(w);
+                let section_lower = section.to_ascii_lowercase();
+                let has_wifi_output = section_lower.contains("testing wi-fi")
+                    || section_lower.contains("wi-fi state:")
+                    || section_lower.contains("wi-fi access point:")
+                    || section_lower.contains("\"wlan0\" signal strength:")
+                    || section_lower.contains("connected to ")
+                    || section_lower.contains("interface wlan0");
+                if has_wifi_output {
+                    parse_wifi_section(&section, &mut w);
+                    w.signal_dbm_trusted = w.connected == Some(true)
+                        || w.connman_wifi_connected == Some(true)
+                        || (w.check_result == "Success" && w.wifi_state == "online");
+                    determine_wifi_status(&mut w);
+                    return Some(w);
+                }
             }
         }
     }
@@ -2350,7 +2388,13 @@ fn parse_wifi(blocks: &[CommandBlock]) -> Option<WifiDiagnostic> {
             .or_else(|| capture_after(text, "ssid").filter(|s| !s.starts_with('=')));
     }
     if let Some(text) = iw_link {
-        if text.contains("Not connected") {
+        let has_explicit_not_connected_line = text.lines().any(|line| {
+            matches!(
+                line.trim(),
+                "Not connected" | "Not connected." | "Not connected (on wlan0)." | "Not connected (on wlan0)"
+            )
+        });
+        if has_explicit_not_connected_line {
             w.connected = Some(false);
         } else if text.contains("Connected to ") {
             w.connected = Some(true);

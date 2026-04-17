@@ -627,7 +627,8 @@ function wifiHasAuthoritativeCheck(wifi?: WifiDiagnostic | null): boolean {
 }
 
 function wifiCheckConnected(wifi?: WifiDiagnostic | null): boolean {
-  return !!wifi && wifi.check_result === "Success" && wifi.internet_reachable === true;
+  return !!wifi && wifi.check_result === "Success"
+    && (wifi.internet_reachable !== false || wifi.wifi_state === "online");
 }
 
 function wifiConnectedState(wifi?: WifiDiagnostic | null): boolean {
@@ -740,7 +741,8 @@ function cellularHasAuthoritativeCheck(cell?: CellularDiagnostic | null): boolea
 }
 
 function cellularCheckConnected(cell?: CellularDiagnostic | null): boolean {
-  return !!cell && cell.check_result === "Success" && cell.internet_reachable === true;
+  return !!cell && cell.check_result === "Success"
+    && (cell.internet_reachable !== false || cell.cell_state === "ready");
 }
 
 function cellularConnectedState(cell?: CellularDiagnostic | null): boolean {
@@ -841,7 +843,7 @@ function buildWifiSections(wifi?: WifiDiagnostic | null): DiagSection[] {
   const weakByController = (wifi.strength_label || "").toLowerCase() === "weak";
   const connected = wifiConnectedState(wifi);
   const internetTest = wifiHasAuthoritativeCheck(wifi)
-    ? wifi.check_result === "Success"
+    ? (wifi.check_result === "Success" || (connected && wifi.internet_reachable === true))
       ? "Passed"
       : "Failed"
     : connected
@@ -885,7 +887,7 @@ function buildCellularSections(cell?: CellularDiagnostic | null): DiagSection[] 
   const connected = cellularConnectedState(cell);
   const noService = cellularExplicitNoService(cell);
   const internetTest = cellularHasAuthoritativeCheck(cell)
-    ? cell.check_result === "Success"
+    ? (cell.check_result === "Success" || (connected && cell.internet_reachable === true))
       ? "Passed"
       : "Failed"
     : connected
@@ -1018,11 +1020,11 @@ function buildEthernetSections(ethernet?: EthernetDiagnostic | null): DiagSectio
   const connectionLabel = disabled
     ? "Disabled"
     : disconnected
-      ? "Link down"
+      ? "No Ethernet link"
       : connected
         ? "Connected"
         : ethernet.link_detected === false
-          ? "Link down"
+          ? "No Ethernet link"
           : "No data";
   const roleValue = disabled ? "Inactive" : connected ? "Connected path" : "Inactive";
   const internetTest = hasAuthoritativeCheck
@@ -1308,11 +1310,11 @@ function summarizeEthernet(ethernet?: EthernetDiagnostic | null): CardSummary {
     return { health: "neutral", badgeLabel: "Inactive", primaryLine: "Ethernet disabled" };
   }
   if (ethernetCheckDisconnected(ethernet)) {
-    return { health: "neutral", badgeLabel: "Inactive", primaryLine: "Link down" };
+    return { health: "neutral", badgeLabel: "Inactive", primaryLine: "No Ethernet link" };
   }
   const internetPassed = ethernetCheckPassed(ethernet);
   if (internetPassed) return { health: "healthy", badgeLabel: "Healthy", primaryLine: "Connected", secondaryLine: "Internet reachable" };
-  if (ethernet.link_detected === false) return { health: "neutral", badgeLabel: "Inactive", primaryLine: "Link down" };
+  if (ethernet.link_detected === false) return { health: "neutral", badgeLabel: "Inactive", primaryLine: "No Ethernet link" };
   if (ethernet.flap_count > 0) return { health: "warning", badgeLabel: "Warning", primaryLine: "Connected", secondaryLine: "Unstable link" };
   if (!ethernet.ip_address) return { health: "error", badgeLabel: "Issue", primaryLine: "Connected", secondaryLine: "No IP assigned" };
   return { health: "warning", badgeLabel: "Warning", primaryLine: "Connected", secondaryLine: "Limited internet" };
@@ -2002,8 +2004,8 @@ export default function DiagnosticsTab() {
   const currentFirmware = displayDiag?.system?.version ?? null;
   const firmwareSummary = buildFirmwareSummary(currentFirmware, latestFirmwareVersion);
   const primaryNetwork = resolvePrimaryNetwork({ wifi, cellular, satellite, ethernet, system });
-  const wifiRole = resolveRole("wifi", primaryNetwork, !!(wifi?.connected || wifi?.connman_wifi_connected));
-  const cellularRole = resolveRole("cellular", primaryNetwork, !!(cellular?.connman_cell_connected || cellular?.internet_reachable));
+  const wifiRole = resolveRole("wifi", primaryNetwork, wifiConnectedState(wifi));
+  const cellularRole = resolveRole("cellular", primaryNetwork, cellularConnectedState(cellular));
   const ethernetRole = resolveRole("ethernet", primaryNetwork, !!(ethernet?.link_detected || ethernet?.internet_reachable));
   const isUpdating = (iface: InterfaceKey) => {
     // Pressure has no reliable backend in_progress tracking (no end marker in

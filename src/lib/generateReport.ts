@@ -13,9 +13,11 @@ type DiagStatus = "unknown" | "grey" | "green" | "orange" | "red";
 interface EthernetDiag {
   status: DiagStatus;
   summary: string;
+  technology_disabled?: boolean;
   link_detected?: boolean | null;
   flap_count?: number;
   internet_reachable?: boolean | null;
+  check_result?: string | null;
 }
 
 interface WifiDiag {
@@ -39,8 +41,12 @@ interface WifiDiag {
 interface CellularDiag {
   status: DiagStatus;
   summary: string;
+  check_result?: string | null;
+  check_error?: string | null;
   connman_cell_connected?: boolean | null;
+  connman_cell_powered?: boolean | null;
   pdp_active?: boolean | null;
+  internet_reachable?: boolean | null;
   sim_inserted?: boolean | null;
   provider_code?: string | null;
   imsi?: string | null;
@@ -72,13 +78,19 @@ interface SimPickerDiag {
 interface SatelliteDiag {
   status: DiagStatus;
   summary: string;
+  modem_present?: boolean | null;
   satellite_state?: string | null;
+  satellites_seen?: number | null;
+  light_test_ran?: boolean;
+  light_test_success?: boolean | null;
   loopback_test_ran?: boolean;
   loopback_test_success?: boolean | null;
   sat_imei?: string | null;
   loopback_duration_seconds?: number | null;
   total_time_seconds?: number | null;
   loopback_packet_loss_pct?: number | null;
+  recommended_action?: string | null;
+  other_actions?: string[] | null;
 }
 
 interface SystemDiag {
@@ -152,8 +164,33 @@ function qualityLabel(score?: number | null, label?: string | null): string {
   return "No service";
 }
 
+function resolveCarrierCode(code?: string | null): string | null {
+  if (!code) return null;
+  if (!/^\d{5,6}$/.test(code)) return code;
+  const map: Record<string, string> = {
+    "311270": "Verizon", "311271": "Verizon", "311272": "Verizon", "311273": "Verizon",
+    "311274": "Verizon", "311275": "Verizon", "311276": "Verizon", "311277": "Verizon",
+    "311278": "Verizon", "311279": "Verizon", "311280": "Verizon", "311480": "Verizon",
+    "311481": "Verizon", "311482": "Verizon", "311483": "Verizon", "311484": "Verizon",
+    "311485": "Verizon", "311486": "Verizon", "311487": "Verizon", "311488": "Verizon",
+    "311489": "Verizon",
+    "310260": "T-Mobile", "310026": "T-Mobile", "310490": "T-Mobile", "310660": "T-Mobile",
+    "312250": "T-Mobile", "310230": "T-Mobile", "310240": "T-Mobile", "310250": "T-Mobile",
+    "310410": "AT&T", "310380": "AT&T", "310980": "AT&T", "311180": "AT&T",
+    "310030": "AT&T", "310560": "AT&T", "310680": "AT&T",
+    "313100": "FirstNet (AT&T)",
+    "310000": "Dish",
+  };
+  return map[code] ?? code;
+}
+
 function formatEthernetSummary(eth: EthernetDiag): string {
-  if (eth.link_detected === false) return "No link detected";
+  const checkResultLower = (eth.check_result || "").toLowerCase();
+  const notConnected = checkResultLower.startsWith("failure")
+    && (checkResultLower.includes("-65554")
+      || checkResultLower.includes("network technology is not connected"));
+  if (notConnected) return "No Ethernet link";
+  if (eth.link_detected === false) return "No Ethernet link";
   if (eth.status === "grey") return "Inactive — technology disabled";
   if (eth.status === "green") return "Connected";
   if (eth.status === "red") return "No connection";
@@ -161,9 +198,7 @@ function formatEthernetSummary(eth: EthernetDiag): string {
 }
 
 function formatWifiSummary(wifi: WifiDiag): string {
-  const connected = wifi.connected === true
-    || wifi.connman_wifi_connected === true
-    || wifi.internet_reachable === true;
+  const connected = wifiConnectedState(wifi);
 
   if (!connected) {
     // Extract a human-readable reason from the check_result/check_error, e.g.
@@ -223,24 +258,88 @@ function formatCellSummary(cell: CellularDiag): string {
   if (cell.modem_not_present) return "No modem detected";
   if (cell.modem_unreachable) return "Modem not responding — reboot controller";
 
-  const connected = cell.connman_cell_connected === true || cell.pdp_active === true;
+  const connected = cellularConnectedState(cell);
+  const carrierLabel = resolveCarrierCode(cell.operator_name || cell.provider_code) || "Cellular";
 
   if (!connected) {
     if (cell.sim_inserted === false) return "No SIM detected";
-    if (cell.no_service) {
-      const carrier = cell.operator_name || cell.provider_code || null;
+    if (cellularExplicitNoService(cell)) {
+      const carrier = resolveCarrierCode(cell.operator_name || cell.provider_code);
       return carrier ? `${carrier} — No service` : "No service";
     }
-    const carrier = cell.operator_name || cell.provider_code || null;
+    const carrier = resolveCarrierCode(cell.operator_name || cell.provider_code);
     return carrier ? `${carrier} — Not connected` : "Not connected";
   }
 
-  const carrier = cell.operator_name || cell.provider_code || "Cellular";
   const quality = qualityLabel(cell.strength_score, cell.strength_label);
   const scorePart = cell.strength_score !== null && cell.strength_score !== undefined
     ? ` ${cell.strength_score}/100`
     : "";
-  return `${carrier} · 📶 ${quality}${scorePart}`;
+  return `${carrierLabel} · 📶 ${quality}${scorePart}`;
+}
+
+function wifiHasAuthoritativeCheck(wifi?: WifiDiag | null): boolean {
+  return !!wifi && ((wifi.check_result ?? "Unknown") !== "Unknown" || !!wifi.check_error);
+}
+
+function wifiCheckConnected(wifi?: WifiDiag | null): boolean {
+  return !!wifi
+    && wifi.check_result === "Success"
+    && (wifi.internet_reachable !== false);
+}
+
+function wifiConnectedState(wifi?: WifiDiag | null): boolean {
+  if (!wifi) return false;
+  if (wifiHasAuthoritativeCheck(wifi)) return wifiCheckConnected(wifi);
+  return wifi.connected === true || wifi.connman_wifi_connected === true || wifi.internet_reachable === true;
+}
+
+function wifiReportStatus(wifi?: WifiDiag | null): "green" | "orange" | "red" | "unknown" {
+  if (!wifi) return "unknown";
+  const connected = wifiConnectedState(wifi);
+  const weakByLabel = (wifi.strength_label ?? "").toLowerCase() === "weak";
+  const weakByScore = (wifi.strength_score ?? 0) > 0 && (wifi.strength_score ?? 0) < 25;
+  const notEnabled = (wifi.check_error || "").toLowerCase().includes("-65553")
+    || (wifi.check_error || "").toLowerCase().includes("not enabled")
+    || wifi.connman_wifi_powered === false;
+  if (!connected) return notEnabled ? "orange" : "unknown";
+  if (weakByLabel || weakByScore) return "orange";
+  if (wifi.check_result === "Failure") return "orange";
+  return "green";
+}
+
+function cellularHasAuthoritativeCheck(cell?: CellularDiag | null): boolean {
+  return !!cell && ((cell.check_result ?? "Unknown") !== "Unknown" || !!cell.check_error);
+}
+
+function cellularCheckConnected(cell?: CellularDiag | null): boolean {
+  return !!cell
+    && cell.check_result === "Success"
+    && (cell.internet_reachable !== false);
+}
+
+function cellularConnectedState(cell?: CellularDiag | null): boolean {
+  if (!cell) return false;
+  if (cellularHasAuthoritativeCheck(cell)) return cellularCheckConnected(cell);
+  return cell.connman_cell_connected === true || cell.pdp_active === true || cell.internet_reachable === true;
+}
+
+function cellularExplicitNoService(cell?: CellularDiag | null): boolean {
+  if (!cell) return false;
+  if (cellularConnectedState(cell)) return false;
+  const checkError = (cell.check_error || "").toLowerCase();
+  return cell.no_service === true
+    || checkError.includes("network technology is not connected")
+    || checkError.includes("-65554");
+}
+
+function cellularReportStatus(cell?: CellularDiag | null): "green" | "orange" | "red" | "unknown" {
+  if (!cell) return "unknown";
+  if (cell.modem_not_present || cell.modem_unreachable || cellularExplicitNoService(cell)) return "red";
+  if (cell.sim_inserted === false || cell.connman_cell_powered === false) return "unknown";
+  if (!cellularConnectedState(cell)) return "unknown";
+  if ((cell.strength_score ?? 0) > 0 && (cell.strength_score ?? 0) < 25) return "orange";
+  return "green";
 }
 
 // ── generateActions ───────────────────────────────────────────────────────────
@@ -283,9 +382,7 @@ export function generateNetworkRows(diag: DiagnosticState): NetworkStatusRow[] {
   // gray ("unknown") rather than the raw backend "red" status, which the backend
   // emits even for simply-unconfigured interfaces. This keeps the report status
   // dots consistent with what the diag cards display.
-  const wifiConnected = diag.wifi?.connected === true
-    || diag.wifi?.connman_wifi_connected === true
-    || diag.wifi?.internet_reachable === true;
+  const wifiConnected = wifiConnectedState(diag.wifi);
   const ethLinked = diag.ethernet?.link_detected === true
     || diag.ethernet?.internet_reachable === true;
 
@@ -306,16 +403,14 @@ export function generateNetworkRows(diag: DiagnosticState): NetworkStatusRow[] {
       interface: "Wi-Fi",
       status: !diag.wifi
           ? "unknown"
-          : wifiConnected
-            ? toReportStatus(diag.wifi.status)
-            : wifiNotEnabled
-              ? "orange"
-              : "unknown",
+          : wifiConnected || wifiNotEnabled
+            ? wifiReportStatus(diag.wifi)
+            : "unknown",
       summary: diag.wifi ? formatWifiSummary(diag.wifi) : "Diagnostics not collected",
     },
     {
       interface: "Cellular",
-      status: toReportStatus(diag.cellular?.status),
+      status: cellularReportStatus(diag.cellular),
       summary: diag.cellular ? formatCellSummary(diag.cellular) : "Diagnostics not collected",
     },
     {
@@ -501,40 +596,82 @@ export function generateRecommendedActions(
   // ── SATELLITE ─────────────────────────────────────────────────────────────
   if (diag.satellite) {
     const sat = diag.satellite;
+    const addSatelliteAction = (text: string, detail = "") => {
+      if (!text.trim()) return;
+      const exists = actions.some((action) =>
+        action.interface === "Satellite"
+        && action.text === text
+        && action.detail === detail
+      );
+      if (exists) return;
+      actions.push({
+        id: mkId(), interface: "Satellite",
+        text,
+        detail,
+        dismissed: false, checked: false, custom: false,
+      });
+    };
 
+    const satelliteDetails = new Map<string, string>();
+    if (sat.modem_present === false) {
+      satelliteDetails.set("Check satellite modem / hardware connection", "No satellite modem detected. Verify the modem is present, seated, and connected.");
+      satelliteDetails.set("Reboot controller", "After checking the modem/hardware connection, reboot and rerun satellite diagnostics.");
+    }
     if (sat.satellite_state === "manager_unresponsive") {
-      actions.push({
-        id: mkId(), interface: "Satellite",
-        text: "Reboot controller and retry satellite loopback test",
-        detail: "satellite-check -t returned \"Network Manager\" never responded.",
-        dismissed: false, checked: false, custom: false,
-      });
-      actions.push({
-        id: mkId(), interface: "Satellite",
-        text: "Re-run satellite setup and retry test",
-        detail: "Refresh satellite configuration before rerunning the loopback test.",
-        dismissed: false, checked: false, custom: false,
-      });
-      actions.push({
-        id: mkId(), interface: "Satellite",
-        text: "If issue persists, reinstall firmware, reconfigure controller, rerun satellite setup, and retry test",
-        detail: "Use this when the Network Manager response failure survives reboot and setup retry.",
-        dismissed: false, checked: false, custom: false,
-      });
-    } else if (sat.status === "red" && sat.loopback_test_success === false) {
-      actions.push({
-        id: mkId(), interface: "Satellite",
-        text: "Check antenna cabling and sky view",
-        detail: "Loopback test failed. Verify N-type connector is hand-tight, cable has no sharp bends, and antenna has clear unobstructed sky view.",
-        dismissed: false, checked: false, custom: false,
-      });
-    } else if (sat.status === "orange" && !sat.loopback_test_ran) {
-      actions.push({
-        id: mkId(), interface: "Satellite",
-        text: "Run satellite-check -t to verify connectivity",
-        detail: "Satellite configured but loopback not yet tested this session.",
-        dismissed: false, checked: false, custom: false,
-      });
+      satelliteDetails.set("Reboot controller and retry satellite loopback test", "satellite-check -t returned \"Network Manager\" never responded.");
+      satelliteDetails.set("Re-run satellite setup and retry test", "Refresh satellite configuration before rerunning the loopback test.");
+      satelliteDetails.set("If issue persists, reinstall firmware, reconfigure controller, rerun satellite setup, and retry test", "Use this when the Network Manager response failure survives reboot and setup retry.");
+    }
+    if (sat.loopback_test_ran && sat.loopback_test_success === false) {
+      satelliteDetails.set("Check antenna placement and provisioning", "Loopback test failed. Verify provisioning, connector integrity, and unobstructed sky view.");
+      satelliteDetails.set("Move antenna to clear sky", "Ensure the antenna has a clear, unobstructed view of the sky.");
+      satelliteDetails.set("Retry loopback test", "Re-run the full loopback test after correcting antenna placement or provisioning issues.");
+      satelliteDetails.set("Retry when satellite service is not in use", "Retry once the satellite service is idle so the loopback test can run.");
+    }
+    if ((sat.satellites_seen ?? null) === 0) {
+      satelliteDetails.set("Check antenna placement and connection", "No satellites are visible. Verify cable connection and antenna placement.");
+      satelliteDetails.set("Move antenna to clear sky", "Ensure the antenna has a clear, unobstructed view of the sky.");
+      satelliteDetails.set("Retry quick satellite check", "Run a quick satellite check again after improving placement.");
+    }
+    if (sat.light_test_ran && sat.light_test_success === false) {
+      satelliteDetails.set("Run full loopback test for details", "Quick satellite check failed. Run the full loopback test for a more specific diagnosis.");
+    }
+    if (sat.modem_present === true && sat.status !== "green") {
+      satelliteDetails.set("Run full satellite loopback test", "Satellite hardware is present but this session does not yet include a full loopback verification.");
+    }
+
+    const parserDrivenActions = [
+      sat.recommended_action,
+      ...((sat.other_actions ?? []).filter(Boolean)),
+    ].filter((value): value is string => !!value);
+
+    for (const text of parserDrivenActions) {
+      addSatelliteAction(text, satelliteDetails.get(text) ?? "");
+    }
+
+    if (parserDrivenActions.length === 0 && sat.satellite_state === "manager_unresponsive") {
+      addSatelliteAction(
+        "Reboot controller and retry satellite loopback test",
+        "satellite-check -t returned \"Network Manager\" never responded.",
+      );
+      addSatelliteAction(
+        "Re-run satellite setup and retry test",
+        "Refresh satellite configuration before rerunning the loopback test.",
+      );
+      addSatelliteAction(
+        "If issue persists, reinstall firmware, reconfigure controller, rerun satellite setup, and retry test",
+        "Use this when the Network Manager response failure survives reboot and setup retry.",
+      );
+    } else if (parserDrivenActions.length === 0 && sat.status === "red" && sat.loopback_test_success === false) {
+      addSatelliteAction(
+        "Check antenna cabling and sky view",
+        "Loopback test failed. Verify N-type connector is hand-tight, cable has no sharp bends, and antenna has clear unobstructed sky view.",
+      );
+    } else if (parserDrivenActions.length === 0 && sat.status === "orange" && !sat.loopback_test_ran) {
+      addSatelliteAction(
+        "Run satellite-check -t to verify connectivity",
+        "Satellite configured but loopback not yet tested this session.",
+      );
     }
   }
 

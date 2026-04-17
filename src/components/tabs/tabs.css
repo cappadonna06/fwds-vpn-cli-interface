@@ -3076,12 +3076,14 @@
   padding: 2px 0;
   border-radius: 8px;
   transition: background-color 120ms, box-shadow 120ms, opacity 120ms;
+  min-width: 0;
 }
 
 .report-action-bullet {
   color: var(--text-muted);
   font-size: 14px;
   flex-shrink: 0;
+  margin-top: 9px;
 }
 
 .report-reorder-controls {
@@ -3118,21 +3120,27 @@
 }
 
 .report-action-input {
-  flex: 1;
+  flex: 1 1 0%;
   min-width: 0;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  display: block;
   font-size: 13px;
   background: transparent;
   border: none;
   border-bottom: 1px solid transparent;
   color: var(--text-primary);
-  padding: 3px 0;
+  padding: 6px 0 5px;
   outline: none;
   resize: none;
   overflow: hidden;
+  overflow-x: hidden;
   line-height: 1.45;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  field-sizing: content;
+  word-break: break-word;
+  min-height: calc(1.45em + 11px);
 }
 
 .report-action-input:focus {
