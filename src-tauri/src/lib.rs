@@ -27,7 +27,6 @@ use parsers::parse_log_into_state;
 
 const VPN_CONNECT_TIMEOUT: Duration = Duration::from_secs(25);
 const VPN_STOP_TIMEOUT: Duration = Duration::from_secs(8);
-const VPN_STALE_CLEANUP_TIMEOUT: Duration = Duration::from_secs(4);
 const VPN_LOG_LIMIT: usize = 500;
 
 // ── State ─────────────────────────────────────────────────────────────────────
@@ -720,7 +719,7 @@ fn sync_windows_terminal_child(inner: &mut InnerState) {
                 inner.shell_detail = if inner.connection_mode == "local" {
                     "Local session closed".into()
                 } else {
-                    "Connection closed".into()
+                    "PuTTY window closed".into()
                 };
                 inner.shell_logs.push("[Connection closed]".into());
             }
@@ -811,7 +810,7 @@ fn sync_macos_terminal_shell_phase(inner: &mut InnerState) {
             inner.shell_detail = if inner.connection_mode == "local" {
                 "Local session closed".into()
             } else {
-                "Connection closed".into()
+                "Terminal window closed".into()
             };
             inner.shell_logs.push("[Connection closed]".into());
         }
@@ -1620,6 +1619,7 @@ fn disconnect_controller(state: State<'_, AppState>) -> Result<(), String> {
     {
         let mut inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
         kill_shell(&mut inner);
+        inner.shell_detail = "Controller disconnected".into();
         inner.controller_ip = None;
         inner.shell_logs.push("[Disconnected]".into());
     }
@@ -1810,7 +1810,7 @@ fn open_controller_terminal(state: State<'_, AppState>, ip: Option<String>) -> R
             shell_quote(&format!("root@{ip}")),
         );
         let command = format!(
-            "clear; script -q {} {}; exit",
+            "clear; script -qF {} {}; exit",
             shell_quote(&log_path.to_string_lossy()),
             &ssh_cmd,
         );
@@ -1986,7 +1986,7 @@ fn open_local_serial_terminal(device: String, state: State<'_, AppState>) -> Res
 
         let log_path = local_serial_log_file(&device);
         let command = format!(
-            "clear; script -q {} minicom -D {} -b 115200; exit",
+            "clear; script -qF {} minicom -D {} -b 115200; exit",
             shell_quote(&log_path.to_string_lossy()),
             shell_quote(&device),
         );
@@ -2613,6 +2613,7 @@ fn do_vpn_start_transition(
     folder: &str,
 ) -> Result<(), String> {
     let existing_pids = collect_known_openvpn_pids(inner_state);
+    #[cfg(target_os = "windows")]
     if !existing_pids.is_empty() {
         with_vpn_state(inner_state, transition_token, |inner| {
             push_vpn_log(
@@ -2629,6 +2630,22 @@ fn do_vpn_start_transition(
         })?;
         stop_openvpn_pids_elevated(&existing_pids)?;
         wait_for_processes_to_exit(&existing_pids, VPN_STALE_CLEANUP_TIMEOUT)?;
+    }
+    #[cfg(not(target_os = "windows"))]
+    if !existing_pids.is_empty() {
+        with_vpn_state(inner_state, transition_token, |inner| {
+            push_vpn_log(
+                inner,
+                format!(
+                    "Existing OpenVPN process(es) will be replaced during startup: {}",
+                    existing_pids
+                        .iter()
+                        .map(u32::to_string)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            );
+        })?;
     }
     with_vpn_state(inner_state, transition_token, |inner| {
         inner.managed_openvpn_pid = None;
@@ -2727,7 +2744,7 @@ fn do_vpn_start_transition(
         let log_path = vpn_log_path();
         let launcher =
             write_launcher_script(&stage_dir, &staged_config, &log_path, &openvpn_binary)?;
-        let pid = launch_openvpn_elevated(&launcher, &[])?;
+        let pid = launch_openvpn_elevated(&launcher, &existing_pids)?;
 
         with_vpn_state(inner_state, transition_token, |inner| {
             inner.managed_openvpn_pid = Some(pid);

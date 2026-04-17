@@ -83,6 +83,10 @@
   color: var(--success-ink);
 }
 
+.top-header-controller.neutral {
+  color: var(--text-muted);
+}
+
 .top-header-controller.invalid {
   color: var(--danger-ink);
 }

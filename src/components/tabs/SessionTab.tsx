@@ -310,7 +310,7 @@ export default function SessionTab({ onControllerConnected }: SessionTabProps) {
       // best effort
     }
     setCtrlStatus("disconnected");
-    setCtrlDetail("");
+    setCtrlDetail("Controller disconnected");
     prevCtrlPhaseRef.current = "disconnected";
   }
 
@@ -364,21 +364,44 @@ export default function SessionTab({ onControllerConnected }: SessionTabProps) {
   const octetNum = parseInt(lastOctet, 10);
   const octetValid = lastOctet !== "" && !Number.isNaN(octetNum) && octetNum >= 1 && octetNum <= 254;
   const manualVpnReady = isWindows && vpnStatus === "manual" && preflight?.port_ok === true;
+  const vpnReady = vpnStatus === "connected" || vpnStatus === "manual";
+  const displayVpnConnected = vpnStatus === "connected" || manualVpnReady;
+  const displayedVpnStatus: VpnStatus = displayVpnConnected ? "connected" : vpnStatus;
   const canConnect = octetValid && (vpnStatus === "connected" || manualVpnReady);
   const showPreflight = octetValid && (vpnStatus === "connected" || (isWindows && vpnStatus === "manual"));
-  const hasControllerSession =
+  const hasActiveControllerSession =
     Boolean(vpnIp)
     && (
       ctrlStatus === "connected"
       || ctrlStatus === "connecting"
-      || Boolean(ctrlDetail)
     );
-  const vpnControllerLost =
-    (vpnStatus === "connected" || vpnStatus === "manual")
-    && (ctrlStatus === "failed" || ctrlStatus === "disconnected");
-  const displayedVpnDetail = vpnControllerLost
+  const controllerDisconnected =
+    Boolean(vpnIp)
+    && Boolean(ctrlDetail)
+    && vpnReady
+    && ctrlStatus === "disconnected";
+  const controllerFailed =
+    Boolean(vpnIp)
+    && Boolean(ctrlDetail)
+    && vpnReady
+    && ctrlStatus === "failed";
+  const showControllerChip =
+    Boolean(vpnIp)
+    && Boolean(ctrlDetail)
+    && (ctrlStatus === "connecting" || controllerFailed || controllerDisconnected);
+  const controllerChipTone =
+    ctrlStatus === "connecting" ? "warn" : "fail";
+  const controllerChipLabel =
+    ctrlStatus === "connecting"
+      ? "Controller connecting"
+      : controllerFailed
+        ? "Controller failed"
+        : "Controller disconnected";
+  const displayedVpnDetail = controllerDisconnected
     ? "Controller session lost. Reconnect + Launch to resume communication."
-    : vpnDetail;
+    : manualVpnReady
+      ? "OpenVPN tunnel established"
+      : vpnDetail;
 
   const localState: { label: string; tone: LocalStatusTone } = useMemo(() => {
     const normalized = serialDetail.toLowerCase();
@@ -512,15 +535,17 @@ export default function SessionTab({ onControllerConnected }: SessionTabProps) {
               {remoteAccessState === "ready" && (
                 <div className="status-chip-row">
                   <span className="status-chip ok">Bundle ready</span>
-                  <span className={`status-chip ${vpnControllerLost ? "fail" : statusTone(vpnStatus)}`}>
-                    {vpnControllerLost
-                      ? "VPN connected, controller lost"
-                      : vpnStatus === "connected"
-                        ? "VPN connected"
-                        : VPN_LABELS[vpnStatus]}
+                  <span className={`status-chip ${statusTone(displayedVpnStatus)}`}>
+                    {displayedVpnStatus === "connected" ? "VPN connected" : VPN_LABELS[displayedVpnStatus]}
                   </span>
-                  {vpnControllerLost && <span className="status-chip fail">Controller lost</span>}
-                  {showPreflight && preflight?.port_ok && <span className="status-chip ok">SSH reachable</span>}
+                  {showControllerChip && (
+                    <span className={`status-chip ${controllerChipTone}`}>
+                      {controllerChipLabel}
+                    </span>
+                  )}
+                  {!controllerDisconnected && !controllerFailed && showPreflight && preflight?.port_ok && (
+                    <span className="status-chip ok">SSH reachable</span>
+                  )}
                 </div>
               )}
             </div>
@@ -584,7 +609,7 @@ export default function SessionTab({ onControllerConnected }: SessionTabProps) {
                     <div className="btn-group">
                       <button
                         className="btn btn-primary"
-                        disabled={!allFilesOk || vpnStatus === "connected" || vpnStatus === "starting" || vpnStatus === "stopping"}
+                        disabled={!allFilesOk || displayVpnConnected || vpnStatus === "starting" || vpnStatus === "stopping"}
                         onClick={startVpn}
                       >
                         Open VPN
@@ -599,7 +624,7 @@ export default function SessionTab({ onControllerConnected }: SessionTabProps) {
                     </div>
                   </div>
                   {displayedVpnDetail && <div className="hint session-hint">{displayedVpnDetail}</div>}
-                  {isWindows && vpnStatus === "manual" && (
+                  {isWindows && vpnStatus === "manual" && !manualVpnReady && (
                     <div className="hint session-hint">
                       VPN app opened. Connect there, then return here and click Check.
                     </div>
@@ -644,12 +669,12 @@ export default function SessionTab({ onControllerConnected }: SessionTabProps) {
                 </div>
 
                 <div className="card-actions">
-                  {hasControllerSession && (
+                  {hasActiveControllerSession && (
                     <button className="btn btn-secondary" onClick={disconnectController}>
                       Disconnect
                     </button>
                   )}
-                  {!hasControllerSession && (
+                  {!hasActiveControllerSession && (
                     <button className="btn btn-primary" disabled={!canConnect} onClick={connectAndLaunch}>
                       3) Connect + Launch
                     </button>
@@ -657,7 +682,7 @@ export default function SessionTab({ onControllerConnected }: SessionTabProps) {
                 </div>
 
                 <div className="hint session-hint">Controller: {CTRL_LABELS[ctrlStatus]}{ctrlDetail ? ` - ${ctrlDetail}` : ""}</div>
-                {!canConnect && (ctrlStatus === "disconnected" || ctrlStatus === "failed") && Boolean(lastOctet) && vpnStatus !== "connected" && (
+                {!canConnect && (ctrlStatus === "disconnected" || ctrlStatus === "failed") && Boolean(lastOctet) && !displayVpnConnected && (
                   <div className="hint session-hint">
                     {isWindows && vpnStatus === "manual"
                       ? "Finish connecting in the VPN app, then click Check."

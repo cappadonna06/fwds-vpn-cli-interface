@@ -140,6 +140,9 @@ export default function App() {
       try {
         const s = await invoke<AppStatus>("get_app_state");
         const previous = previousStatusRef.current;
+        const vpnReady = s.vpn_phase === "connected" || s.vpn_phase === "manual";
+        const previousVpnReady =
+          previous?.vpn_phase === "connected" || previous?.vpn_phase === "manual";
         const lostVpnUnexpectedly =
           previous?.connection_mode === "vpn" &&
           s.connection_mode === "vpn" &&
@@ -149,19 +152,37 @@ export default function App() {
         const lostControllerUnexpectedly =
           previous?.connection_mode === "vpn" &&
           s.connection_mode === "vpn" &&
-          previous.vpn_phase === "connected" &&
-          s.vpn_phase === "connected" &&
+          previousVpnReady &&
+          vpnReady &&
+          ["connecting", "connected"].includes(previous.shell_phase) &&
+          ["failed", "disconnected"].includes(s.shell_phase);
+        const lostLocalUnexpectedly =
+          previous?.connection_mode === "local" &&
+          s.connection_mode === "local" &&
           ["connecting", "connected"].includes(previous.shell_phase) &&
           ["failed", "disconnected"].includes(s.shell_phase);
 
         if (lostVpnUnexpectedly && s.vpn_detail) {
           setConnectionAlert(`OpenVPN connection lost: ${s.vpn_detail}`);
-        } else if (lostControllerUnexpectedly && s.shell_detail) {
-          setConnectionAlert(`Controller session lost while VPN is still connected: ${s.shell_detail}`);
+        } else if (lostControllerUnexpectedly) {
+          if (s.shell_detail === "Controller disconnected") {
+            setConnectionAlert(null);
+          } else if (s.shell_detail === "Terminal window closed" || s.shell_detail === "PuTTY window closed") {
+            setConnectionAlert("Controller window closed. Relaunch from the Connect page.");
+          } else if (s.shell_detail) {
+            setConnectionAlert(`Controller session lost while VPN is still connected: ${s.shell_detail}`);
+          }
+        } else if (lostLocalUnexpectedly) {
+          if (s.shell_detail === "Local session disconnected") {
+            setConnectionAlert(null);
+          } else if (s.shell_detail === "Local session closed") {
+            setConnectionAlert("Local terminal window closed. Reconnect from the Connect page.");
+          } else if (s.shell_detail) {
+            setConnectionAlert(`Local controller session lost: ${s.shell_detail}`);
+          }
         } else if (
-          (!s.controller_ip && !s.local_serial_device) ||
-          s.connection_mode !== "vpn" ||
-          ((s.vpn_phase === "connected" || s.vpn_phase === "manual") && s.shell_phase === "connected")
+          (s.connection_mode === "local" && s.shell_phase === "connected") ||
+          (s.connection_mode === "vpn" && vpnReady && s.shell_phase === "connected")
         ) {
           setConnectionAlert(null);
         }
@@ -190,19 +211,24 @@ export default function App() {
     };
   }, []);
 
-  const showVpn = appStatus.vpn_phase !== "disconnected";
-  const showLocal = appStatus.connection_mode === "local";
-  const vpnControllerLost =
+  const vpnReady = appStatus.vpn_phase === "connected" || appStatus.vpn_phase === "manual";
+  const happyVpnPath =
     appStatus.connection_mode === "vpn"
-    && (appStatus.vpn_phase === "connected" || appStatus.vpn_phase === "manual")
-    && (appStatus.shell_phase === "failed" || appStatus.shell_phase === "disconnected");
-  const vpnState = vpnControllerLost ? "error" : mapVpnState(appStatus.vpn_phase);
+    && Boolean(appStatus.controller_ip)
+    && vpnReady
+    && appStatus.shell_phase === "connected";
+  const showLocal = appStatus.connection_mode === "local";
+  const localConnected = showLocal && Boolean(appStatus.local_serial_device);
+  const showVpn = happyVpnPath;
+  const vpnState = mapVpnState(appStatus.vpn_phase);
   const localState = mapLocalState(appStatus.connection_mode, appStatus.local_serial_device);
-
-  const controllerDisplay = appStatus.controller_ip ?? appStatus.local_serial_device ?? "No controller";
-  const controllerValid = vpnControllerLost
-    ? false
-    : Boolean(appStatus.controller_ip) || Boolean(appStatus.local_serial_device);
+  const controllerDisplay = localConnected
+    ? appStatus.local_serial_device ?? "No controller"
+    : happyVpnPath
+      ? appStatus.controller_ip ?? "No controller"
+      : "No controller";
+  const controllerTone = happyVpnPath || localConnected ? "valid" : "neutral";
+  const showSystemInfo = happyVpnPath || localConnected;
 
   return (
     <div className="app">
@@ -212,9 +238,9 @@ export default function App() {
         showLocal={showLocal}
         localState={localState}
         controllerDisplay={controllerDisplay}
-        controllerValid={controllerValid}
-        systemSid={systemInfo.sid}
-        systemVersion={systemInfo.version}
+        controllerTone={controllerTone}
+        systemSid={showSystemInfo ? systemInfo.sid : null}
+        systemVersion={showSystemInfo ? systemInfo.version : null}
       />
 
       {connectionAlert && (

@@ -6,7 +6,7 @@ interface SidebarHeaderProps {
   localState?: StatusPillState;
   showLocal: boolean;
   controllerDisplay: string;
-  controllerValid: boolean;
+  controllerTone: "valid" | "invalid" | "neutral";
   systemSid?: string | null;
   systemVersion?: string | null;
 }
@@ -17,7 +17,7 @@ export default function SidebarHeader({
   localState,
   showLocal,
   controllerDisplay,
-  controllerValid,
+  controllerTone,
   systemSid,
   systemVersion,
 }: SidebarHeaderProps) {
@@ -37,7 +37,7 @@ export default function SidebarHeader({
           {showLocal && localState && <StatusPill label="Local" state={localState} />}
         </div>
         <div className="top-header-controller-group">
-          <div className={`top-header-controller ${controllerValid ? "valid" : "invalid"}`}>
+          <div className={`top-header-controller ${controllerTone}`}>
             {controllerDisplay}
           </div>
           {systemSid && <span className="badge-info">SID {systemSid}</span>}
