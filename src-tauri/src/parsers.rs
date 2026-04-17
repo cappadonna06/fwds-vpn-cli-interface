@@ -110,8 +110,16 @@ pub fn parse_log_into_state(log: &str, state: &mut DiagnosticState) {
         find_latest(&blocks, &["version"]).or(controller_info_body.as_deref()),
         find_latest(&blocks, &["release"]),
         controller_info_body.as_deref(),
-        find_latest(&blocks, &["cat /var/etc/fwds/station_info", "cat-station-info"]).or(system_section_body),
-        find_latest(&blocks, &["cat /var/etc/fwds/system_info", "cat-system-info"]).or(system_section_body),
+        find_latest(
+            &blocks,
+            &["cat /var/etc/fwds/station_info", "cat-station-info"],
+        )
+        .or(system_section_body),
+        find_latest(
+            &blocks,
+            &["cat /var/etc/fwds/system_info", "cat-system-info"],
+        )
+        .or(system_section_body),
     );
     if system.sid.is_none() {
         system.sid = parse_sid_from_prompt(log);
@@ -240,16 +248,22 @@ fn is_interface_complete(iface: &str, state: &DiagnosticState, lower_log: &str) 
                 state
                     .cellular
                     .as_ref()
-                    .map(|c| c.check_result != "Unknown" || c.imei.is_some() || c.basic_status.is_some())
+                    .map(|c| {
+                        c.check_result != "Unknown" || c.imei.is_some() || c.basic_status.is_some()
+                    })
                     .unwrap_or(false)
             }
         }
-        "sim_picker" => state
-            .sim_picker
-            .as_ref()
-            .map(|sp| sp.scan_attempted && (sp.scan_completed || sp.scan_failed || sp.scan_empty))
-            .unwrap_or(false)
-            || lower_log.contains("===== sim picker end ====="),
+        "sim_picker" => {
+            state
+                .sim_picker
+                .as_ref()
+                .map(|sp| {
+                    sp.scan_attempted && (sp.scan_completed || sp.scan_failed || sp.scan_empty)
+                })
+                .unwrap_or(false)
+                || lower_log.contains("===== sim picker end =====")
+        }
         "satellite" => {
             let has_sat_start = lower_log.contains("===== satellite diagnostics start =====")
                 || lower_log.contains("===== satellite basic =====")
@@ -462,16 +476,27 @@ fn merge_cellular_diag(
     prev: CellularDiagnostic,
     mut next: CellularDiagnostic,
 ) -> CellularDiagnostic {
+    let fresh_full_block_partial = next.full_block_run
+        && next.check_result == "Unknown"
+        && (next.internet_reachable
+            || !next.cell_state.eq_ignore_ascii_case("unknown")
+            || next.provider_code.is_some()
+            || next.strength_score.is_some()
+            || next.check_avg_latency_ms.is_some()
+            || next.check_packet_loss_pct > 0);
+
     if cellular_has_authoritative_check(&next) {
         return next;
     }
     if cellular_has_authoritative_check(&prev) {
-        next.status = prev.status;
-        next.summary = prev.summary;
-        next.check_result = prev.check_result;
-        next.check_error = prev.check_error;
-        next.internet_reachable = prev.internet_reachable;
-        next.cell_state = prev.cell_state;
+        if !fresh_full_block_partial {
+            next.status = prev.status;
+            next.summary = prev.summary;
+            next.check_result = prev.check_result;
+            next.check_error = prev.check_error;
+            next.internet_reachable = prev.internet_reachable;
+            next.cell_state = prev.cell_state;
+        }
         next.provider_code = next.provider_code.or(prev.provider_code);
         next.strength_score = next.strength_score.or(prev.strength_score);
         next.strength_label = next.strength_label.or(prev.strength_label);
@@ -482,8 +507,10 @@ fn merge_cellular_diag(
         }
         next.check_avg_latency_ms = next.check_avg_latency_ms.or(prev.check_avg_latency_ms);
         next.check_packet_loss_pct = next.check_packet_loss_pct.max(prev.check_packet_loss_pct);
-        next.recommended_action = next.recommended_action.or(prev.recommended_action);
-        if next.other_actions.is_empty() {
+        if !fresh_full_block_partial {
+            next.recommended_action = next.recommended_action.or(prev.recommended_action);
+        }
+        if !fresh_full_block_partial && next.other_actions.is_empty() {
             next.other_actions = prev.other_actions;
         }
     }
@@ -558,8 +585,12 @@ fn find_latest_body_contains_excl<'a>(
     blocks.iter().rev().find_map(|block| {
         let body = block.body.as_str();
         let lower = body.to_ascii_lowercase();
-        if required.iter().all(|m| lower.contains(&m.to_ascii_lowercase()))
-            && excluded.iter().all(|m| !lower.contains(&m.to_ascii_lowercase()))
+        if required
+            .iter()
+            .all(|m| lower.contains(&m.to_ascii_lowercase()))
+            && excluded
+                .iter()
+                .all(|m| !lower.contains(&m.to_ascii_lowercase()))
         {
             Some(body)
         } else {
@@ -1034,6 +1065,115 @@ default via 100.108.114.46 dev wwan0
         assert_eq!(cell.status, crate::DiagStatus::Green);
         assert_eq!(cell.check_result, "Success");
         assert_eq!(cell.wwan_ipv4_address.as_deref(), Some("100.108.114.41"));
+    }
+
+    #[test]
+    fn quick_networking_cellular_success_overrides_stale_failure() {
+        let mut state = DiagnosticState::default();
+        let old_failure = r#"2026-04-16T17:35:00-0600 [45230110]# cellular-check
+Testing Cellular...
+Done: Failure: -65554: Network technology is not connected
+"#;
+        parse_log_into_state(old_failure, &mut state);
+
+        let quick_block = r#"2026-04-16T17:40:08-0600 [45230110]# (
+> echo "===== CONTROLLER INFO ====="
+> date
+> version
+> sid
+> echo "===== ETH DIAGNOSTICS START ====="
+> ethernet-check
+> echo "===== ETH DIAGNOSTICS END ====="
+> echo "===== WIFI DIAGNOSTICS START ====="
+> wifi-check
+> wifi-signal
+> echo "===== WIFI DIAGNOSTICS END ====="
+> echo "===== CELLULAR DIAGNOSTICS START ====="
+> echo "===== CELLULAR CONNECTIVITY TEST ====="
+> cellular-check
+> echo "===== CELLULAR DIAGNOSTICS END ====="
+> )
+===== CONTROLLER INFO =====
+Thu Apr 16 17:40:08 MDT 2026
+r3.3.1
+45230110
+===== ETH DIAGNOSTICS START =====
+Testing Ethernet...
+Done: Failure: -65554: Network technology is not connected
+===== ETH DIAGNOSTICS END =====
+===== WIFI DIAGNOSTICS START =====
+Testing Wi-Fi...
+Internet reachability state: online
+Wi-Fi state: online
+Wi-Fi access point: lieberells
+Wi-Fi strength: 41/100 ("weak")
+Wi-Fi supports IPv4? Yes
+Wi-Fi supports IPv6? Yes
+Wi-Fi name servers: 192.168.4.1, fdd5:f30b:67fe:1::1
+Done: Success
+"wlan0" signal strength: -86 dBm
+===== WIFI DIAGNOSTICS END =====
+===== CELLULAR DIAGNOSTICS START =====
+===== CELLULAR CONNECTIVITY TEST =====
+Testing Cellular...
+Internet reachability state: online
+Cellular state: ready
+Cellular provider: 311480
+Cellular strength: 80/100 ("strong")
+Cellular supports IPv4? Yes
+Cellular supports IPv6? No
+Cellular name servers: 198.224.169.135, 198.224.171.135
+Done: Success
+===== CELLULAR DIAGNOSTICS END =====
+"#;
+        parse_log_into_state(quick_block, &mut state);
+
+        let cell = state.cellular.expect("expected cellular diagnostics");
+        assert_eq!(cell.check_result, "Success");
+        assert!(cell.internet_reachable);
+        assert_eq!(cell.provider_code.as_deref(), Some("311480"));
+        assert_eq!(cell.strength_score, Some(80));
+        assert_eq!(cell.recommended_action, None);
+        assert!(!cell.no_service);
+        assert_eq!(cell.status, crate::DiagStatus::Green);
+    }
+
+    #[test]
+    fn partial_full_block_does_not_keep_stale_cellular_failure() {
+        let mut state = DiagnosticState::default();
+        let old_failure = r#"2026-04-16T17:35:00-0600 [45230110]# cellular-check
+Testing Cellular...
+Done: Failure: -65554: Network technology is not connected
+"#;
+        parse_log_into_state(old_failure, &mut state);
+
+        let partial_quick_block = r#"2026-04-16T17:40:08-0600 [45230110]# (
+> echo "===== CELLULAR DIAGNOSTICS START ====="
+> echo "===== CELLULAR CONNECTIVITY TEST ====="
+> cellular-check
+> echo "===== CELLULAR DIAGNOSTICS END ====="
+> )
+===== CELLULAR DIAGNOSTICS START =====
+===== CELLULAR CONNECTIVITY TEST =====
+Testing Cellular...
+Internet reachability state: online
+Cellular state: ready
+Cellular provider: 311480
+Cellular strength: 80/100 ("strong")
+Cellular supports IPv4? Yes
+Cellular supports IPv6? No
+Cellular name servers: 198.224.169.135, 198.224.171.135
+"#;
+        parse_log_into_state(partial_quick_block, &mut state);
+
+        let cell = state.cellular.expect("expected cellular diagnostics");
+        assert_eq!(cell.provider_code.as_deref(), Some("311480"));
+        assert_eq!(cell.strength_score, Some(80));
+        assert!(cell.internet_reachable);
+        assert_eq!(cell.check_result, "Unknown");
+        assert!(cell.check_error.is_none());
+        assert_eq!(cell.recommended_action, None);
+        assert!(!cell.no_service);
     }
 
     #[test]
@@ -2636,8 +2776,8 @@ fn parse_satellite_imei(text: &str, diag: &mut SatelliteDiagnostic) {
 
     // Detect whether this block has satellite-specific section markers and/or
     // non-satellite section markers (cellular, ethernet, wifi, pressure).
-    let has_satellite_markers = lower_text.contains("===== satellite")
-        || lower_text.contains("===== quick satellite");
+    let has_satellite_markers =
+        lower_text.contains("===== satellite") || lower_text.contains("===== quick satellite");
     let has_non_satellite_markers = lower_text.contains("===== cellular")
         || lower_text.contains("===== wifi")
         || lower_text.contains("===== eth")
@@ -2852,7 +2992,8 @@ fn determine_satellite_status(diag: &mut SatelliteDiagnostic) {
     if diag.satellite_state.as_deref() == Some("manager_unresponsive") {
         diag.status = DiagStatus::Red;
         diag.summary = "Satellite test unavailable".into();
-        diag.recommended_action = Some("Reboot controller and retry satellite loopback test".into());
+        diag.recommended_action =
+            Some("Reboot controller and retry satellite loopback test".into());
         diag.other_actions = vec![
             "Re-run satellite setup and retry test".into(),
             "If issue persists, reinstall firmware, reconfigure controller, rerun satellite setup, and retry test".into(),
@@ -3623,7 +3764,9 @@ fn extract_controller_info_section(body: &str) -> Option<String> {
 fn parse_controller_info_date(text: &str) -> Option<String> {
     text.lines()
         .map(str::trim)
-        .find(|line| !line.is_empty() && line.contains(':') && (line.contains("UTC") || line.contains("20")))
+        .find(|line| {
+            !line.is_empty() && line.contains(':') && (line.contains("UTC") || line.contains("20"))
+        })
         .map(|line| line.to_string())
 }
 
@@ -3653,8 +3796,8 @@ fn parse_system(
     // Scan lines in reverse so that the last valid version string wins.
     // Using find_map with sanitize_version avoids returning non-version lines (e.g., a SID)
     // that happen to be the last line of a compound block's version/controller-info section.
-    let version = version_block
-        .and_then(|b| b.lines().rev().find_map(|l| sanitize_version(l.trim())));
+    let version =
+        version_block.and_then(|b| b.lines().rev().find_map(|l| sanitize_version(l.trim())));
     let controller_date = controller_info_block.and_then(parse_controller_info_date);
     let release_date = release_block.and_then(|b| capture_after(b, "Date:"));
     let system_name = display_name.clone();

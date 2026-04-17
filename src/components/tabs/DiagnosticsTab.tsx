@@ -530,6 +530,10 @@ function simPickerBadge(sp?: SimPickerDiagnostic | null): string {
   return "Not run";
 }
 
+function stripLeadingWarningIcon(value: string): string {
+  return value.replace(/^(?:\s*(?:⚠️|⚠|△)\s*)+/, "").trim();
+}
+
 function simPickerPrimary(sp?: SimPickerDiagnostic | null): string {
   if (!sp || !sp.scan_attempted) return "Check which carrier has coverage here";
   if (sp.scan_failed) return "Network scan failed";
@@ -1430,6 +1434,7 @@ function DiagCard({
   const collapsedRecommendation = null;
   const collapsedRecommendationCardsNormalized = collapsedRecommendationCards
     .flatMap((recommendation) => recommendation.split(/\s+(?:•|â€¢|Ã¢â‚¬Â¢)\s+/).filter(Boolean))
+    .map(stripLeadingWarningIcon)
     .filter((value, index, arr) => !!value && arr.indexOf(value) === index);
 
   return (
@@ -2049,6 +2054,9 @@ export default function DiagnosticsTab() {
     if (!block) return;
     const script = resolveBlockScript(block, "heavy");
     if (!script) return;
+    const rawDiagSnapshot = rawDiag;
+    const displayDiagSnapshot = displayDiag;
+    const cardUpdatedAtSnapshot = cardUpdatedAt;
     try {
       const now = Date.now();
       const touchedInterfaces = interfacesForBlock(block, script);
@@ -2072,6 +2080,36 @@ export default function DiagnosticsTab() {
         supply:       pressureSnap?.sensors?.supply?.count       ?? 0,
       };
       const satelliteBaselineImei = rawDiag?.satellite?.sat_imei ?? null;
+
+      await Promise.all(
+        touchedInterfaces.map((iface) =>
+          invoke("clear_diagnostic_interface", { interface: iface }).catch(() => {}),
+        ),
+      );
+
+      setRawDiag((prev) => {
+        if (!prev) return prev;
+        const next = { ...prev };
+        touchedInterfaces.forEach((iface) => {
+          (next as any)[iface] = null;
+        });
+        return next;
+      });
+      setDisplayDiag((prev) => {
+        if (!prev) return prev;
+        const next = { ...prev };
+        touchedInterfaces.forEach((iface) => {
+          (next as any)[iface] = null;
+        });
+        return next;
+      });
+      setCardUpdatedAt((prev) => {
+        const next = { ...prev };
+        touchedInterfaces.forEach((iface) => {
+          next[iface] = null;
+        });
+        return next;
+      });
 
       setCardHolds((prev) => {
         const next = { ...prev };
@@ -2099,6 +2137,9 @@ export default function DiagnosticsTab() {
       setTimeout(() => setSentCommandId((prev) => (prev === blockId ? null : prev)), 1400);
       setSendError(null);
     } catch (e) {
+      setRawDiag(rawDiagSnapshot);
+      setDisplayDiag(displayDiagSnapshot);
+      setCardUpdatedAt(cardUpdatedAtSnapshot);
       setSendError(String(e) || "Open session first");
     }
   }
