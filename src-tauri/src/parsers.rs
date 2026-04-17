@@ -1177,6 +1177,32 @@ Cellular name servers: 198.224.169.135, 198.224.171.135
     }
 
     #[test]
+    fn cellular_no_service_without_sim_probe_does_not_infer_missing_sim() {
+        let mut state = DiagnosticState::default();
+        let quick_block = r#"2026-04-16T21:08:25-0600 [24250115]# (
+> echo "===== CELLULAR DIAGNOSTICS START ====="
+> echo "===== CELLULAR CONNECTIVITY TEST ====="
+> cellular-check
+> echo "===== CELLULAR DIAGNOSTICS END ====="
+> )
+===== CELLULAR DIAGNOSTICS START =====
+===== CELLULAR CONNECTIVITY TEST =====
+Testing Cellular...
+Done: Failure: -65554: Network technology is not connected
+===== CELLULAR DIAGNOSTICS END =====
+"#;
+        parse_log_into_state(quick_block, &mut state);
+
+        let cell = state.cellular.expect("expected cellular diagnostics");
+        assert_eq!(cell.sim_inserted, None);
+        assert!(cell.summary.contains("Network technology is not connected"));
+        assert_ne!(
+            cell.recommended_action.as_deref(),
+            Some("Check SIM card is seated correctly")
+        );
+    }
+
+    #[test]
     fn wifi_status_does_not_downgrade_on_partial_followup_chunk() {
         let mut state = DiagnosticState::default();
         let wifi_check_log = "2026-04-01T10:32:46-0600 [22611067]# wifi-check\nTesting Wi-Fi...\nInternet reachability state: online\nWi-Fi state: ready\nDone: Success\n";
@@ -5066,7 +5092,7 @@ fn determine_cellular_status(diag: &mut CellularDiagnostic) {
     if diag.no_service {
         diag.status = DiagStatus::Red;
 
-        if !diag.sim_present {
+        if diag.sim_inserted == Some(false) {
             diag.status = DiagStatus::Unknown;
             diag.summary = "No SIM detected".into();
             diag.recommended_action = Some("Check SIM card is seated correctly".into());

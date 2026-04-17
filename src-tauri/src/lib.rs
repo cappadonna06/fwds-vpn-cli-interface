@@ -733,7 +733,9 @@ fn sync_windows_terminal_child(inner: &mut InnerState) {
 
 #[cfg(target_os = "windows")]
 fn sync_windows_vpn_shell_phase(inner: &mut InnerState) {
-    if inner.connection_mode != "vpn" || inner.shell_phase != "connecting" {
+    if inner.connection_mode != "vpn"
+        || !matches!(inner.shell_phase.as_str(), "connecting" | "connected")
+    {
         return;
     }
     let Some(ip) = inner.controller_ip.clone() else {
@@ -744,13 +746,155 @@ fn sync_windows_vpn_shell_phase(inner: &mut InnerState) {
         return;
     };
 
-    let has_banner = raw.contains("Frontline Wildfire Defense Systems (FWDS) Controller")
-        || raw.contains("Type help for a summary of controller commands.");
-    let has_prompt = raw.contains("]#") || raw.contains("# ");
-    if has_banner || has_prompt {
+    if inner.shell_phase == "connecting" && vpn_session_has_shell_ready(&raw) {
         inner.shell_phase = "connected".into();
         inner.shell_detail = format!("Controller shell ready in PuTTY ({ip})");
+        return;
     }
+
+    if let Some(reason) = vpn_session_disconnect_reason(&raw) {
+        inner.shell_phase = "failed".into();
+        inner.shell_detail = reason;
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn terminal_window_exists(window_id: i64) -> bool {
+    let script = format!(
+        "tell application \"Terminal\"\nreturn exists window id {window_id}\nend tell"
+    );
+    Command::new("osascript")
+        .arg("-e")
+        .arg(&script)
+        .output()
+        .ok()
+        .filter(|out| out.status.success())
+        .map(|out| String::from_utf8_lossy(&out.stdout).trim().eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
+#[cfg(not(target_os = "windows"))]
+fn close_terminal_window(window_id: i64) -> Result<(), String> {
+    let script = format!(
+        "tell application \"Terminal\"\nif exists window id {window_id} then close window id {window_id} saving no\nend tell"
+    );
+    let out = Command::new("osascript")
+        .arg("-e")
+        .arg(&script)
+        .output()
+        .map_err(|e| format!("Failed to close Terminal window: {e}"))?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        Err(if stderr.is_empty() {
+            "Failed to close Terminal window.".into()
+        } else {
+            format!("Failed to close Terminal window: {stderr}")
+        })
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn sync_macos_terminal_shell_phase(inner: &mut InnerState) {
+    let Some(window_id) = inner.external_terminal_window_id else {
+        return;
+    };
+
+    if !terminal_window_exists(window_id) {
+        inner.external_terminal_window_id = None;
+        inner.shell_wizard_input = false;
+        inner.shell_wizard_needs_clear = false;
+        inner.shell_suppress_redraw = false;
+        if matches!(inner.shell_phase.as_str(), "connecting" | "connected") {
+            inner.shell_phase = "disconnected".into();
+            inner.shell_detail = if inner.connection_mode == "local" {
+                "Local session closed".into()
+            } else {
+                "Connection closed".into()
+            };
+            inner.shell_logs.push("[Connection closed]".into());
+        }
+        return;
+    }
+
+    if inner.connection_mode != "vpn"
+        || !matches!(inner.shell_phase.as_str(), "connecting" | "connected")
+    {
+        return;
+    }
+
+    let Some(ip) = inner.controller_ip.clone() else {
+        return;
+    };
+    let log_path = log_file_path(&ip);
+    let Ok(raw) = fs::read_to_string(log_path) else {
+        return;
+    };
+
+    if inner.shell_phase == "connecting" && vpn_session_has_shell_ready(&raw) {
+        inner.shell_phase = "connected".into();
+        inner.shell_detail = format!("Controller shell ready in Terminal ({ip})");
+        return;
+    }
+
+    if let Some(reason) = vpn_session_disconnect_reason(&raw) {
+        inner.shell_phase = "failed".into();
+        inner.shell_detail = reason;
+    }
+}
+
+fn latest_vpn_session_text<'a>(raw: &'a str) -> &'a str {
+    let start = [
+        "===== vpn terminal session start",
+        "===== vpn putty session start",
+        "===== vpn ssh session start",
+    ]
+    .iter()
+    .filter_map(|marker| raw.rfind(marker))
+    .max()
+    .unwrap_or(0);
+    &raw[start..]
+}
+
+fn vpn_session_tail(raw: &str, max_chars: usize) -> String {
+    let session = latest_vpn_session_text(raw);
+    let chars: Vec<char> = session.chars().collect();
+    let start = chars.len().saturating_sub(max_chars);
+    chars[start..].iter().collect()
+}
+
+fn vpn_session_has_shell_ready(raw: &str) -> bool {
+    let session = latest_vpn_session_text(raw);
+    session.contains("Frontline Wildfire Defense Systems (FWDS) Controller")
+        || session.contains("Type help for a summary of controller commands.")
+        || session.contains("]#")
+        || session.contains("# ")
+}
+
+fn vpn_session_disconnect_reason(raw: &str) -> Option<String> {
+    let tail = vpn_session_tail(raw, 6000).to_ascii_lowercase();
+    let markers = [
+        ("connection timed out", "Connection timed out"),
+        ("connection reset by peer", "Connection reset by peer"),
+        ("broken pipe", "Broken pipe"),
+        ("closed by remote host", "Connection closed by remote host"),
+        ("could not resolve hostname", "Could not resolve hostname"),
+        ("permission denied", "Permission denied"),
+        ("no route to host", "No route to host"),
+        ("host is unreachable", "Host is unreachable"),
+        ("connection refused", "Connection refused"),
+        ("saving session...", "Controller session ended"),
+    ];
+    for (needle, label) in markers {
+        if tail.contains(needle) {
+            return Some(label.to_string());
+        }
+    }
+    if tail.contains("connection to ") && tail.contains(" closed") {
+        return Some("Connection closed".into());
+    }
+    None
 }
 
 #[cfg(target_os = "windows")]
@@ -1017,7 +1161,7 @@ fn connect_controller(ip: String, state: State<'_, AppState>) -> Result<(), Stri
             "-o",
             "UserKnownHostsFile=/dev/null",
             "-o",
-            "ServerAliveInterval=15",
+            "ServerAliveInterval=5",
             "-o",
             "ServerAliveCountMax=3",
             "-o",
@@ -1362,6 +1506,10 @@ fn poll_controller(state: State<'_, AppState>) -> Result<ControllerPoll, String>
         sync_windows_terminal_child(&mut inner);
         sync_windows_vpn_shell_phase(&mut inner);
     }
+    #[cfg(not(target_os = "windows"))]
+    {
+        sync_macos_terminal_shell_phase(&mut inner);
+    }
     let cursor = inner.shell_log_cursor;
     let new_lines = inner.shell_logs[cursor..].to_vec();
     inner.shell_log_cursor = inner.shell_logs.len();
@@ -1460,9 +1608,19 @@ fn disconnect_controller(state: State<'_, AppState>) -> Result<(), String> {
         }
     };
 
+    #[cfg(not(target_os = "windows"))]
+    let (log_path, window_id) = {
+        let inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
+        (
+            inner.controller_ip.clone().map(|ip| log_file_path(&ip)),
+            inner.external_terminal_window_id,
+        )
+    };
+
     {
         let mut inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
         kill_shell(&mut inner);
+        inner.controller_ip = None;
         inner.shell_logs.push("[Disconnected]".into());
     }
 
@@ -1475,6 +1633,26 @@ fn disconnect_controller(state: State<'_, AppState>) -> Result<(), String> {
                 chrono::Local::now().format("%Y-%m-%d %H:%M:%S")
             ),
         );
+        stop_log_watcher_internal(&state)?;
+        if let Ok(mut diag) = state.diagnostic_state.lock() {
+            *diag = DiagnosticState::default();
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        if let Some(window_id) = window_id {
+            let _ = close_terminal_window(window_id);
+        }
+        if let Some(path) = log_path {
+            append_transcript(
+                &path,
+                &format!(
+                    "\n===== vpn terminal session end ({}) =====\n",
+                    chrono::Local::now().format("%Y-%m-%d %H:%M:%S")
+                ),
+            );
+        }
         stop_log_watcher_internal(&state)?;
         if let Ok(mut diag) = state.diagnostic_state.lock() {
             *diag = DiagnosticState::default();
@@ -1523,7 +1701,8 @@ fn run_preflight(ip: String) -> Result<serde_json::Value, String> {
 }
 
 /// Open the active controller connection in Terminal.app for full interactive setup.
-/// SSH session is wrapped with `script` to log output to ~/Desktop/fwds-{IP}-{date}.txt.
+/// SSH session is wrapped with `script` and logged to the app's controller log path
+/// so the diagnostics watcher tails the same visible Terminal session.
 #[tauri::command]
 fn open_controller_terminal(state: State<'_, AppState>, ip: Option<String>) -> Result<(), String> {
     let ip = {
@@ -1597,23 +1776,42 @@ fn open_controller_terminal(state: State<'_, AppState>, ip: Option<String>) -> R
 
     #[cfg(not(target_os = "windows"))]
     {
-        // Resolve HOME and date in Rust so the path is fully expanded before quoting.
-        // shell_quote wraps in single quotes which would prevent $HOME/$(date) from expanding.
-        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-        let date_str = Command::new("date")
-            .arg("+%Y-%m-%d")
-            .output()
-            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-            .unwrap_or_else(|_| "session".into());
-        let log_path = format!("{}/Desktop/fwds-{}-{}.txt", home, ip, date_str);
+        let previous_window_id = {
+            let mut inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
+            let previous_window_id = inner.external_terminal_window_id.take();
+            kill_shell(&mut inner);
+            inner.connection_mode = "vpn".into();
+            inner.local_serial_device = None;
+            inner.controller_ip = Some(ip.clone());
+            inner.shell_logs.clear();
+            inner.shell_log_cursor = 0;
+            inner.shell_phase = "connecting".into();
+            inner.shell_detail = format!("Opening Terminal SSH session to root@{ip}...");
+            inner
+                .shell_logs
+                .push(format!("[Terminal opening] root@{ip}"));
+            previous_window_id
+        };
+        if let Some(window_id) = previous_window_id {
+            let _ = close_terminal_window(window_id);
+        }
+
+        let log_path = log_file_path(&ip);
+        append_transcript(
+            &log_path,
+            &format!(
+                "\n===== vpn terminal session start ({}) =====\ncontroller: {ip}\n",
+                chrono::Local::now().format("%Y-%m-%d %H:%M:%S")
+            ),
+        );
         let ssh_cmd = format!(
-            "ssh -tt -i {} -o LogLevel=ERROR -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -o KexAlgorithms=ecdh-sha2-nistp521 {}",
+            "ssh -tt -i {} -o LogLevel=ERROR -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ServerAliveInterval=5 -o ServerAliveCountMax=3 -o KexAlgorithms=ecdh-sha2-nistp521 {}",
             shell_quote(&station_key.to_string_lossy()),
             shell_quote(&format!("root@{ip}")),
         );
         let command = format!(
             "clear; script -q {} {}; exit",
-            shell_quote(&log_path),
+            shell_quote(&log_path.to_string_lossy()),
             &ssh_cmd,
         );
         let script = format!(
@@ -1634,16 +1832,26 @@ fn open_controller_terminal(state: State<'_, AppState>, ip: Option<String>) -> R
                 .ok();
             if let Ok(mut inner) = state.inner.lock() {
                 inner.external_terminal_window_id = window_id;
+                inner.shell_phase = "connecting".into();
+                inner.shell_detail = format!("Terminal opened for root@{ip}; waiting for controller shell...");
+                inner
+                    .shell_logs
+                    .push(format!("[Terminal opened] root@{ip}"));
             }
-            start_log_watcher_internal(&state, false)?;
+            start_log_watcher_internal(&state, true)?;
             Ok(())
         } else {
             let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
-            Err(if stderr.is_empty() {
+            let message = if stderr.is_empty() {
                 "Terminal launch failed.".into()
             } else {
                 format!("Failed to open Terminal: {stderr}")
-            })
+            };
+            if let Ok(mut inner) = state.inner.lock() {
+                inner.shell_phase = "failed".into();
+                inner.shell_detail = message.clone();
+            }
+            Err(message)
         }
     }
 }
@@ -1757,10 +1965,23 @@ fn open_local_serial_terminal(device: String, state: State<'_, AppState>) -> Res
 
     #[cfg(not(target_os = "windows"))]
     {
-        {
+        let previous_window_id = {
             let mut inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
+            let previous_window_id = inner.external_terminal_window_id.take();
+            kill_shell(&mut inner);
             inner.connection_mode = "local".into();
             inner.local_serial_device = Some(device.clone());
+            inner.shell_logs.clear();
+            inner.shell_log_cursor = 0;
+            inner.shell_phase = "connected".into();
+            inner.shell_detail = format!("Terminal opened on {device} @ 115200");
+            inner
+                .shell_logs
+                .push(format!("[Terminal opening] {device} @ 115200"));
+            previous_window_id
+        };
+        if let Some(window_id) = previous_window_id {
+            let _ = close_terminal_window(window_id);
         }
 
         let log_path = local_serial_log_file(&device);
@@ -1787,22 +2008,36 @@ fn open_local_serial_terminal(device: String, state: State<'_, AppState>) -> Res
                 .ok();
             if let Ok(mut inner) = state.inner.lock() {
                 inner.external_terminal_window_id = window_id;
+                inner
+                    .shell_logs
+                    .push(format!("[Terminal opened] {device} @ 115200"));
             }
-            start_log_watcher_internal(&state, false)?;
+            start_log_watcher_internal(&state, true)?;
             Ok(())
         } else {
             let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
-            Err(if stderr.is_empty() {
+            let message = if stderr.is_empty() {
                 "Terminal launch failed.".into()
             } else {
                 format!("Failed to open Terminal: {stderr}")
-            })
+            };
+            if let Ok(mut inner) = state.inner.lock() {
+                inner.shell_phase = "failed".into();
+                inner.shell_detail = message.clone();
+            }
+            Err(message)
         }
     }
 }
 
 #[tauri::command]
 fn disconnect_local_controller(state: State<'_, AppState>) -> Result<(), String> {
+    #[cfg(not(target_os = "windows"))]
+    let window_id = {
+        let inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
+        inner.external_terminal_window_id
+    };
+
     {
         let mut inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
         if let Some(device) = inner.local_serial_device.clone() {
@@ -1835,6 +2070,10 @@ fn disconnect_local_controller(state: State<'_, AppState>) -> Result<(), String>
         inner.shell_detail = "Local session disconnected".into();
         inner.shell_logs.push("[Local disconnected]".into());
     }
+    #[cfg(not(target_os = "windows"))]
+    if let Some(window_id) = window_id {
+        let _ = close_terminal_window(window_id);
+    }
     stop_log_watcher_internal(&state)?;
     if let Ok(mut diag) = state.diagnostic_state.lock() {
         *diag = DiagnosticState::default();
@@ -1851,6 +2090,10 @@ fn get_controller_status(state: State<'_, AppState>) -> Result<serde_json::Value
         sync_windows_terminal_child(&mut inner);
         sync_windows_vpn_shell_phase(&mut inner);
     }
+    #[cfg(not(target_os = "windows"))]
+    {
+        sync_macos_terminal_shell_phase(&mut inner);
+    }
     Ok(serde_json::json!({
         "phase": inner.shell_phase,
         "detail": inner.shell_detail,
@@ -1861,14 +2104,21 @@ fn get_controller_status(state: State<'_, AppState>) -> Result<serde_json::Value
 #[tauri::command]
 fn get_app_state(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
     let mut inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
+    sync_vpn_logs(&mut inner);
     #[cfg(target_os = "windows")]
     {
         sync_windows_terminal_child(&mut inner);
         sync_windows_vpn_shell_phase(&mut inner);
     }
+    #[cfg(not(target_os = "windows"))]
+    {
+        sync_macos_terminal_shell_phase(&mut inner);
+    }
     Ok(serde_json::json!({
         "vpn_phase": inner.vpn_phase,
+        "vpn_detail": inner.vpn_detail,
         "shell_phase": inner.shell_phase,
+        "shell_detail": inner.shell_detail,
         "controller_ip": inner.controller_ip,
         "connection_mode": inner.connection_mode,
         "local_serial_device": inner.local_serial_device,
@@ -1945,6 +2195,9 @@ fn send_external_input(text: String, state: State<'_, AppState>) -> Result<(), S
                 .external_terminal_window_id
                 .ok_or_else(|| "Open session first".to_string())?
         };
+        if !terminal_window_exists(window_id) {
+            return Err("Open session first".into());
+        }
 
         let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
         let script = format!(
@@ -2139,10 +2392,11 @@ fn start_log_watcher_internal(state: &AppState, start_from_end: bool) -> Result<
         *key = Some(controller_key.clone());
     }
 
-    if let (Ok(mut diag), Ok(store)) =
-        (state.diagnostic_state.lock(), state.diagnostic_store.lock())
+    if let (Ok(mut diag), Ok(store)) = (state.diagnostic_state.lock(), state.diagnostic_store.lock())
     {
-        if let Some(cached) = store.controllers.get(&controller_key) {
+        if start_from_end {
+            *diag = DiagnosticState::default();
+        } else if let Some(cached) = store.controllers.get(&controller_key) {
             *diag = cached.clone();
             diag.session_has_data = false;
             diag.last_updated = None;

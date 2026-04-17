@@ -442,7 +442,7 @@ export function generateRecommendedActions(
 
       const noService = !cell.connman_cell_connected && !cell.pdp_active;
 
-      if (noService && !cell.sim_inserted) {
+      if (noService && cell.sim_inserted === false) {
         actions.push({
           id: mkId(), interface: "Cellular",
           text: "Check SIM card is seated correctly",
