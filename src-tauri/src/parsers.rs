@@ -1803,7 +1803,7 @@ INFO: 1 Distribution 0.00 PSI
     #[test]
     fn pressure_supply_negative_uses_warning_and_red_tiers() {
         let system = SystemDiagnostic {
-            system_type: Some("MP3".into()),
+            system_type: Some("HP6".into()),
             ..Default::default()
         };
 
@@ -1828,6 +1828,47 @@ INFO: 0 Supply -2.10 PSI
             .issues
             .iter()
             .any(|i| i.id == "ERR_P1_INVALID" && i.severity == DiagStatus::Red));
+    }
+
+    #[test]
+    fn pressure_distribution_uses_pressurized_high_and_invalid_tiers() {
+        let system = SystemDiagnostic {
+            system_type: Some("MP3".into()),
+            ..Default::default()
+        };
+
+        let pressurized_text = r#"
+INFO: 2 Source 74.00 PSI
+INFO: 1 Distribution 25.00 PSI
+"#;
+        let pressurized_pressure =
+            build_pressure_from_text(pressurized_text, &system).expect("pressure should parse");
+        assert!(pressurized_pressure
+            .issues
+            .iter()
+            .any(|i| i.id == "WARN_P2_PRESSURIZED" && i.severity == DiagStatus::Orange));
+
+        let high_text = r#"
+INFO: 2 Source 74.00 PSI
+INFO: 1 Distribution 185.00 PSI
+"#;
+        let high_pressure =
+            build_pressure_from_text(high_text, &system).expect("pressure should parse");
+        assert!(high_pressure
+            .issues
+            .iter()
+            .any(|i| i.id == "WARN_P2_HIGH" && i.severity == DiagStatus::Orange));
+
+        let invalid_text = r#"
+INFO: 2 Source 74.00 PSI
+INFO: 1 Distribution 225.00 PSI
+"#;
+        let invalid_pressure =
+            build_pressure_from_text(invalid_text, &system).expect("pressure should parse");
+        assert!(invalid_pressure
+            .issues
+            .iter()
+            .any(|i| i.id == "ERR_P2_HIGH_INVALID" && i.severity == DiagStatus::Red));
     }
 
     #[test]
@@ -3587,6 +3628,16 @@ fn build_pressure_from_text(text: &str, system: &SystemDiagnostic) -> Option<Pre
                     p2_value
                 ),
                 action: "Verify P2 transducer scaling and wiring.".into(),
+            });
+        } else if p2_value >= PRESSURE_SENSOR_HIGH_AMBER_MIN
+            && p2_value <= PRESSURE_SENSOR_HIGH_AMBER_MAX
+        {
+            issues.push(PressureIssue {
+                id: "WARN_P2_HIGH".into(),
+                severity: DiagStatus::Orange,
+                title: "P2 Distribution Pressure high".into(),
+                description: format!("P2 Distribution Pressure is {:.2} PSI.", p2_value),
+                action: "Inspect regulator setpoint and downstream pressure state.".into(),
             });
         } else if p2_value > 20.0 {
             issues.push(PressureIssue {

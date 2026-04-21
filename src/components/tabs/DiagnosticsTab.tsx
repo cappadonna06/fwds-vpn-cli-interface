@@ -892,13 +892,16 @@ function buildWifiSections(wifi?: WifiDiagnostic | null): DiagSection[] {
 
   const action: DiagRow[] = [];
   const checkErrorLower = (wifi.check_error || "").toLowerCase();
+  const notEnabled = checkErrorLower.includes("-65553")
+    || checkErrorLower.includes("not enabled")
+    || wifi.connman_wifi_powered === false;
   const canRecommendWifiSetup = wifiHasAuthoritativeCheck(wifi)
     ? !wifiCheckConnected(wifi)
     : !connected && !wifi.internet_reachable;
-  if (wifi.check_error && canRecommendWifiSetup) {
-    if (checkErrorLower.includes("-65553") || checkErrorLower.includes("not enabled")) {
-      action.push({ label: "Recommended action", value: "Enable Wi-Fi via setup-wifi" });
-    } else if (checkErrorLower.includes("-65554") || checkErrorLower.includes("not connected")) {
+  if (canRecommendWifiSetup && notEnabled) {
+    action.push({ label: "Recommended action", value: "Enable Wi-Fi via setup-wifi" });
+  } else if (wifi.check_error && canRecommendWifiSetup) {
+    if (checkErrorLower.includes("-65554") || checkErrorLower.includes("not connected")) {
       action.push({ label: "Recommended action", value: "Run setup-wifi and verify AP/credentials" });
     } else {
       action.push({ label: "Recommended action", value: "Check passphrase or AP selection" });
