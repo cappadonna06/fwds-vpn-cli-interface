@@ -1783,13 +1783,13 @@ INFO: 0 Supply 73.95 PSI
     }
 
     #[test]
-    fn pressure_source_material_negative_sets_red_issue() {
+    fn pressure_source_zero_equivalent_negative_sets_critical_low_issue() {
         let system = SystemDiagnostic {
             system_type: Some("MP3".into()),
             ..Default::default()
         };
         let text = r#"
-INFO: 2 Source -2.50 PSI
+INFO: 2 Source -6.00 PSI
 INFO: 1 Distribution 0.00 PSI
 "#;
         let pressure = build_pressure_from_text(text, &system).expect("pressure should parse");
@@ -1797,30 +1797,59 @@ INFO: 1 Distribution 0.00 PSI
         assert!(pressure
             .issues
             .iter()
+            .any(|i| i.id == "ERR_P3_CRITICALLY_LOW" && i.severity == DiagStatus::Red));
+        assert!(!pressure.issues.iter().any(|i| i.id == "ERR_P3_INVALID"));
+    }
+
+    #[test]
+    fn pressure_source_extreme_negative_stays_invalid() {
+        let system = SystemDiagnostic {
+            system_type: Some("MP3".into()),
+            ..Default::default()
+        };
+        let text = r#"
+INFO: 2 Source -11.00 PSI
+INFO: 1 Distribution 0.00 PSI
+"#;
+        let pressure = build_pressure_from_text(text, &system).expect("pressure should parse");
+        assert!(pressure
+            .issues
+            .iter()
             .any(|i| i.id == "ERR_P3_INVALID" && i.severity == DiagStatus::Red));
     }
 
     #[test]
-    fn pressure_supply_negative_uses_warning_and_red_tiers() {
+    fn pressure_supply_uses_critical_low_low_and_invalid_tiers() {
         let system = SystemDiagnostic {
             system_type: Some("HP6".into()),
             ..Default::default()
         };
 
-        let warning_text = r#"
+        let critical_low_text = r#"
 INFO: 2 Source 74.00 PSI
 INFO: 0 Supply -0.75 PSI
+"#;
+        let critical_low_pressure =
+            build_pressure_from_text(critical_low_text, &system).expect("pressure should parse");
+        assert!(critical_low_pressure
+            .issues
+            .iter()
+            .any(|i| i.id == "ERR_P1_CRITICALLY_LOW" && i.severity == DiagStatus::Red));
+
+        let warning_text = r#"
+INFO: 2 Source 74.00 PSI
+INFO: 0 Supply 10.00 PSI
 "#;
         let warning_pressure =
             build_pressure_from_text(warning_text, &system).expect("pressure should parse");
         assert!(warning_pressure
             .issues
             .iter()
-            .any(|i| i.id == "WARN_P1_NEAR_ZERO" && i.severity == DiagStatus::Orange));
+            .any(|i| i.id == "WARN_P1_LOW" && i.severity == DiagStatus::Orange));
 
         let red_text = r#"
 INFO: 2 Source 74.00 PSI
-INFO: 0 Supply -2.10 PSI
+INFO: 0 Supply -11.00 PSI
 "#;
         let red_pressure =
             build_pressure_from_text(red_text, &system).expect("pressure should parse");
@@ -3371,6 +3400,7 @@ const PRESSURE_SENSOR_HIGH_RED_MIN: f64 = 220.0;
 const PRESSURE_SENSOR_LOW_AMBER_MAX: f64 = 49.0;
 const PRESSURE_NEAR_ZERO_MAX: f64 = 2.0;
 const PRESSURE_NORMALIZATION_NA_MIN: f64 = -2.0;
+const PRESSURE_SOURCE_SUPPLY_INVALID_MIN: f64 = -10.0;
 
 fn parse_pressure(
     blocks: &[CommandBlock],
@@ -3538,33 +3568,45 @@ fn build_pressure_from_text(text: &str, system: &SystemDiagnostic) -> Option<Pre
             e.sensor_index == sensor_index
         })
     };
-    let normalized_value = |sensor: &Option<PressureSensorReading>, missing: bool| -> Option<f64> {
+    let normalized_value = |sensor: &Option<PressureSensorReading>,
+                            missing: bool,
+                            invalid_min: f64|
+     -> Option<f64> {
         if missing {
             return None;
         }
         let value = sensor.as_ref().map(|s| s.latest)?;
-        if value < PRESSURE_NORMALIZATION_NA_MIN {
+        if value < invalid_min {
             None
         } else {
             Some(value)
         }
     };
-    let is_near_zero = |value: f64| value.abs() <= PRESSURE_NEAR_ZERO_MAX;
+    let zero_equivalent_note = |value: f64| {
+        if value < 0.0 {
+            format!(
+                "Plausibly no source pressure; reading is also out of expected range at {:.2} PSI.",
+                value
+            )
+        } else {
+            String::new()
+        }
+    };
 
     let p1_missing = sensor_missing(0);
     let p2_missing = sensor_missing(1);
     let p3_missing = sensor_missing(2);
-    let p1 = normalized_value(&supply_sensor, p1_missing);
-    let p2 = normalized_value(&distribution_sensor, p2_missing);
-    let p3 = normalized_value(&source_sensor, p3_missing);
+    let p1 = normalized_value(&supply_sensor, p1_missing, PRESSURE_SOURCE_SUPPLY_INVALID_MIN);
+    let p2 = normalized_value(&distribution_sensor, p2_missing, PRESSURE_NORMALIZATION_NA_MIN);
+    let p3 = normalized_value(&source_sensor, p3_missing, PRESSURE_SOURCE_SUPPLY_INVALID_MIN);
 
     if p1.is_none() && !is_mp3_or_lv2 {
         issues.push(PressureIssue {
             id: "ERR_P1_INVALID".into(),
             severity: DiagStatus::Red,
             title: "Potential bad P1 Supply Pressure sensor reading".into(),
-            description: "P1 Supply Pressure is missing or below -2 PSI after normalization."
-                .into(),
+            description:
+                "P1 Supply Pressure is missing or below -10 PSI after normalization.".into(),
             action: "Check P1 Supply Pressure sensor wiring and replace sensor if fault persists."
                 .into(),
         });
@@ -3587,13 +3629,24 @@ fn build_pressure_from_text(text: &str, system: &SystemDiagnostic) -> Option<Pre
                 description: format!("P1 Supply Pressure is {:.2} PSI.", p1_value),
                 action: "Inspect regulator setpoint and upstream pressure source.".into(),
             });
-        } else if is_near_zero(p1_value) {
+        } else if p1_value <= PRESSURE_NEAR_ZERO_MAX {
             issues.push(PressureIssue {
-                id: "WARN_P1_NEAR_ZERO".into(),
-                severity: DiagStatus::Orange,
-                title: "P1 Supply Pressure near zero".into(),
-                description: format!("P1 Supply Pressure is {:.2} PSI.", p1_value),
-                action: "Check P1 sensor or shut-off valve position.".into(),
+                id: "ERR_P1_CRITICALLY_LOW".into(),
+                severity: DiagStatus::Red,
+                title: "P1 Supply Pressure critically low".into(),
+                description: if p1_value < 0.0 {
+                    format!(
+                        "P1 Supply Pressure is {:.2} PSI and is being treated as effectively zero. {}",
+                        p1_value,
+                        zero_equivalent_note(p1_value)
+                    )
+                } else {
+                    format!(
+                        "P1 Supply Pressure is {:.2} PSI and is being treated as effectively zero.",
+                        p1_value
+                    )
+                },
+                action: "Check main valve, source line, and upstream supply pressure.".into(),
             });
         } else if p1_value < PRESSURE_SENSOR_LOW_AMBER_MAX {
             issues.push(PressureIssue {
@@ -3655,8 +3708,8 @@ fn build_pressure_from_text(text: &str, system: &SystemDiagnostic) -> Option<Pre
             id: "ERR_P3_INVALID".into(),
             severity: DiagStatus::Red,
             title: "Potential bad P3 Source Pressure sensor reading".into(),
-            description: "P3 Source Pressure is missing or below -2 PSI after normalization."
-                .into(),
+            description:
+                "P3 Source Pressure is missing or below -10 PSI after normalization.".into(),
             action: "Check P3 Source Pressure sensor wiring and replace sensor if fault persists."
                 .into(),
         });
@@ -3679,13 +3732,24 @@ fn build_pressure_from_text(text: &str, system: &SystemDiagnostic) -> Option<Pre
                 description: format!("P3 Source Pressure is {:.2} PSI.", p3_value),
                 action: "Inspect regulator setpoint and upstream pressure source.".into(),
             });
-        } else if is_near_zero(p3_value) {
+        } else if p3_value <= PRESSURE_NEAR_ZERO_MAX {
             issues.push(PressureIssue {
-                id: "WARN_P3_NEAR_ZERO".into(),
-                severity: DiagStatus::Orange,
-                title: "P3 Source Pressure near zero".into(),
-                description: format!("P3 Source Pressure is {:.2} PSI.", p3_value),
-                action: "Check P3 sensor or shut-off valve position.".into(),
+                id: "ERR_P3_CRITICALLY_LOW".into(),
+                severity: DiagStatus::Red,
+                title: "P3 Source Pressure critically low".into(),
+                description: if p3_value < 0.0 {
+                    format!(
+                        "P3 Source Pressure is {:.2} PSI and is being treated as effectively zero. {}",
+                        p3_value,
+                        zero_equivalent_note(p3_value)
+                    )
+                } else {
+                    format!(
+                        "P3 Source Pressure is {:.2} PSI and is being treated as effectively zero.",
+                        p3_value
+                    )
+                },
+                action: "Check main valve, source line, and upstream supply pressure.".into(),
             });
         } else if p3_value < PRESSURE_SENSOR_LOW_AMBER_MAX {
             issues.push(PressureIssue {

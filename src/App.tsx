@@ -45,6 +45,7 @@ interface SystemInfo {
   sid: string | null;
   version: string | null;
   release_date: string | null;
+  location: string | null;
 }
 
 interface DiagnosticStateSnapshot {
@@ -84,9 +85,11 @@ export default function App() {
     shell_phase: "disconnected",
     controller_ip: null,
   });
-  const [systemInfo, setSystemInfo] = useState<{ sid: string | null; version: string | null }>({
+  const [systemInfo, setSystemInfo] = useState<SystemInfo>({
     sid: null,
     version: null,
+    release_date: null,
+    location: null,
   });
   const [connectionAlert, setConnectionAlert] = useState<string | null>(null);
   const previousStatusRef = useRef<AppStatus | null>(null);
@@ -193,11 +196,13 @@ export default function App() {
         const diagData = await invoke<DiagnosticStateSnapshot>("get_diagnostic_state");
         const rawSid = diagData.system?.sid ?? "";
         const rawVersion = diagData.system?.version ?? "";
+        const rawLocation = diagData.system?.location?.trim() ?? "";
 
         const sid = /^\d{8}$/.test(rawSid) ? rawSid : null;
         const version = /^r\d+\.\d+/.test(rawVersion) ? rawVersion : null;
+        const location = rawLocation.length > 0 ? rawLocation : null;
 
-        setSystemInfo({ sid, version });
+        setSystemInfo({ sid, version, release_date: diagData.system?.release_date ?? null, location });
       } catch {
         /* ignore */
       }
@@ -241,6 +246,7 @@ export default function App() {
         controllerTone={controllerTone}
         systemSid={showSystemInfo ? systemInfo.sid : null}
         systemVersion={showSystemInfo ? systemInfo.version : null}
+        systemLocation={showSystemInfo ? systemInfo.location : null}
       />
 
       {connectionAlert && (

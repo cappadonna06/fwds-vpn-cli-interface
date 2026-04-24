@@ -1362,6 +1362,18 @@ function summarizePressure(pressure?: PressureDiagnostic | null): CardSummary {
   const distribution = pressure.sensors?.distribution?.latest;
   const hasSource = source !== null && source !== undefined && !Number.isNaN(source);
   const hasDistribution = distribution !== null && distribution !== undefined && !Number.isNaN(distribution);
+  if (pressure.status === "red" || pressure.status === "orange") {
+    const detailParts = [
+      hasSource ? `P3 ${formatPressureSummaryPsi(source)}` : null,
+      hasDistribution ? `P2 ${formatPressureSummaryPsi(distribution)}` : null,
+    ].filter(Boolean).join(" · ");
+    return {
+      health,
+      badgeLabel,
+      primaryLine: pressure.summary || "Pressure issue detected",
+      secondaryLine: detailParts || null,
+    };
+  }
   return {
     health,
     badgeLabel,
