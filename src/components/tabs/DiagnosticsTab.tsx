@@ -740,7 +740,10 @@ function cleanCellIdentityValue(value?: string | null): string | null {
 // Non-numeric strings are returned as-is (already a name).
 function resolveCarrierCode(code?: string | null): string | null {
   if (!code) return null;
-  if (!/^\d{5,6}$/.test(code)) return code;
+  const directCode = code.trim();
+  const embeddedCode = directCode.match(/\b(\d{5,6})\b/)?.[1];
+  const normalizedCode = /^\d{5,6}$/.test(directCode) ? directCode : embeddedCode;
+  if (!normalizedCode) return code;
   const map: Record<string, string> = {
     "311270": "Verizon", "311271": "Verizon", "311272": "Verizon", "311273": "Verizon",
     "311274": "Verizon", "311275": "Verizon", "311276": "Verizon", "311277": "Verizon",
@@ -755,7 +758,22 @@ function resolveCarrierCode(code?: string | null): string | null {
     "313100": "FirstNet (AT&T)",
     "310000": "Dish",
   };
-  return map[code] ?? code;
+  return map[normalizedCode] ?? code;
+}
+
+function normalizeCarrierName(name?: string | null): string | null {
+  if (!name) return null;
+  const clean = cleanCellIdentityValue(name) ?? name.trim();
+  if (!clean) return null;
+  const resolved = resolveCarrierCode(clean);
+  if (resolved && resolved !== clean) return resolved;
+  const normalized = clean.toLowerCase();
+  if (normalized.includes("verizon")) return "Verizon";
+  if (normalized.includes("t-mobile")) return "T-Mobile";
+  if (normalized.includes("at&t")) return "AT&T";
+  if (normalized.includes("firstnet")) return "FirstNet (AT&T)";
+  if (normalized === "dish") return "Dish";
+  return clean;
 }
 
 function resolveCarrierFromApn(apn?: string | null): string | null {
@@ -795,16 +813,20 @@ function cellularExplicitNoService(cell?: CellularDiagnostic | null): boolean {
 function cellularCarrierLabel(cell?: CellularDiagnostic | null): string {
   if (!cell) return "Cellular";
   const noService = cellularExplicitNoService(cell);
-  const providerCarrier = resolveCarrierCode(cleanCellIdentityValue(cell.provider_code) ?? cell.provider_code ?? null)
-    || resolveCarrierCode(cleanCellIdentityValue(cell.operator_name) ?? cell.operator_name ?? null);
+  const registeredCarrier = normalizeCarrierName(cell.operator_name)
+    || resolveCarrierCode(cleanCellIdentityValue(cell.mccmnc) ?? cell.mccmnc ?? null)
+    || resolveCarrierCode(cleanCellIdentityValue(cell.hni) ?? cell.hni ?? null);
+  const providerCarrier = normalizeCarrierName(cell.provider_code)
+    || normalizeCarrierName(cell.basic_provider)
+    || resolveCarrierCode(cleanCellIdentityValue(cell.provider_code) ?? cell.provider_code ?? null)
+    || resolveCarrierCode(cleanCellIdentityValue(cell.basic_provider) ?? cell.basic_provider ?? null);
   const fallbackCarrier = noService
     ? null
-    : resolveCarrierCode(cleanCellIdentityValue(cell.basic_provider) ?? cell.basic_provider ?? null)
-      || resolveCarrierCode(cleanCellIdentityValue(cell.mccmnc) ?? cell.mccmnc ?? null);
+    : providerCarrier;
   const apnCarrier = noService
     ? null
     : resolveCarrierFromApn(cleanCellIdentityValue(cell.at_apn) || cleanCellIdentityValue(cell.basic_apn));
-  return providerCarrier || fallbackCarrier || apnCarrier || "Cellular";
+  return registeredCarrier || fallbackCarrier || apnCarrier || "Cellular";
 }
 
 function cellularSignalLabel(cell?: CellularDiagnostic | null): string {
@@ -892,13 +914,16 @@ function buildWifiSections(wifi?: WifiDiagnostic | null): DiagSection[] {
 
   const action: DiagRow[] = [];
   const checkErrorLower = (wifi.check_error || "").toLowerCase();
+  const notEnabled = checkErrorLower.includes("-65553")
+    || checkErrorLower.includes("not enabled")
+    || wifi.connman_wifi_powered === false;
   const canRecommendWifiSetup = wifiHasAuthoritativeCheck(wifi)
     ? !wifiCheckConnected(wifi)
     : !connected && !wifi.internet_reachable;
-  if (wifi.check_error && canRecommendWifiSetup) {
-    if (checkErrorLower.includes("-65553") || checkErrorLower.includes("not enabled")) {
-      action.push({ label: "Recommended action", value: "Enable Wi-Fi via setup-wifi" });
-    } else if (checkErrorLower.includes("-65554") || checkErrorLower.includes("not connected")) {
+  if (canRecommendWifiSetup && notEnabled) {
+    action.push({ label: "Recommended action", value: "Enable Wi-Fi via setup-wifi" });
+  } else if (wifi.check_error && canRecommendWifiSetup) {
+    if (checkErrorLower.includes("-65554") || checkErrorLower.includes("not connected")) {
       action.push({ label: "Recommended action", value: "Run setup-wifi and verify AP/credentials" });
     } else {
       action.push({ label: "Recommended action", value: "Check passphrase or AP selection" });
@@ -1359,6 +1384,18 @@ function summarizePressure(pressure?: PressureDiagnostic | null): CardSummary {
   const distribution = pressure.sensors?.distribution?.latest;
   const hasSource = source !== null && source !== undefined && !Number.isNaN(source);
   const hasDistribution = distribution !== null && distribution !== undefined && !Number.isNaN(distribution);
+  if (pressure.status === "red" || pressure.status === "orange") {
+    const detailParts = [
+      hasSource ? `P3 ${formatPressureSummaryPsi(source)}` : null,
+      hasDistribution ? `P2 ${formatPressureSummaryPsi(distribution)}` : null,
+    ].filter(Boolean).join(" · ");
+    return {
+      health,
+      badgeLabel,
+      primaryLine: pressure.summary || "Pressure issue detected",
+      secondaryLine: detailParts || null,
+    };
+  }
   return {
     health,
     badgeLabel,

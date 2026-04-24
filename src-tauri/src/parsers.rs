@@ -824,8 +824,8 @@ fn split_blocks(log: &str) -> Vec<CommandBlock> {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_pressure_from_text, parse_cellular, parse_log_into_state, parse_sid_from_prompt,
-        sanitize_version, split_blocks,
+        build_pressure_from_text, cellular_provider_label, parse_cellular, parse_log_into_state,
+        parse_sid_from_prompt, sanitize_version, split_blocks,
     };
     use crate::{DiagStatus, DiagnosticState, SystemDiagnostic};
 
@@ -1547,6 +1547,52 @@ Running AT commands...
     }
 
     #[test]
+    fn parse_cellular_provider_label_prefers_registered_network_over_reseller() {
+        let block = r#"
+===== CELLULAR CONNECTIVITY TEST =====
+Internet reachability state: online
+Cellular state: online
+Cellular provider: Twilio (311480)
+Done: Success
+
+===== BASIC CELL INFO =====
+868765071689128
+89883070000060808746
+234106869262447
+311480
+Twilio (311480)
+roaming
+80
+super
+
+===== MODEM / RADIO DIAGNOSTICS =====
+Running AT commands...
++CPIN: READY
++COPS: 0,0,"Verizon Wireless",8
++QNWINFO: "CAT-M1","311480","LTE BAND 13",5230
+"#;
+        let cell = parse_cellular(block);
+        assert_eq!(cell.provider_code.as_deref(), Some("Twilio (311480)"));
+        assert_eq!(cell.operator_name.as_deref(), Some("Verizon Wireless"));
+        assert_eq!(cellular_provider_label(&cell), "Verizon");
+    }
+
+    #[test]
+    fn parse_cellular_provider_label_uses_embedded_hni_in_quick_diag_provider() {
+        let block = r#"
+===== CELLULAR CONNECTIVITY TEST =====
+Internet reachability state: online
+Cellular state: online
+Cellular provider: Twilio (311480)
+Done: Success
+"#;
+        let cell = parse_cellular(block);
+        assert_eq!(cell.provider_code.as_deref(), Some("Twilio (311480)"));
+        assert_eq!(cell.operator_name, None);
+        assert_eq!(cellular_provider_label(&cell), "Verizon");
+    }
+
+    #[test]
     fn parse_cellular_connected_path_does_not_set_no_service() {
         let block = r#"
 ===== CELLULAR CONNECTIVITY TEST =====
@@ -1783,13 +1829,13 @@ INFO: 0 Supply 73.95 PSI
     }
 
     #[test]
-    fn pressure_source_material_negative_sets_red_issue() {
+    fn pressure_source_zero_equivalent_negative_sets_critical_low_issue() {
         let system = SystemDiagnostic {
             system_type: Some("MP3".into()),
             ..Default::default()
         };
         let text = r#"
-INFO: 2 Source -2.50 PSI
+INFO: 2 Source -6.00 PSI
 INFO: 1 Distribution 0.00 PSI
 "#;
         let pressure = build_pressure_from_text(text, &system).expect("pressure should parse");
@@ -1797,30 +1843,59 @@ INFO: 1 Distribution 0.00 PSI
         assert!(pressure
             .issues
             .iter()
-            .any(|i| i.id == "ERR_P3_INVALID" && i.severity == DiagStatus::Red));
+            .any(|i| i.id == "ERR_P3_CRITICALLY_LOW" && i.severity == DiagStatus::Red));
+        assert!(!pressure.issues.iter().any(|i| i.id == "ERR_P3_INVALID"));
     }
 
     #[test]
-    fn pressure_supply_negative_uses_warning_and_red_tiers() {
+    fn pressure_source_extreme_negative_stays_invalid() {
         let system = SystemDiagnostic {
             system_type: Some("MP3".into()),
             ..Default::default()
         };
+        let text = r#"
+INFO: 2 Source -11.00 PSI
+INFO: 1 Distribution 0.00 PSI
+"#;
+        let pressure = build_pressure_from_text(text, &system).expect("pressure should parse");
+        assert!(pressure
+            .issues
+            .iter()
+            .any(|i| i.id == "ERR_P3_INVALID" && i.severity == DiagStatus::Red));
+    }
+
+    #[test]
+    fn pressure_supply_uses_critical_low_low_and_invalid_tiers() {
+        let system = SystemDiagnostic {
+            system_type: Some("HP6".into()),
+            ..Default::default()
+        };
+
+        let critical_low_text = r#"
+INFO: 2 Source 74.00 PSI
+INFO: 0 Supply -0.75 PSI
+"#;
+        let critical_low_pressure =
+            build_pressure_from_text(critical_low_text, &system).expect("pressure should parse");
+        assert!(critical_low_pressure
+            .issues
+            .iter()
+            .any(|i| i.id == "ERR_P1_CRITICALLY_LOW" && i.severity == DiagStatus::Red));
 
         let warning_text = r#"
 INFO: 2 Source 74.00 PSI
-INFO: 0 Supply -0.75 PSI
+INFO: 0 Supply 10.00 PSI
 "#;
         let warning_pressure =
             build_pressure_from_text(warning_text, &system).expect("pressure should parse");
         assert!(warning_pressure
             .issues
             .iter()
-            .any(|i| i.id == "WARN_P1_NEAR_ZERO" && i.severity == DiagStatus::Orange));
+            .any(|i| i.id == "WARN_P1_LOW" && i.severity == DiagStatus::Orange));
 
         let red_text = r#"
 INFO: 2 Source 74.00 PSI
-INFO: 0 Supply -2.10 PSI
+INFO: 0 Supply -11.00 PSI
 "#;
         let red_pressure =
             build_pressure_from_text(red_text, &system).expect("pressure should parse");
@@ -1828,6 +1903,47 @@ INFO: 0 Supply -2.10 PSI
             .issues
             .iter()
             .any(|i| i.id == "ERR_P1_INVALID" && i.severity == DiagStatus::Red));
+    }
+
+    #[test]
+    fn pressure_distribution_uses_pressurized_high_and_invalid_tiers() {
+        let system = SystemDiagnostic {
+            system_type: Some("MP3".into()),
+            ..Default::default()
+        };
+
+        let pressurized_text = r#"
+INFO: 2 Source 74.00 PSI
+INFO: 1 Distribution 25.00 PSI
+"#;
+        let pressurized_pressure =
+            build_pressure_from_text(pressurized_text, &system).expect("pressure should parse");
+        assert!(pressurized_pressure
+            .issues
+            .iter()
+            .any(|i| i.id == "WARN_P2_PRESSURIZED" && i.severity == DiagStatus::Orange));
+
+        let high_text = r#"
+INFO: 2 Source 74.00 PSI
+INFO: 1 Distribution 185.00 PSI
+"#;
+        let high_pressure =
+            build_pressure_from_text(high_text, &system).expect("pressure should parse");
+        assert!(high_pressure
+            .issues
+            .iter()
+            .any(|i| i.id == "WARN_P2_HIGH" && i.severity == DiagStatus::Orange));
+
+        let invalid_text = r#"
+INFO: 2 Source 74.00 PSI
+INFO: 1 Distribution 225.00 PSI
+"#;
+        let invalid_pressure =
+            build_pressure_from_text(invalid_text, &system).expect("pressure should parse");
+        assert!(invalid_pressure
+            .issues
+            .iter()
+            .any(|i| i.id == "ERR_P2_HIGH_INVALID" && i.severity == DiagStatus::Red));
     }
 
     #[test]
@@ -3330,6 +3446,7 @@ const PRESSURE_SENSOR_HIGH_RED_MIN: f64 = 220.0;
 const PRESSURE_SENSOR_LOW_AMBER_MAX: f64 = 49.0;
 const PRESSURE_NEAR_ZERO_MAX: f64 = 2.0;
 const PRESSURE_NORMALIZATION_NA_MIN: f64 = -2.0;
+const PRESSURE_SOURCE_SUPPLY_INVALID_MIN: f64 = -10.0;
 
 fn parse_pressure(
     blocks: &[CommandBlock],
@@ -3497,33 +3614,45 @@ fn build_pressure_from_text(text: &str, system: &SystemDiagnostic) -> Option<Pre
             e.sensor_index == sensor_index
         })
     };
-    let normalized_value = |sensor: &Option<PressureSensorReading>, missing: bool| -> Option<f64> {
+    let normalized_value = |sensor: &Option<PressureSensorReading>,
+                            missing: bool,
+                            invalid_min: f64|
+     -> Option<f64> {
         if missing {
             return None;
         }
         let value = sensor.as_ref().map(|s| s.latest)?;
-        if value < PRESSURE_NORMALIZATION_NA_MIN {
+        if value < invalid_min {
             None
         } else {
             Some(value)
         }
     };
-    let is_near_zero = |value: f64| value.abs() <= PRESSURE_NEAR_ZERO_MAX;
+    let zero_equivalent_note = |value: f64| {
+        if value < 0.0 {
+            format!(
+                "Plausibly no source pressure; reading is also out of expected range at {:.2} PSI.",
+                value
+            )
+        } else {
+            String::new()
+        }
+    };
 
     let p1_missing = sensor_missing(0);
     let p2_missing = sensor_missing(1);
     let p3_missing = sensor_missing(2);
-    let p1 = normalized_value(&supply_sensor, p1_missing);
-    let p2 = normalized_value(&distribution_sensor, p2_missing);
-    let p3 = normalized_value(&source_sensor, p3_missing);
+    let p1 = normalized_value(&supply_sensor, p1_missing, PRESSURE_SOURCE_SUPPLY_INVALID_MIN);
+    let p2 = normalized_value(&distribution_sensor, p2_missing, PRESSURE_NORMALIZATION_NA_MIN);
+    let p3 = normalized_value(&source_sensor, p3_missing, PRESSURE_SOURCE_SUPPLY_INVALID_MIN);
 
     if p1.is_none() && !is_mp3_or_lv2 {
         issues.push(PressureIssue {
             id: "ERR_P1_INVALID".into(),
             severity: DiagStatus::Red,
             title: "Potential bad P1 Supply Pressure sensor reading".into(),
-            description: "P1 Supply Pressure is missing or below -2 PSI after normalization."
-                .into(),
+            description:
+                "P1 Supply Pressure is missing or below -10 PSI after normalization.".into(),
             action: "Check P1 Supply Pressure sensor wiring and replace sensor if fault persists."
                 .into(),
         });
@@ -3546,13 +3675,24 @@ fn build_pressure_from_text(text: &str, system: &SystemDiagnostic) -> Option<Pre
                 description: format!("P1 Supply Pressure is {:.2} PSI.", p1_value),
                 action: "Inspect regulator setpoint and upstream pressure source.".into(),
             });
-        } else if is_near_zero(p1_value) {
+        } else if p1_value <= PRESSURE_NEAR_ZERO_MAX {
             issues.push(PressureIssue {
-                id: "WARN_P1_NEAR_ZERO".into(),
-                severity: DiagStatus::Orange,
-                title: "P1 Supply Pressure near zero".into(),
-                description: format!("P1 Supply Pressure is {:.2} PSI.", p1_value),
-                action: "Check P1 sensor or shut-off valve position.".into(),
+                id: "ERR_P1_CRITICALLY_LOW".into(),
+                severity: DiagStatus::Red,
+                title: "P1 Supply Pressure critically low".into(),
+                description: if p1_value < 0.0 {
+                    format!(
+                        "P1 Supply Pressure is {:.2} PSI and is being treated as effectively zero. {}",
+                        p1_value,
+                        zero_equivalent_note(p1_value)
+                    )
+                } else {
+                    format!(
+                        "P1 Supply Pressure is {:.2} PSI and is being treated as effectively zero.",
+                        p1_value
+                    )
+                },
+                action: "Check main valve, source line, and upstream supply pressure.".into(),
             });
         } else if p1_value < PRESSURE_SENSOR_LOW_AMBER_MAX {
             issues.push(PressureIssue {
@@ -3588,6 +3728,16 @@ fn build_pressure_from_text(text: &str, system: &SystemDiagnostic) -> Option<Pre
                 ),
                 action: "Verify P2 transducer scaling and wiring.".into(),
             });
+        } else if p2_value >= PRESSURE_SENSOR_HIGH_AMBER_MIN
+            && p2_value <= PRESSURE_SENSOR_HIGH_AMBER_MAX
+        {
+            issues.push(PressureIssue {
+                id: "WARN_P2_HIGH".into(),
+                severity: DiagStatus::Orange,
+                title: "P2 Distribution Pressure high".into(),
+                description: format!("P2 Distribution Pressure is {:.2} PSI.", p2_value),
+                action: "Inspect regulator setpoint and downstream pressure state.".into(),
+            });
         } else if p2_value > 20.0 {
             issues.push(PressureIssue {
                 id: "WARN_P2_PRESSURIZED".into(),
@@ -3604,8 +3754,8 @@ fn build_pressure_from_text(text: &str, system: &SystemDiagnostic) -> Option<Pre
             id: "ERR_P3_INVALID".into(),
             severity: DiagStatus::Red,
             title: "Potential bad P3 Source Pressure sensor reading".into(),
-            description: "P3 Source Pressure is missing or below -2 PSI after normalization."
-                .into(),
+            description:
+                "P3 Source Pressure is missing or below -10 PSI after normalization.".into(),
             action: "Check P3 Source Pressure sensor wiring and replace sensor if fault persists."
                 .into(),
         });
@@ -3628,13 +3778,24 @@ fn build_pressure_from_text(text: &str, system: &SystemDiagnostic) -> Option<Pre
                 description: format!("P3 Source Pressure is {:.2} PSI.", p3_value),
                 action: "Inspect regulator setpoint and upstream pressure source.".into(),
             });
-        } else if is_near_zero(p3_value) {
+        } else if p3_value <= PRESSURE_NEAR_ZERO_MAX {
             issues.push(PressureIssue {
-                id: "WARN_P3_NEAR_ZERO".into(),
-                severity: DiagStatus::Orange,
-                title: "P3 Source Pressure near zero".into(),
-                description: format!("P3 Source Pressure is {:.2} PSI.", p3_value),
-                action: "Check P3 sensor or shut-off valve position.".into(),
+                id: "ERR_P3_CRITICALLY_LOW".into(),
+                severity: DiagStatus::Red,
+                title: "P3 Source Pressure critically low".into(),
+                description: if p3_value < 0.0 {
+                    format!(
+                        "P3 Source Pressure is {:.2} PSI and is being treated as effectively zero. {}",
+                        p3_value,
+                        zero_equivalent_note(p3_value)
+                    )
+                } else {
+                    format!(
+                        "P3 Source Pressure is {:.2} PSI and is being treated as effectively zero.",
+                        p3_value
+                    )
+                },
+                action: "Check main valve, source line, and upstream supply pressure.".into(),
             });
         } else if p3_value < PRESSURE_SENSOR_LOW_AMBER_MAX {
             issues.push(PressureIssue {
@@ -4782,18 +4943,54 @@ fn resolve_carrier(code: &str) -> String {
     }
 }
 
+fn resolve_carrier_from_identity(value: &str) -> Option<String> {
+    let trimmed = value.trim().trim_matches('"');
+    let numeric = if trimmed.chars().all(|ch| ch.is_ascii_digit()) {
+        Some(trimmed.to_string())
+    } else {
+        Regex::new(r"\b(\d{5,6})\b")
+            .ok()
+            .and_then(|re| re.captures(trimmed))
+            .and_then(|cap| cap.get(1))
+            .map(|m| m.as_str().to_string())
+    }?;
+    Some(resolve_carrier(&numeric))
+}
+
+fn normalize_carrier_name(value: &str) -> String {
+    let trimmed = value.trim().trim_matches('"');
+    if let Some(mapped) = resolve_carrier_from_identity(trimmed) {
+        return mapped;
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    if lower.contains("verizon") {
+        "Verizon".into()
+    } else if lower.contains("t-mobile") {
+        "T-Mobile".into()
+    } else if lower.contains("at&t") {
+        "AT&T".into()
+    } else if lower.contains("firstnet") {
+        "FirstNet (AT&T)".into()
+    } else if lower == "dish" {
+        "Dish".into()
+    } else {
+        trimmed.to_string()
+    }
+}
+
 fn cellular_provider_label(diag: &CellularDiagnostic) -> String {
     for candidate in [
+        diag.operator_name.as_deref(),
+        diag.mccmnc.as_deref(),
+        diag.hni.as_deref(),
         diag.provider_code.as_deref(),
         diag.basic_provider.as_deref(),
-        diag.mccmnc.as_deref(),
-        diag.operator_name.as_deref(),
     ] {
         if let Some(value) = candidate.map(str::trim).filter(|value| !value.is_empty()) {
             return if value.chars().all(|ch| ch.is_ascii_digit()) {
                 resolve_carrier(value)
             } else {
-                value.to_string()
+                normalize_carrier_name(value)
             };
         }
     }

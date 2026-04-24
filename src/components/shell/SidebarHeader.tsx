@@ -9,6 +9,7 @@ interface SidebarHeaderProps {
   controllerTone: "valid" | "invalid" | "neutral";
   systemSid?: string | null;
   systemVersion?: string | null;
+  systemLocation?: string | null;
 }
 
 export default function SidebarHeader({
@@ -20,6 +21,7 @@ export default function SidebarHeader({
   controllerTone,
   systemSid,
   systemVersion,
+  systemLocation,
 }: SidebarHeaderProps) {
   return (
     <header className="app-top-header">
@@ -42,6 +44,7 @@ export default function SidebarHeader({
           </div>
           {systemSid && <span className="badge-info">SID {systemSid}</span>}
           {systemVersion && <span className="badge-info">{systemVersion}</span>}
+          {systemLocation && <span className="badge-info">Location {systemLocation}</span>}
         </div>
       </div>
     </header>
