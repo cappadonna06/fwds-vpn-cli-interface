@@ -49,8 +49,11 @@ interface CellularDiag {
   internet_reachable?: boolean | null;
   sim_inserted?: boolean | null;
   provider_code?: string | null;
+  basic_provider?: string | null;
   imsi?: string | null;
+  hni?: string | null;
   operator_name?: string | null;
+  mccmnc?: string | null;
   strength_score?: number | null;
   strength_label?: string | null;
   modem_not_present?: boolean;
@@ -166,7 +169,10 @@ function qualityLabel(score?: number | null, label?: string | null): string {
 
 function resolveCarrierCode(code?: string | null): string | null {
   if (!code) return null;
-  if (!/^\d{5,6}$/.test(code)) return code;
+  const directCode = code.trim();
+  const embeddedCode = directCode.match(/\b(\d{5,6})\b/)?.[1];
+  const normalizedCode = /^\d{5,6}$/.test(directCode) ? directCode : embeddedCode;
+  if (!normalizedCode) return code;
   const map: Record<string, string> = {
     "311270": "Verizon", "311271": "Verizon", "311272": "Verizon", "311273": "Verizon",
     "311274": "Verizon", "311275": "Verizon", "311276": "Verizon", "311277": "Verizon",
@@ -181,7 +187,22 @@ function resolveCarrierCode(code?: string | null): string | null {
     "313100": "FirstNet (AT&T)",
     "310000": "Dish",
   };
-  return map[code] ?? code;
+  return map[normalizedCode] ?? code;
+}
+
+function normalizeCarrierName(name?: string | null): string | null {
+  if (!name) return null;
+  const clean = name.replace(/^"+|"+$/g, "").trim();
+  if (!clean) return null;
+  const resolved = resolveCarrierCode(clean);
+  if (resolved && resolved !== clean) return resolved;
+  const normalized = clean.toLowerCase();
+  if (normalized.includes("verizon")) return "Verizon";
+  if (normalized.includes("t-mobile")) return "T-Mobile";
+  if (normalized.includes("at&t")) return "AT&T";
+  if (normalized.includes("firstnet")) return "FirstNet (AT&T)";
+  if (normalized === "dish") return "Dish";
+  return clean;
 }
 
 function formatEthernetSummary(eth: EthernetDiag): string {
@@ -259,15 +280,21 @@ function formatCellSummary(cell: CellularDiag): string {
   if (cell.modem_unreachable) return "Modem not responding — reboot controller";
 
   const connected = cellularConnectedState(cell);
-  const carrierLabel = resolveCarrierCode(cell.operator_name || cell.provider_code) || "Cellular";
+  const carrierLabel =
+    normalizeCarrierName(cell.operator_name)
+    || resolveCarrierCode(cell.mccmnc || cell.hni)
+    || normalizeCarrierName(cell.provider_code)
+    || normalizeCarrierName(cell.basic_provider)
+    || resolveCarrierCode(cell.provider_code || cell.basic_provider)
+    || "Cellular";
 
   if (!connected) {
     if (cell.sim_inserted === false) return "No SIM detected";
     if (cellularExplicitNoService(cell)) {
-      const carrier = resolveCarrierCode(cell.operator_name || cell.provider_code);
+      const carrier = carrierLabel;
       return carrier ? `${carrier} — No service` : "No service";
     }
-    const carrier = resolveCarrierCode(cell.operator_name || cell.provider_code);
+    const carrier = carrierLabel;
     return carrier ? `${carrier} — Not connected` : "Not connected";
   }
 

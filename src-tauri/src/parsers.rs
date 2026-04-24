@@ -824,8 +824,8 @@ fn split_blocks(log: &str) -> Vec<CommandBlock> {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_pressure_from_text, parse_cellular, parse_log_into_state, parse_sid_from_prompt,
-        sanitize_version, split_blocks,
+        build_pressure_from_text, cellular_provider_label, parse_cellular, parse_log_into_state,
+        parse_sid_from_prompt, sanitize_version, split_blocks,
     };
     use crate::{DiagStatus, DiagnosticState, SystemDiagnostic};
 
@@ -1544,6 +1544,52 @@ Running AT commands...
         let cell = parse_cellular(block);
         assert_eq!(cell.operator_name.as_deref(), Some("Verizon"));
         assert!(matches!(cell.status, crate::DiagStatus::Green));
+    }
+
+    #[test]
+    fn parse_cellular_provider_label_prefers_registered_network_over_reseller() {
+        let block = r#"
+===== CELLULAR CONNECTIVITY TEST =====
+Internet reachability state: online
+Cellular state: online
+Cellular provider: Twilio (311480)
+Done: Success
+
+===== BASIC CELL INFO =====
+868765071689128
+89883070000060808746
+234106869262447
+311480
+Twilio (311480)
+roaming
+80
+super
+
+===== MODEM / RADIO DIAGNOSTICS =====
+Running AT commands...
++CPIN: READY
++COPS: 0,0,"Verizon Wireless",8
++QNWINFO: "CAT-M1","311480","LTE BAND 13",5230
+"#;
+        let cell = parse_cellular(block);
+        assert_eq!(cell.provider_code.as_deref(), Some("Twilio (311480)"));
+        assert_eq!(cell.operator_name.as_deref(), Some("Verizon Wireless"));
+        assert_eq!(cellular_provider_label(&cell), "Verizon");
+    }
+
+    #[test]
+    fn parse_cellular_provider_label_uses_embedded_hni_in_quick_diag_provider() {
+        let block = r#"
+===== CELLULAR CONNECTIVITY TEST =====
+Internet reachability state: online
+Cellular state: online
+Cellular provider: Twilio (311480)
+Done: Success
+"#;
+        let cell = parse_cellular(block);
+        assert_eq!(cell.provider_code.as_deref(), Some("Twilio (311480)"));
+        assert_eq!(cell.operator_name, None);
+        assert_eq!(cellular_provider_label(&cell), "Verizon");
     }
 
     #[test]
@@ -4897,18 +4943,54 @@ fn resolve_carrier(code: &str) -> String {
     }
 }
 
+fn resolve_carrier_from_identity(value: &str) -> Option<String> {
+    let trimmed = value.trim().trim_matches('"');
+    let numeric = if trimmed.chars().all(|ch| ch.is_ascii_digit()) {
+        Some(trimmed.to_string())
+    } else {
+        Regex::new(r"\b(\d{5,6})\b")
+            .ok()
+            .and_then(|re| re.captures(trimmed))
+            .and_then(|cap| cap.get(1))
+            .map(|m| m.as_str().to_string())
+    }?;
+    Some(resolve_carrier(&numeric))
+}
+
+fn normalize_carrier_name(value: &str) -> String {
+    let trimmed = value.trim().trim_matches('"');
+    if let Some(mapped) = resolve_carrier_from_identity(trimmed) {
+        return mapped;
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    if lower.contains("verizon") {
+        "Verizon".into()
+    } else if lower.contains("t-mobile") {
+        "T-Mobile".into()
+    } else if lower.contains("at&t") {
+        "AT&T".into()
+    } else if lower.contains("firstnet") {
+        "FirstNet (AT&T)".into()
+    } else if lower == "dish" {
+        "Dish".into()
+    } else {
+        trimmed.to_string()
+    }
+}
+
 fn cellular_provider_label(diag: &CellularDiagnostic) -> String {
     for candidate in [
+        diag.operator_name.as_deref(),
+        diag.mccmnc.as_deref(),
+        diag.hni.as_deref(),
         diag.provider_code.as_deref(),
         diag.basic_provider.as_deref(),
-        diag.mccmnc.as_deref(),
-        diag.operator_name.as_deref(),
     ] {
         if let Some(value) = candidate.map(str::trim).filter(|value| !value.is_empty()) {
             return if value.chars().all(|ch| ch.is_ascii_digit()) {
                 resolve_carrier(value)
             } else {
-                value.to_string()
+                normalize_carrier_name(value)
             };
         }
     }
