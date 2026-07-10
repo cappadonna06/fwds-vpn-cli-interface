@@ -75,6 +75,9 @@ export default function SessionTab({ onControllerConnected }: SessionTabProps) {
   const [serialDetail, setSerialDetail] = useState("");
   const [localMethod, setLocalMethod] = useState<"serial" | "network">("serial");
   const [networkHost, setNetworkHost] = useState("");
+  const [scanningNetwork, setScanningNetwork] = useState(false);
+  const [foundControllers, setFoundControllers] = useState<string[]>([]);
+  const [scanNote, setScanNote] = useState("");
 
   const [successBanner, setSuccessBanner] = useState<string | null>(null);
   const successBannerTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -349,6 +352,34 @@ export default function SessionTab({ onControllerConnected }: SessionTabProps) {
     }
   }
 
+  // The controller's avahi advertises _ssh._tcp with the serial as the instance
+  // name, so a short mDNS browse finds every controller reachable on the local
+  // network (router or direct Ethernet cable) with zero typing.
+  async function scanForControllers() {
+    setScanningNetwork(true);
+    setScanNote("");
+    try {
+      const found = await invoke<string[]>("discover_controllers");
+      setFoundControllers(found);
+      if (found.length === 0) {
+        setScanNote("No controllers found — check the Ethernet cable, or enter an address manually.");
+      } else if (found.length === 1 && !networkHost.trim()) {
+        // One controller on the network and nothing typed yet — prefill it.
+        setNetworkHost(found[0]);
+      }
+    } catch (e) {
+      setScanNote(String(e));
+    } finally {
+      setScanningNetwork(false);
+    }
+  }
+
+  // Auto-scan whenever the Network (SSH) panel is shown.
+  useEffect(() => {
+    if (localMethod === "network") scanForControllers();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [localMethod]);
+
   // Turn user input into an ssh host. A bare 8-digit serial → mDNS name
   // (45230110 → 45230110.local); anything else (IP or full hostname) is used as-is.
   function normalizeNetworkHost(raw: string): string {
@@ -584,6 +615,32 @@ export default function SessionTab({ onControllerConnected }: SessionTabProps) {
               <>
                 <div className="flow-group flow-group-soft">
                   <div className="flow-row">
+                    <div className="row-context">Controller</div>
+                    <div className="serial-quick-picks">
+                      {foundControllers.map((serial) => (
+                        <button
+                          key={serial}
+                          className={`chip-button ${networkHost.trim() === serial ? "active" : ""}`}
+                          onClick={() => setNetworkHost(serial)}
+                          type="button"
+                        >
+                          {serial}
+                        </button>
+                      ))}
+                      <button
+                        className="chip-button"
+                        onClick={scanForControllers}
+                        disabled={scanningNetwork}
+                        type="button"
+                      >
+                        {scanningNetwork ? "Scanning…" : "↻ Scan"}
+                      </button>
+                    </div>
+                  </div>
+                  {scanNote && !scanningNetwork && (
+                    <p className="hint session-hint">{scanNote}</p>
+                  )}
+                  <div className="flow-row">
                     <div className="row-context">Address</div>
                     <div className="serial-picker-row">
                       <input
@@ -595,9 +652,9 @@ export default function SessionTab({ onControllerConnected }: SessionTabProps) {
                     </div>
                   </div>
                   <p className="hint session-hint">
-                    Enter the controller's serial (auto-resolves to <code>&lt;serial&gt;.local</code>),
-                    its <code>.local</code> mDNS name, or its LAN IP. Uses the bundle's SSH key — no
-                    root password, and no VPN required.
+                    Found controllers appear above — click one, then Connect. Or enter a serial
+                    (auto-resolves to <code>&lt;serial&gt;.local</code>), a <code>.local</code> name,
+                    or a LAN IP. Uses the bundle's SSH key — no root password, and no VPN required.
                   </p>
                 </div>
 

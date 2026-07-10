@@ -2059,6 +2059,62 @@ fn open_local_serial_terminal(device: String, state: State<'_, AppState>) -> Res
 /// Tagged as `connection_mode = "local"` and recorded in `local_serial_device`
 /// so the shared local-session UI and `disconnect_local_controller` teardown
 /// (which closes the terminal window and writes the session-end marker) apply.
+/// Browse mDNS for controllers on the local network. The controller's avahi
+/// advertises `_ssh._tcp` with the serial number as the instance name, so a
+/// short `dns-sd` browse window yields the list of reachable serials — works
+/// over a router or a direct Ethernet cable (link-local). Returns 8-digit
+/// serials; connect to any of them as `<serial>.local`.
+#[tauri::command]
+fn discover_controllers() -> Result<Vec<String>, String> {
+    let mut child = Command::new("dns-sd")
+        .args(["-B", "_ssh._tcp", "local."])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| format!("mDNS scan unavailable on this system: {e}"))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "mDNS scan produced no output".to_string())?;
+    let lines: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let lines_clone = lines.clone();
+    let reader = thread::spawn(move || {
+        use std::io::BufRead;
+        for line in std::io::BufReader::new(stdout)
+            .lines()
+            .map_while(Result::ok)
+        {
+            if let Ok(mut collected) = lines_clone.lock() {
+                collected.push(line);
+            }
+        }
+    });
+    // dns-sd browses until killed; 2.5s is plenty for link-local mDNS answers.
+    thread::sleep(Duration::from_millis(2500));
+    let _ = child.kill();
+    let _ = child.wait();
+    let _ = reader.join();
+
+    let mut serials: Vec<String> = Vec::new();
+    if let Ok(collected) = lines.lock() {
+        for line in collected.iter() {
+            // e.g. "16:20:53.593  Add  2  28 local.  _ssh._tcp.  22611067"
+            if !line.contains(" Add ") {
+                continue;
+            }
+            if let Some(name) = line.split_whitespace().last() {
+                if name.len() == 8
+                    && name.chars().all(|c| c.is_ascii_digit())
+                    && !serials.iter().any(|s| s == name)
+                {
+                    serials.push(name.to_string());
+                }
+            }
+        }
+    }
+    Ok(serials)
+}
+
 #[tauri::command]
 fn open_local_network_terminal(host: String, state: State<'_, AppState>) -> Result<(), String> {
     let host = host.trim().to_string();
@@ -4880,6 +4936,7 @@ pub fn run() {
             list_serial_devices,
             open_local_serial_terminal,
             open_local_network_terminal,
+            discover_controllers,
             disconnect_local_controller,
             get_app_state,
             start_log_watcher,
