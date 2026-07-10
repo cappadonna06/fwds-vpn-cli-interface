@@ -148,6 +148,28 @@ The app now supports:
 - sending commands into that shell
 - keeping raw logs and debugging detail out of the main controller view
 
+## Local Network (SSH) connection — no VPN
+
+In addition to the VPN path above, the app now supports connecting to a
+controller **on the same LAN without starting the VPN**. This is the "Local
+mode → Network (SSH)" option (USB/Serial ↔ Network sub-toggle).
+
+- **Auth is identical to the VPN path:** it reuses the bundle's `~/.ssh/station`
+  key as `root`, so it is passwordless. You still have to load the VPN bundle
+  once (Files tab) to install the key — you just do not have to *run* the VPN.
+- **Host can be:** a bare serial (e.g. `45230110`, auto-resolved to
+  `45230110.local`), a full `.local` mDNS name, or a LAN IP (e.g. `192.168.1.8`).
+- **Host-key churn is handled:** the command sets `UserKnownHostsFile=/dev/null`
+  (equivalent to the VPN wrapper's `ssh-keygen -R`), so a controller whose host
+  key changed after a firmware update does not block the connection.
+- **Backend:** `open_local_network_terminal(host)` in
+  [src-tauri/src/lib.rs](/Users/marcsells/Developer/FWDS-VPN-CLI-INTERFACE/src-tauri/src/lib.rs)
+  mirrors the VPN SSH invocation (`ssh -i ~/.ssh/station … root@<host>`) but is
+  tagged as local mode. Teardown reuses `disconnect_local_controller`.
+- **Caveats:** macOS resolves `<serial>.local` natively via Bonjour; Windows
+  needs Bonjour installed, or use the LAN IP. On Windows the PuTTY path uses the
+  same auth mechanism as the existing VPN PuTTY session.
+
 ## Remaining limitations
 
 - prompt rendering may still need polish for long interactive setup flows
