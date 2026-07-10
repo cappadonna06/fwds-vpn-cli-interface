@@ -9,9 +9,9 @@ type Step = "source" | "select" | "confirm" | "run";
 const FIRMWARE_URL =
   "https://drive.google.com/drive/folders/1EqNYpwu-Dg_WrIMaYR5x3wytYcBgziQW";
 
-// macOS blocks raw-disk writes (even as root) unless the app has Full Disk
-// Access. Detect that specific failure so we can guide the user instead of
-// showing a raw `dd` error.
+// macOS TCC blocks raw-disk writes AND reads of protected folders like
+// ~/Downloads (even as root) unless the app has Full Disk Access. Detect that
+// specific failure so we can guide the user instead of showing a raw error.
 function isPermissionError(detail?: string): boolean {
   if (!detail) return false;
   return /operation not permitted|permission denied|not permitted/i.test(detail);
@@ -181,6 +181,11 @@ export default function SDCardTab() {
 
   const phase = poll?.phase ?? "preparing";
   const isTerminal = TERMINAL.has(phase);
+  // Check the log lines too — the banner may carry a generic message while the
+  // underlying "Operation not permitted" only appears in the writer's log.
+  const permissionIssue =
+    phase === "failed" &&
+    (isPermissionError(poll?.detail) || (poll?.lines ?? []).some((l) => isPermissionError(l)));
   const percent = poll ? poll.percent : 0;
   const indeterminate = percent < 0 || phase === "preparing";
   const elapsed = startedAtRef.current ? (Date.now() - startedAtRef.current) / 1000 : 0;
@@ -471,12 +476,13 @@ export default function SDCardTab() {
               <div className="sd-fail-icon">✕</div>
               <div className="sd-result-title">Write failed</div>
               <div className="sd-warn">{poll?.detail || "The write did not complete."}</div>
-              {isPermissionError(poll?.detail) && (
+              {permissionIssue && (
                 <div className="sd-fda">
                   <div className="sd-fda-title">macOS needs permission to write the card</div>
                   <p className="sd-fda-text">
-                    macOS blocks writing to disks until this app is granted{" "}
-                    <strong>Full Disk Access</strong>. This is a one-time setup per computer.
+                    macOS blocks reading protected folders (like Downloads) and writing to
+                    disks until this app is granted <strong>Full Disk Access</strong>. This is
+                    a one-time setup per computer.
                   </p>
                   <ol className="sd-fda-steps">
                     <li>Open Full Disk Access settings (button below).</li>

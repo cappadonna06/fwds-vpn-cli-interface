@@ -4415,9 +4415,13 @@ log() { printf '%s\n' "$*" >>"$PROG"; }
   if [ "$COMPRESSED" = "1" ]; then
     SRC="$TMP"
     log "Decompressing image…"
-    if ! gunzip -c "$IMG" > "$SRC" 2>>"$PROG"; then
+    # Capture gunzip stderr separately so the real reason (e.g. TCC's
+    # "Operation not permitted" on ~/Downloads) reaches the failure banner.
+    if ! gunzip -c "$IMG" > "$SRC" 2>"$DDOUT"; then
+      ERR=$(tail -2 "$DDOUT" 2>/dev/null | tr '\n' ' ')
+      cat "$DDOUT" >>"$PROG" 2>/dev/null
       rm -f "$TMP" 2>/dev/null
-      log "WRITE_FAIL Could not decompress the image (out of disk space?)"
+      log "WRITE_FAIL ${ERR:-Could not decompress the image (out of disk space?)}"
       log "FLASH_EXIT 1"; exit 0
     fi
   else
