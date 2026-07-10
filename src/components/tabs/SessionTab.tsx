@@ -73,6 +73,8 @@ export default function SessionTab({ onControllerConnected }: SessionTabProps) {
   const [serialDevice, setSerialDevice] = useState("");
   const [serialDevices, setSerialDevices] = useState<string[]>([]);
   const [serialDetail, setSerialDetail] = useState("");
+  const [localMethod, setLocalMethod] = useState<"serial" | "network">("serial");
+  const [networkHost, setNetworkHost] = useState("");
 
   const [successBanner, setSuccessBanner] = useState<string | null>(null);
   const successBannerTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -94,6 +96,12 @@ export default function SessionTab({ onControllerConnected }: SessionTabProps) {
 
     const savedSerial = localStorage.getItem("local_serial_device");
     if (savedSerial) setSerialDevice(savedSerial);
+
+    const savedMethod = localStorage.getItem("local_method");
+    if (savedMethod === "serial" || savedMethod === "network") setLocalMethod(savedMethod);
+
+    const savedHost = localStorage.getItem("local_network_host");
+    if (savedHost) setNetworkHost(savedHost);
   }, []);
 
   useEffect(() => {
@@ -341,6 +349,32 @@ export default function SessionTab({ onControllerConnected }: SessionTabProps) {
     }
   }
 
+  // Turn user input into an ssh host. A bare 8-digit serial → mDNS name
+  // (45230110 → 45230110.local); anything else (IP or full hostname) is used as-is.
+  function normalizeNetworkHost(raw: string): string {
+    const value = raw.trim();
+    if (/^\d{8}$/.test(value)) return `${value}.local`;
+    return value;
+  }
+
+  async function launchLocalNetworkTerminal() {
+    const host = normalizeNetworkHost(networkHost);
+    if (!host) return;
+    try {
+      setSerialDetail(`Connecting to root@${host}...`);
+      localStorage.setItem("local_network_host", networkHost.trim());
+      await invoke("open_local_network_terminal", { host });
+      if (isWindows) {
+        await invoke("start_log_watcher").catch(() => {});
+      }
+      setSerialDetail(isWindows ? "Connected via PuTTY" : "Connected");
+      showSuccess(isWindows ? "Connection successful - PuTTY opened" : "Connection successful - terminal window opened");
+      onControllerConnected?.();
+    } catch (e) {
+      setSerialDetail(`Failed: ${String(e)}`);
+    }
+  }
+
   async function disconnectLocalSession() {
     try {
       await invoke("disconnect_local_controller");
@@ -471,57 +505,114 @@ export default function SessionTab({ onControllerConnected }: SessionTabProps) {
             <div className="connect-card-head">
               <div>
                 <h2>Connect locally</h2>
-                <p>USB / serial access</p>
+                <p>{localMethod === "network" ? "Same-network SSH access" : "USB / serial access"}</p>
               </div>
               <div className="status-chip-row">
                 <span className={`status-chip ${localState.tone}`}>{localState.label}</span>
               </div>
             </div>
 
-            <div className="flow-group flow-group-soft">
-              <div className="flow-row">
-                <div className="row-context">Device</div>
-                <div className="serial-picker-row">
-                  <input
-                    value={serialDevice}
-                    onChange={(e) => setSerialDevice(e.target.value)}
-                    placeholder="Select or enter a serial path"
-                    list="serial-device-options"
-                  />
-                  <datalist id="serial-device-options">
-                    {serialDevices.map((device) => (
-                      <option key={device} value={device} />
-                    ))}
-                  </datalist>
-                  <button className="btn btn-secondary" onClick={detectSerialDevices}>Refresh</button>
-                </div>
-              </div>
-              {serialDevices.length > 0 && (
-                <div className="serial-quick-picks">
-                  {serialDevices.slice(0, 6).map((device) => (
-                    <button
-                      key={device}
-                      className={`chip-button ${serialDevice === device ? "active" : ""}`}
-                      onClick={() => setSerialDevice(device)}
-                      type="button"
-                    >
-                      {device}
-                    </button>
-                  ))}
-                </div>
-              )}
+            <div className="local-method-toggle" role="tablist">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={localMethod === "serial"}
+                className={`chip-button ${localMethod === "serial" ? "active" : ""}`}
+                onClick={() => { setLocalMethod("serial"); localStorage.setItem("local_method", "serial"); }}
+              >
+                USB / Serial
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={localMethod === "network"}
+                className={`chip-button ${localMethod === "network" ? "active" : ""}`}
+                onClick={() => { setLocalMethod("network"); localStorage.setItem("local_method", "network"); }}
+              >
+                Network (SSH)
+              </button>
             </div>
 
-            <div className="card-actions">
-              <button className="btn btn-primary" disabled={!serialDevice} onClick={launchLocalSerialTerminal}>
-                Connect
-              </button>
-              {localState.tone === "ok" && (
-                <button className="btn btn-secondary" onClick={disconnectLocalSession}>
-                  Disconnect
-                </button>
-              )}
-            </div>
+            {localMethod === "serial" ? (
+              <>
+                <div className="flow-group flow-group-soft">
+                  <div className="flow-row">
+                    <div className="row-context">Device</div>
+                    <div className="serial-picker-row">
+                      <input
+                        value={serialDevice}
+                        onChange={(e) => setSerialDevice(e.target.value)}
+                        placeholder="Select or enter a serial path"
+                        list="serial-device-options"
+                      />
+                      <datalist id="serial-device-options">
+                        {serialDevices.map((device) => (
+                          <option key={device} value={device} />
+                        ))}
+                      </datalist>
+                      <button className="btn btn-secondary" onClick={detectSerialDevices}>Refresh</button>
+                    </div>
+                  </div>
+                  {serialDevices.length > 0 && (
+                    <div className="serial-quick-picks">
+                      {serialDevices.slice(0, 6).map((device) => (
+                        <button
+                          key={device}
+                          className={`chip-button ${serialDevice === device ? "active" : ""}`}
+                          onClick={() => setSerialDevice(device)}
+                          type="button"
+                        >
+                          {device}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                <div className="card-actions">
+                  <button className="btn btn-primary" disabled={!serialDevice} onClick={launchLocalSerialTerminal}>
+                    Connect
+                  </button>
+                  {localState.tone === "ok" && (
+                    <button className="btn btn-secondary" onClick={disconnectLocalSession}>
+                      Disconnect
+                    </button>
+                  )}
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="flow-group flow-group-soft">
+                  <div className="flow-row">
+                    <div className="row-context">Address</div>
+                    <div className="serial-picker-row">
+                      <input
+                        value={networkHost}
+                        onChange={(e) => setNetworkHost(e.target.value)}
+                        placeholder="45230110.local or 192.168.1.8"
+                        onKeyDown={(e) => { if (e.key === "Enter") launchLocalNetworkTerminal(); }}
+                      />
+                    </div>
+                  </div>
+                  <p className="hint session-hint">
+                    Enter the controller's serial (auto-resolves to <code>&lt;serial&gt;.local</code>),
+                    its <code>.local</code> mDNS name, or its LAN IP. Uses the bundle's SSH key — no
+                    root password, and no VPN required.
+                  </p>
+                </div>
+
+                <div className="card-actions">
+                  <button className="btn btn-primary" disabled={!networkHost.trim()} onClick={launchLocalNetworkTerminal}>
+                    Connect
+                  </button>
+                  {localState.tone === "ok" && (
+                    <button className="btn btn-secondary" onClick={disconnectLocalSession}>
+                      Disconnect
+                    </button>
+                  )}
+                </div>
+              </>
+            )}
 
             {serialDetail && <div className="hint session-hint">{serialDetail}</div>}
           </section>
