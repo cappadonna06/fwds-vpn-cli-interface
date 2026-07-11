@@ -27,14 +27,19 @@ type Tab =
   | "report"
   | "diagnostics";
 
+// Controller tabs — everything that talks to (or about) a connected controller.
 const TABS: { id: Tab; label: string; badge?: string }[] = [
   { id: "session", label: "Connect" },
   { id: "commands", label: "Commands" },
   { id: "wizard", label: "Setup Wizard" },
-  { id: "sd-card", label: "Create SD Card" },
   { id: "system-configuration", label: "System Configuration" },
   { id: "diagnostics", label: "Diagnostics", badge: "Beta" },
   { id: "report", label: "Report", badge: "Beta" },
+];
+
+// Standalone local utilities that don't require a controller connection.
+const TOOL_TABS: { id: Tab; label: string; badge?: string }[] = [
+  { id: "sd-card", label: "Create SD Card" },
 ];
 
 let closeGuard = false;
@@ -277,6 +282,19 @@ export default function App() {
           nav={
             <nav className="sidebar-nav" aria-label="Primary navigation">
               {TABS.map((tab) => (
+                <SidebarNavItem
+                  key={tab.id}
+                  label={tab.label}
+                  badge={tab.badge}
+                  selected={activeTab === tab.id}
+                  onClick={() => setActiveTab(tab.id)}
+                />
+              ))}
+
+              <div className="sidebar-nav-section" role="presentation">
+                Additional Tools
+              </div>
+              {TOOL_TABS.map((tab) => (
                 <SidebarNavItem
                   key={tab.id}
                   label={tab.label}
