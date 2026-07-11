@@ -45,6 +45,9 @@ function fmtEta(sec: number): string {
   return `${m}:${s.toString().padStart(2, "0")}`;
 }
 
+const isWindows =
+  typeof navigator !== "undefined" && /windows/i.test(navigator.userAgent);
+
 export default function SDCardTab() {
   const [step, setStep] = useState<Step>("source");
   const [showHelp, setShowHelp] = useState(false);
@@ -411,7 +414,9 @@ export default function SDCardTab() {
             </button>
           </div>
           <p className="sd-target-meta" style={{ marginTop: 8 }}>
-            You'll be asked for your computer's administrator password.
+            {isWindows
+              ? "You'll be asked to allow the change (Windows will show a User Account Control prompt)."
+              : "You'll be asked for your computer's administrator password."}
           </p>
         </div>
       )}
