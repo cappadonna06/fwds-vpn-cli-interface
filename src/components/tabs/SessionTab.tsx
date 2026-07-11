@@ -338,14 +338,14 @@ export default function SessionTab({ onControllerConnected }: SessionTabProps) {
   async function launchLocalSerialTerminal() {
     if (!serialDevice) return;
     try {
-      setSerialDetail("Connecting...");
+      setSerialDetail("Connecting…");
       localStorage.setItem("local_serial_device", serialDevice);
       await invoke("open_local_serial_terminal", { device: serialDevice });
       if (isWindows) {
         await invoke("start_log_watcher").catch(() => {});
       }
-      setSerialDetail(isWindows ? "Connected via PuTTY" : "Connected");
-      showSuccess(isWindows ? "Connection successful - PuTTY opened" : "Connection successful - terminal window opened");
+      setSerialDetail("Connected");
+      showSuccess("Connected");
       onControllerConnected?.();
     } catch (e) {
       setSerialDetail(`Failed: ${String(e)}`);
@@ -363,9 +363,7 @@ export default function SessionTab({ onControllerConnected }: SessionTabProps) {
       const found = Array.isArray(result) ? result : [];
       setFoundControllers(found);
       if (found.length === 0) {
-        setScanNote(
-          "No controllers found. Make sure the controller and this computer are on the same network — a direct Ethernet cable, or both on the same router — then Scan again. You can also enter an address manually below."
-        );
+        setScanNote("No controllers found. Check the connection, then Scan again or enter an address below.");
       } else if (found.length === 1 && !networkHost.trim()) {
         // One controller on the network and nothing typed yet — prefill it.
         setNetworkHost(found[0]);
@@ -395,14 +393,14 @@ export default function SessionTab({ onControllerConnected }: SessionTabProps) {
     const host = normalizeNetworkHost(networkHost);
     if (!host) return;
     try {
-      setSerialDetail(`Connecting to root@${host}...`);
+      setSerialDetail("Connecting…");
       localStorage.setItem("local_network_host", networkHost.trim());
       await invoke("open_local_network_terminal", { host });
       if (isWindows) {
         await invoke("start_log_watcher").catch(() => {});
       }
-      setSerialDetail(isWindows ? "Connected via PuTTY" : "Connected");
-      showSuccess(isWindows ? "Connection successful - PuTTY opened" : "Connection successful - terminal window opened");
+      setSerialDetail("Connected");
+      showSuccess("Connected");
       onControllerConnected?.();
     } catch (e) {
       setSerialDetail(`Failed: ${String(e)}`);
@@ -633,10 +631,15 @@ export default function SessionTab({ onControllerConnected }: SessionTabProps) {
                       <line x1="12" y1="20" x2="12" y2="20" />
                     </svg>
                     <span>
-                      <strong>Same network required.</strong> The controller and this computer
-                      must share one local network — linked by a direct Ethernet cable, or both on
-                      the same router (controller on Ethernet; this computer on Wi‑Fi or Ethernet).
-                      Separate networks or a VPN won't reach it.
+                      <strong>Same network required.</strong> Controller and this computer on one LAN.
+                      <details className="net-help">
+                        <summary>Which setups work?</summary>
+                        <ul>
+                          <li>Ethernet cable straight between them, or</li>
+                          <li>Both on one router (controller on Ethernet; this computer on Wi‑Fi or Ethernet).</li>
+                          <li>A VPN or a different network won't reach it.</li>
+                        </ul>
+                      </details>
                     </span>
                   </div>
                   <div className="flow-row">
@@ -677,9 +680,7 @@ export default function SessionTab({ onControllerConnected }: SessionTabProps) {
                     </div>
                   </div>
                   <p className="hint session-hint">
-                    Found controllers appear above — click one, then Connect. Or enter a serial
-                    (auto-resolves to <code>&lt;serial&gt;.local</code>), a <code>.local</code> name,
-                    or a LAN IP. Passwordless via the bundle's SSH key.
+                    Serial, <code>.local</code> name, or IP. Passwordless via the bundle key.
                   </p>
                 </div>
 
@@ -703,7 +704,7 @@ export default function SessionTab({ onControllerConnected }: SessionTabProps) {
             <div className="connect-card-head">
               <div>
                 <h2>Remote Controller Access</h2>
-                <p>Main flow: Bundle ready, Open VPN, enter VPN ID, then Connect + Launch.</p>
+                <p>Open VPN, enter the VPN ID, then connect.</p>
               </div>
               {remoteAccessState === "ready" && (
                 <div className="status-chip-row">

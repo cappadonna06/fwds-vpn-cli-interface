@@ -418,6 +418,41 @@
   font-weight: 700;
 }
 
+.net-help {
+  margin-top: 6px;
+}
+
+.net-help > summary {
+  display: inline-block;
+  color: var(--accent);
+  font-weight: 600;
+  cursor: pointer;
+  list-style: none;
+}
+
+.net-help > summary::-webkit-details-marker {
+  display: none;
+}
+
+.net-help > summary::before {
+  content: "▸ ";
+  font-size: 9px;
+  vertical-align: 1px;
+}
+
+.net-help[open] > summary::before {
+  content: "▾ ";
+}
+
+.net-help ul {
+  margin: 6px 0 0;
+  padding-left: 18px;
+}
+
+.net-help li {
+  margin-bottom: 2px;
+}
+
 .card-actions {
   display: flex;
   gap: 8px;
