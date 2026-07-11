@@ -7,6 +7,7 @@ import SessionTab from "./components/tabs/SessionTab";
 import CommandsTab from "./components/tabs/CommandsTab";
 import WizardTab from "./components/tabs/WizardTab";
 import SDCardTab from "./components/tabs/SDCardTab";
+import LedDecoderTab from "./components/tabs/LedDecoderTab";
 import ReportTab from "./components/tabs/ReportTab";
 import DiagnosticsTab from "./components/tabs/DiagnosticsTab";
 import SystemConfigurationTab from "./components/tabs/SystemConfigurationTab";
@@ -25,7 +26,8 @@ type Tab =
   | "sd-card"
   | "system-configuration"
   | "report"
-  | "diagnostics";
+  | "diagnostics"
+  | "led-decoder";
 
 // Controller tabs — everything that talks to (or about) a connected controller.
 const TABS: { id: Tab; label: string; badge?: string }[] = [
@@ -40,6 +42,7 @@ const TABS: { id: Tab; label: string; badge?: string }[] = [
 // Standalone local utilities that don't require a controller connection.
 const TOOL_TABS: { id: Tab; label: string; badge?: string }[] = [
   { id: "sd-card", label: "Create SD Card" },
+  { id: "led-decoder", label: "LED Decoder" },
 ];
 
 let closeGuard = false;
@@ -319,6 +322,9 @@ export default function App() {
           </div>
           <div style={{ display: activeTab === "sd-card" ? "contents" : "none" }}>
             <SDCardTab />
+          </div>
+          <div style={{ display: activeTab === "led-decoder" ? "contents" : "none" }}>
+            <LedDecoderTab />
           </div>
           <div style={{ display: activeTab === "system-configuration" ? "contents" : "none" }}>
             <SystemConfigurationTab />
