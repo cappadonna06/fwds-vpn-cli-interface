@@ -359,7 +359,8 @@ export default function SessionTab({ onControllerConnected }: SessionTabProps) {
     setScanningNetwork(true);
     setScanNote("");
     try {
-      const found = await invoke<string[]>("discover_controllers");
+      const result = await invoke<string[]>("discover_controllers");
+      const found = Array.isArray(result) ? result : [];
       setFoundControllers(found);
       if (found.length === 0) {
         setScanNote(
@@ -616,12 +617,28 @@ export default function SessionTab({ onControllerConnected }: SessionTabProps) {
             ) : (
               <>
                 <div className="flow-group flow-group-soft">
-                  <p className="hint session-hint net-requirement">
-                    <strong>Same network required.</strong> Connect the controller and this
-                    computer to the same network — a direct Ethernet cable between them, or
-                    both on the same router (controller by Ethernet; this computer on Wi‑Fi
-                    or Ethernet). Different networks or a VPN won't work.
-                  </p>
+                  <div className="net-requirement">
+                    <svg
+                      className="net-requirement-icon"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth={2}
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      aria-hidden="true"
+                    >
+                      <path d="M5 12.55a10 10 0 0 1 14 0" />
+                      <path d="M8.5 16.1a5 5 0 0 1 7 0" />
+                      <line x1="12" y1="20" x2="12" y2="20" />
+                    </svg>
+                    <span>
+                      <strong>Same network required.</strong> The controller and this computer
+                      must share one local network — linked by a direct Ethernet cable, or both on
+                      the same router (controller on Ethernet; this computer on Wi‑Fi or Ethernet).
+                      Separate networks or a VPN won't reach it.
+                    </span>
+                  </div>
                   <div className="flow-row">
                     <div className="row-context">Controller</div>
                     <div className="serial-quick-picks">

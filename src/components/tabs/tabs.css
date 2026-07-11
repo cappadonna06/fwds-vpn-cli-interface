@@ -391,13 +391,31 @@
   color: var(--danger);
 }
 
-.session-hint.net-requirement {
-  margin-bottom: 12px;
-  padding: 9px 11px;
+.net-requirement {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+  background: var(--accent-soft);
+  border: 1px solid color-mix(in srgb, var(--accent) 26%, transparent);
   border-radius: 8px;
-  background: var(--nav-hover, rgba(0, 0, 0, 0.04));
-  border: 1px solid var(--border-soft, var(--border));
-  line-height: 1.45;
+}
+
+.net-requirement .net-requirement-icon {
+  flex: none;
+  width: 15px;
+  height: 15px;
+  margin-top: 1px;
+  color: var(--accent);
+}
+
+.net-requirement strong {
+  color: var(--accent-navy);
+  font-weight: 700;
 }
 
 .card-actions {
