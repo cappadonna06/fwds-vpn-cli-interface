@@ -26,10 +26,17 @@ export default function SidebarHeader({
   return (
     <header className="app-top-header">
       <div className="top-header-brand">
-        <img src="/logo.png" alt="FWDS logo" className="h-10 w-auto object-contain" />
+        <img
+          src="/brand/logos/secondary-white.png"
+          alt="Frontline Wildfire Defense"
+          className="top-header-logo"
+        />
+        <span className="top-header-brand-divider" aria-hidden="true" />
         <div className="top-header-brand-text">
-          <span className="top-header-brand-title">FWDS</span>
-          <span className="top-header-brand-subtitle">Controller Console <span className="header-version-pill">v1.0</span></span>
+          <span className="top-header-brand-title">Controller Console</span>
+          <span className="top-header-brand-subtitle">
+            Field Diagnostics<span className="header-version-pill">v1.0</span>
+          </span>
         </div>
       </div>
 
