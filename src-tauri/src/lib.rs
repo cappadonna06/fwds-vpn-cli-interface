@@ -4694,13 +4694,90 @@ fn run_sd_flash(
         inner.sd_flash_progress_offset = 0;
     }
 
+    // On macOS the elevated writer runs through the privilege trampoline, whose
+    // TCC identity is NOT this app — so it cannot read protected folders like
+    // ~/Downloads even as root. Do the source read HERE, in the app process
+    // (which has the file-picker grant and Full Disk Access), staging a plaintext
+    // image into unprotected temp. The elevated writer then only touches temp and
+    // the raw device. Windows has no such restriction, so it stages nothing.
+    #[cfg(not(target_os = "windows"))]
+    let (launch_image, launch_compressed) = {
+        let staged = stage_dir.join("image.img");
+        if compressed {
+            if let Ok(mut inner) = inner_state.lock() {
+                inner.sd_flash_phase = "preparing".into();
+                inner.sd_flash_detail = "Decompressing image…".into();
+                push_sd_log(&mut inner, "Decompressing image before write…".into());
+            }
+            let outfile = match fs::File::create(&staged) {
+                Ok(f) => f,
+                Err(e) => {
+                    set_sd_failed(&inner_state, format!("Could not create staging file: {e}"));
+                    return;
+                }
+            };
+            let result = Command::new("gunzip")
+                .arg("-c")
+                .arg(&image_path)
+                .stdout(Stdio::from(outfile))
+                .stderr(Stdio::piped())
+                .spawn()
+                .and_then(|child| child.wait_with_output());
+            match result {
+                Ok(out) if out.status.success() => {}
+                Ok(out) => {
+                    let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+                    let _ = fs::remove_file(&staged);
+                    set_sd_failed(
+                        &inner_state,
+                        if err.is_empty() {
+                            "Could not decompress the image.".into()
+                        } else {
+                            err
+                        },
+                    );
+                    return;
+                }
+                Err(e) => {
+                    let _ = fs::remove_file(&staged);
+                    set_sd_failed(&inner_state, format!("Could not run the decompressor: {e}"));
+                    return;
+                }
+            }
+        } else {
+            if let Ok(mut inner) = inner_state.lock() {
+                inner.sd_flash_phase = "preparing".into();
+                inner.sd_flash_detail = "Preparing image…".into();
+            }
+            if let Err(e) = fs::copy(&image_path, &staged) {
+                set_sd_failed(&inner_state, format!("Could not read the image: {e}"));
+                return;
+            }
+        }
+        // Staged file is plaintext; retarget totals so progress tracks the
+        // decompressed size and the writer is told the source is not compressed.
+        let plaintext_len = fs::metadata(&staged).map(|m| m.len()).unwrap_or(0);
+        if plaintext_len == 0 {
+            set_sd_failed(&inner_state, "The prepared image is empty.".into());
+            return;
+        }
+        if let Ok(mut inner) = inner_state.lock() {
+            inner.sd_flash_comp_total = plaintext_len;
+            inner.sd_flash_compressed = false;
+        }
+        (staged.to_string_lossy().into_owned(), false)
+    };
+
+    #[cfg(target_os = "windows")]
+    let (launch_image, launch_compressed) = (image_path.clone(), compressed);
+
     let pid = match launch_sd_flash(
         &stage_dir,
         &progress_path,
         &cancel_path,
-        &image_path,
+        &launch_image,
         &device_id,
-        compressed,
+        launch_compressed,
     ) {
         Ok(pid) => pid,
         Err(e) => {
