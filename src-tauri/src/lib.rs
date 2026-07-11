@@ -1797,6 +1797,15 @@ fn open_controller_terminal(state: State<'_, AppState>, ip: Option<String>) -> R
 
     #[cfg(not(target_os = "windows"))]
     {
+        // Preflight: the session runs `ssh` inside Terminal. This ships with
+        // macOS so it's rarely missing, but if it were, the window would flash
+        // "command not found" and close with no explanation.
+        require_unix_command(
+            "ssh",
+            "OpenSSH (ssh) was not found, so the controller session can't open. \
+             Install or restore the OpenSSH client and try again.",
+        )?;
+
         let previous_window_id = {
             let mut inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
             let previous_window_id = inner.external_terminal_window_id.take();
@@ -1909,6 +1918,64 @@ fn list_serial_devices() -> Result<Vec<String>, String> {
     }
 }
 
+/// Resolve a command-line tool by name the way the login shell we hand the
+/// command to (Terminal) would: check the common install prefixes, then fall
+/// back to `which`. Returns the resolved path, or `None` if the tool isn't
+/// installed anywhere we can see.
+///
+/// This exists so we can preflight external dependencies before opening a
+/// Terminal window. `osascript` reports success as soon as Terminal launches —
+/// it has no idea whether the command we asked it to run (`minicom`, `ssh`, …)
+/// actually exists. Without this check a missing tool prints "command not
+/// found", the window closes, and the user only sees the generic
+/// "terminal window closed" banner. Checking up front lets us return an honest,
+/// actionable error instead.
+#[cfg(not(target_os = "windows"))]
+fn resolve_unix_command(name: &str) -> Option<PathBuf> {
+    let mut dirs: Vec<PathBuf> = vec![
+        PathBuf::from("/opt/homebrew/bin"),
+        PathBuf::from("/opt/homebrew/sbin"),
+        PathBuf::from("/usr/local/bin"),
+        PathBuf::from("/usr/local/sbin"),
+        PathBuf::from("/usr/bin"),
+        PathBuf::from("/bin"),
+        PathBuf::from("/usr/sbin"),
+        PathBuf::from("/sbin"),
+    ];
+    if let Some(home) = dirs::home_dir() {
+        dirs.push(home.join(".local").join("bin"));
+    }
+    for dir in dirs {
+        let candidate = dir.join(name);
+        if candidate.exists() {
+            return Some(candidate);
+        }
+    }
+    // Fall back to `which`, in case the tool lives on a PATH entry we didn't
+    // enumerate above.
+    if let Ok(out) = Command::new("which").arg(name).output() {
+        if out.status.success() {
+            let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if !path.is_empty() {
+                return Some(PathBuf::from(path));
+            }
+        }
+    }
+    None
+}
+
+/// Preflight a required Unix tool. Returns `missing_message` verbatim as the
+/// error when the tool can't be found, so callers control the exact,
+/// user-facing wording (including the install instructions).
+#[cfg(not(target_os = "windows"))]
+fn require_unix_command(name: &str, missing_message: &str) -> Result<(), String> {
+    if resolve_unix_command(name).is_some() {
+        Ok(())
+    } else {
+        Err(missing_message.to_string())
+    }
+}
+
 #[tauri::command]
 fn open_local_serial_terminal(device: String, state: State<'_, AppState>) -> Result<(), String> {
     if device.trim().is_empty() {
@@ -1986,6 +2053,16 @@ fn open_local_serial_terminal(device: String, state: State<'_, AppState>) -> Res
 
     #[cfg(not(target_os = "windows"))]
     {
+        // Preflight: the serial console runs `minicom` inside Terminal. If it
+        // isn't installed the Terminal window just flashes "command not found"
+        // and closes, leaving only the generic "terminal window closed" banner.
+        // Fail here instead, with a message the technician can act on.
+        require_unix_command(
+            "minicom",
+            "minicom is not installed, so the serial console can't open. \
+             Install it with: brew install minicom",
+        )?;
+
         let previous_window_id = {
             let mut inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
             let previous_window_id = inner.external_terminal_window_id.take();
@@ -2064,8 +2141,18 @@ fn open_local_serial_terminal(device: String, state: State<'_, AppState>) -> Res
 /// short `dns-sd` browse window yields the list of reachable serials — works
 /// over a router or a direct Ethernet cable (link-local). Returns 8-digit
 /// serials; connect to any of them as `<serial>.local`.
+///
+/// This is an `async` command whose blocking work (a ~2.5s browse window) is
+/// offloaded to `spawn_blocking`. A synchronous command would run on the main
+/// thread and freeze the whole UI for the duration of the scan.
 #[tauri::command]
-fn discover_controllers() -> Result<Vec<String>, String> {
+async fn discover_controllers() -> Result<Vec<String>, String> {
+    tokio::task::spawn_blocking(discover_controllers_blocking)
+        .await
+        .map_err(|e| format!("Controller scan task failed: {e}"))?
+}
+
+fn discover_controllers_blocking() -> Result<Vec<String>, String> {
     let mut child = Command::new("dns-sd")
         .args(["-B", "_ssh._tcp", "local."])
         .stdout(Stdio::piped())
@@ -2188,6 +2275,15 @@ fn open_local_network_terminal(host: String, state: State<'_, AppState>) -> Resu
 
     #[cfg(not(target_os = "windows"))]
     {
+        // Preflight: this session runs `ssh` inside Terminal. Ships with macOS,
+        // but check anyway so a missing client fails honestly instead of
+        // flashing "command not found" and closing the window.
+        require_unix_command(
+            "ssh",
+            "OpenSSH (ssh) was not found, so the controller session can't open. \
+             Install or restore the OpenSSH client and try again.",
+        )?;
+
         let previous_window_id = {
             let mut inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
             let previous_window_id = inner.external_terminal_window_id.take();
@@ -5191,6 +5287,27 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn resolve_unix_command_finds_present_tool() {
+        // `sh` exists on every Unix host, so the dependency preflight must
+        // resolve it; a nonsense name must resolve to nothing.
+        assert!(resolve_unix_command("sh").is_some());
+        assert!(resolve_unix_command("definitely-not-a-real-binary-xyz").is_none());
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn require_unix_command_reports_missing_with_message() {
+        assert!(require_unix_command("sh", "unused").is_ok());
+        let err = require_unix_command(
+            "definitely-not-a-real-binary-xyz",
+            "install it with: brew install foo",
+        )
+        .unwrap_err();
+        assert_eq!(err, "install it with: brew install foo");
+    }
 
     #[test]
     fn vpn_start_state_rules() {

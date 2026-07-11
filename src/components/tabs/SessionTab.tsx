@@ -362,7 +362,9 @@ export default function SessionTab({ onControllerConnected }: SessionTabProps) {
       const found = await invoke<string[]>("discover_controllers");
       setFoundControllers(found);
       if (found.length === 0) {
-        setScanNote("No controllers found — check the Ethernet cable, or enter an address manually.");
+        setScanNote(
+          "No controllers found. Make sure the controller and this computer are on the same network — a direct Ethernet cable, or both on the same router — then Scan again. You can also enter an address manually below."
+        );
       } else if (found.length === 1 && !networkHost.trim()) {
         // One controller on the network and nothing typed yet — prefill it.
         setNetworkHost(found[0]);
@@ -614,6 +616,12 @@ export default function SessionTab({ onControllerConnected }: SessionTabProps) {
             ) : (
               <>
                 <div className="flow-group flow-group-soft">
+                  <p className="hint session-hint net-requirement">
+                    <strong>Same network required.</strong> Connect the controller and this
+                    computer to the same network — a direct Ethernet cable between them, or
+                    both on the same router (controller by Ethernet; this computer on Wi‑Fi
+                    or Ethernet). Different networks or a VPN won't work.
+                  </p>
                   <div className="flow-row">
                     <div className="row-context">Controller</div>
                     <div className="serial-quick-picks">
@@ -654,7 +662,7 @@ export default function SessionTab({ onControllerConnected }: SessionTabProps) {
                   <p className="hint session-hint">
                     Found controllers appear above — click one, then Connect. Or enter a serial
                     (auto-resolves to <code>&lt;serial&gt;.local</code>), a <code>.local</code> name,
-                    or a LAN IP. Uses the bundle's SSH key — no root password, and no VPN required.
+                    or a LAN IP. Passwordless via the bundle's SSH key.
                   </p>
                 </div>
 
