@@ -4044,7 +4044,7 @@
   transition: stroke-dashoffset 0.95s linear;
 }
 .diag-progress-ring-fill.done {
-  stroke: #22c55e;
+  stroke: var(--success);
   transition: stroke-dashoffset 0.15s ease-out;
 }
 .diag-progress-label {

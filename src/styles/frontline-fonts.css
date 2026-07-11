@@ -1,0 +1,23 @@
+/* ============================================================
+   Self-hosted brand webfonts (latin subset, variable).
+   Substitutes documented by the FWD Brand Book:
+     Playfair Display  ->  IvyPresto (headline / display serif)
+     Montserrat        ->  Gotham    (workhorse sans)
+   Swap in licensed IvyPresto / Gotham web fonts for production.
+   ============================================================ */
+
+@font-face {
+  font-family: 'Montserrat';
+  font-style: normal;
+  font-weight: 300 800;
+  font-display: swap;
+  src: url('/brand/fonts/montserrat.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'Playfair Display';
+  font-style: normal;
+  font-weight: 400 900;
+  font-display: swap;
+  src: url('/brand/fonts/playfair.woff2') format('woff2');
+}

@@ -1,29 +1,60 @@
+@import "./styles/frontline-fonts.css";
+@import "./styles/frontline-tokens.css";
+
+/* ============================================================
+   APP TOKEN REMAP — the whole console is driven by these vars.
+   Here they are mapped onto the Frontline Wildfire Defense
+   design system (navy ground · Frontline Blue · ember orange).
+   Change brand behavior here; it cascades through every tab.
+   ============================================================ */
 :root {
-  --bg-0: #f4f6f8;
-  --bg-1: #ffffff;
-  --bg-2: #f1f4f8;
-  --bg-3: #e8edf5;
-  --border: #d8dee8;
-  --border-soft: #e7ebf2;
-  --text-primary: #1f2a37;
-  --text-secondary: #4b5563;
-  --text-muted: #6b7280;
-  --accent: #2f6fe4;
-  --accent-hover: #245ecd;
-  --nav-hover: #edf3ff;
-  --nav-selected: #e8f0ff;
-  --nav-selected-border: #c9dbff;
-  --success: #1f9d55;
-  --success-ink: #157347;
-  --success-bg: #e7f7ef;
-  --success-border: #b8e5cc;
-  --warning: #d08700;
-  --danger: #dc2626;
-  --danger-hover: #b91c1c;
-  --danger-ink: #b42318;
-  --danger-bg: #feeceb;
-  --danger-border: #f7c6c2;
-  --mono: "JetBrains Mono", "Fira Code", "Cascadia Code", monospace;
+  /* Surfaces — light content on a cool grey canvas */
+  --bg-0: var(--fwd-grey-050);   /* app canvas / sunken */
+  --bg-1: var(--fwd-white);      /* raised surfaces, cards */
+  --bg-2: var(--fwd-grey-100);   /* subtle fills */
+  --bg-3: var(--fwd-grey-200);   /* stronger fills / secondary buttons */
+
+  /* Borders / hairlines */
+  --border: var(--fwd-grey-200);
+  --border-soft: var(--fwd-grey-100);
+
+  /* Text — navy ink is the brand-forward default */
+  --text-primary: #0B2545;              /* deep navy ink */
+  --text-secondary: var(--fwd-grey-600);
+  --text-muted: var(--fwd-grey-500);
+  --text-tertiary: var(--fwd-grey-400);
+  --text-strong: var(--fwd-navy);
+
+  /* Interactive — Frontline Blue, deepened to ~AA on white for text/links.
+     (Used as text in places, so it's a touch deeper than DS blue-700.) */
+  --accent: #1E6AAF;
+  --accent-hover: var(--fwd-navy-700);
+  --accent-soft: rgba(105, 179, 231, 0.16);
+  --accent-navy: var(--fwd-navy);       /* primary action ground */
+  --accent-navy-hover: var(--fwd-navy-700);
+
+  /* Navigation (fallbacks; the shell renders navy — see App.css) */
+  --nav-hover: rgba(105, 179, 231, 0.12);
+  --nav-selected: rgba(105, 179, 231, 0.16);
+  --nav-selected-border: rgba(105, 179, 231, 0.45);
+
+  /* Status — grounded; danger draws from the ember family */
+  --success: var(--fwd-success);
+  --success-ink: #206844;
+  --success-bg: #E3F3EA;
+  --success-border: #B8DEC8;
+  --warning: var(--fwd-warning);
+  --warning-ink: #9A6B14;
+  --danger: var(--fwd-danger);
+  --danger-hover: var(--fwd-orange-700);
+  --danger-ink: #A62B0C;
+  --danger-bg: #FDE7DF;
+  --danger-border: #F3C3B2;
+
+  /* Type families */
+  --sans: var(--fwd-font-sans);
+  --serif: var(--fwd-font-display);
+  --mono: "JetBrains Mono", "Fira Code", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
 }
 
 * {
@@ -40,17 +71,20 @@ body,
 }
 
 body {
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-family: var(--sans);
   font-size: 13px;
+  line-height: 1.5;
   background: var(--bg-0);
   color: var(--text-primary);
   -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
 
 button {
   cursor: pointer;
   font-family: inherit;
   font-size: 13px;
+  letter-spacing: 0.01em;
 }
 
 input,
@@ -61,31 +95,54 @@ textarea {
   background: var(--bg-1);
   color: var(--text-primary);
   border: 1px solid var(--border);
-  border-radius: 4px;
-  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  padding: 7px 10px;
   outline: none;
+  transition: border-color var(--dur-fast) var(--ease-standard),
+              box-shadow var(--dur-fast) var(--ease-standard);
 }
 
 input:focus,
 select:focus,
 textarea:focus {
-  border-color: var(--accent);
+  border-color: var(--fwd-blue-500);
+  box-shadow: var(--shadow-focus);
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: var(--text-tertiary);
+}
+
+/* Keyboard focus — always a Frontline-Blue ring */
+:focus-visible {
+  outline: none;
+  box-shadow: var(--shadow-focus);
+  border-radius: var(--radius-sm);
+}
+
+::selection {
+  background: rgba(105, 179, 231, 0.32);
 }
 
 ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: 8px;
+  height: 8px;
 }
 
 ::-webkit-scrollbar-track {
-  background: var(--bg-2);
+  background: transparent;
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #c2c9d4;
-  border-radius: 3px;
+  background: var(--fwd-grey-300);
+  border-radius: var(--radius-pill);
+  border: 2px solid transparent;
+  background-clip: padding-box;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #aeb7c4;
+  background: var(--fwd-grey-400);
+  background-clip: padding-box;
+  border: 2px solid transparent;
 }
