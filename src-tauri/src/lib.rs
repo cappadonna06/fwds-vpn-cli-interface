@@ -4379,176 +4379,317 @@ fn list_sd_targets_impl() -> Result<Vec<SdTarget>, String> {
     Ok(targets)
 }
 
+/// Open a raw disk device read/write via /usr/libexec/authopen.
+///
+/// authopen is macOS's setuid helper for exactly this job: it shows ONE admin
+/// authorization prompt, opens the device on the user's authority, and passes
+/// the open file descriptor back over a Unix socket (SCM_RIGHTS). Because the
+/// app process then holds the fd itself, no Full Disk Access grant and no code
+/// signing identity is needed — unlike `osascript … with administrator
+/// privileges`, whose trampoline child has a TCC identity that is NOT this app
+/// and therefore gets "Operation not permitted" on /dev/rdiskN regardless of
+/// any grants. (Raspberry Pi Imager writes cards the same way.)
 #[cfg(not(target_os = "windows"))]
-fn write_sd_launcher(
-    stage_dir: &Path,
-    progress_path: &Path,
-    cancel_path: &Path,
-    image_path: &str,
-    device_id: &str,
-    compressed: bool,
-) -> Result<PathBuf, String> {
-    // macOS BSD dd lacks `status=progress`; we drive progress with SIGINFO and read
-    // it back from the dd stderr files. Progress percentage is taken from the
-    // COMPRESSED read position (reader dd) so it is exact regardless of the
-    // decompressed size.
-    let template = r#"#!/bin/bash
-IMG=@@IMG@@
-DEV=@@DEV@@
-RDISK=@@RDISK@@
-PROG=@@PROG@@
-CANCEL=@@CANCEL@@
-COMPRESSED=@@COMPRESSED@@
-DDOUT="$PROG.ddout"
-TMP="$PROG.img"
+fn authopen_rw_device(device_path: &str) -> Result<fs::File, String> {
+    use std::os::fd::FromRawFd;
 
-log() { printf '%s\n' "$*" >>"$PROG"; }
-
-(
-  log "PHASE preparing"
-  log "Running as uid $(id -u)"
-
-  # BSD dd has no iflag=fullblock, so piping gunzip straight into a raw-device
-  # dd produces short, unaligned writes the raw device rejects (EINVAL).
-  # Decompress to a regular file first so the writer reads full, block-aligned
-  # chunks; the final block of a disk image is sector-aligned.
-  if [ "$COMPRESSED" = "1" ]; then
-    SRC="$TMP"
-    log "Decompressing image…"
-    # Capture gunzip stderr separately so the real reason (e.g. TCC's
-    # "Operation not permitted" on ~/Downloads) reaches the failure banner.
-    if ! gunzip -c "$IMG" > "$SRC" 2>"$DDOUT"; then
-      ERR=$(tail -2 "$DDOUT" 2>/dev/null | tr '\n' ' ')
-      cat "$DDOUT" >>"$PROG" 2>/dev/null
-      rm -f "$TMP" 2>/dev/null
-      log "WRITE_FAIL ${ERR:-Could not decompress the image (out of disk space?)}"
-      log "FLASH_EXIT 1"; exit 0
-    fi
-  else
-    SRC="$IMG"
-  fi
-  TOTAL=$(stat -f%z "$SRC" 2>/dev/null)
-  CSIZE=$(stat -f%z "$IMG" 2>/dev/null)
-
-  if [ -f "$CANCEL" ]; then rm -f "$TMP" 2>/dev/null; log "FLASH_EXIT 130"; exit 0; fi
-
-  log "Unmounting $DEV"
-  diskutil unmountDisk "$DEV" >>"$PROG" 2>&1
-
-  log "PHASE writing"
-  : >"$DDOUT"
-  dd if="$SRC" of="$RDISK" bs=4m 2>>"$DDOUT" &
-  WPID=$!
-
-  (
-    while kill -0 "$WPID" 2>/dev/null; do
-      if [ -f "$CANCEL" ]; then kill "$WPID" 2>/dev/null; break; fi
-      pkill -INFO -f "dd if=$SRC" 2>/dev/null
-      sleep 1
-      COUT=$(grep 'bytes transferred' "$DDOUT" 2>/dev/null | tail -1 | sed -E 's/^([0-9]+) bytes.*/\1/')
-      ROUT=$(grep 'bytes transferred' "$DDOUT" 2>/dev/null | tail -1 | sed -E 's/.*\(([0-9]+) bytes\/sec\).*/\1/')
-      COUT=${COUT:-0}
-      if [ -n "$TOTAL" ] && [ "$TOTAL" -gt 0 ] && [ -n "$CSIZE" ]; then
-        CIN=$(( COUT * CSIZE / TOTAL ))
-      else
-        CIN=$COUT
-      fi
-      log "PROGRESS ${CIN} ${COUT} ${ROUT:-0}"
-    done
-  ) &
-  PROGPID=$!
-
-  wait "$WPID"
-  RC=$?
-  kill "$PROGPID" 2>/dev/null
-
-  if [ -f "$CANCEL" ]; then rm -f "$TMP" 2>/dev/null; log "FLASH_EXIT 130"; exit 0; fi
-  if [ "$RC" -ne 0 ]; then
-    ERR=$(tail -3 "$DDOUT" 2>/dev/null | tr '\n' ' ')
-    rm -f "$TMP" 2>/dev/null
-    log "WRITE_FAIL ${ERR:-Image write failed (dd code $RC)}"
-    log "FLASH_EXIT $RC"; exit 0
-  fi
-
-  log "PHASE flushing"
-  sync
-  log "PROGRESS ${CSIZE:-0} ${TOTAL:-0} 0"
-
-  log "PHASE verifying"
-  if [ -n "$TOTAL" ] && [ "$TOTAL" -gt 0 ]; then
-    SRCH=$(shasum -a 256 "$SRC" | awk '{print $1}')
-    DSTH=$(dd if="$RDISK" bs=4m 2>/dev/null | head -c "$TOTAL" | shasum -a 256 | awk '{print $1}')
-    if [ "$SRCH" != "$DSTH" ]; then rm -f "$TMP" 2>/dev/null; log "VERIFY_FAIL"; log "FLASH_EXIT 3"; exit 0; fi
-    log "VERIFY_OK"
-  fi
-
-  rm -f "$TMP" 2>/dev/null
-  log "PHASE ejecting"
-  diskutil eject "$DEV" >>"$PROG" 2>&1
-  log "FLASH_EXIT 0"
-) >/dev/null 2>&1 &
-echo $!
-"#;
-    let dev = format!("/dev/{device_id}");
-    let rdev = format!("/dev/r{device_id}");
-    let script = template
-        .replace("@@IMG@@", &shell_quote(image_path))
-        .replace("@@DEV@@", &shell_quote(&dev))
-        .replace("@@RDISK@@", &shell_quote(&rdev))
-        .replace("@@PROG@@", &shell_quote(&progress_path.to_string_lossy()))
-        .replace("@@CANCEL@@", &shell_quote(&cancel_path.to_string_lossy()))
-        .replace("@@COMPRESSED@@", if compressed { "1" } else { "0" });
-    let launcher = stage_dir.join("flash-sdcard.sh");
-    fs::write(&launcher, &script).map_err(|e| format!("Failed to write flash script: {e}"))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&launcher, fs::Permissions::from_mode(0o755))
-            .map_err(|e| format!("Failed to make flash script executable: {e}"))?;
+    let mut fds = [0i32; 2];
+    if unsafe { libc::socketpair(libc::AF_UNIX, libc::SOCK_STREAM, 0, fds.as_mut_ptr()) } != 0 {
+        return Err("Could not create a socket pair for authopen.".into());
     }
-    Ok(launcher)
+    let (parent_fd, child_fd) = (fds[0], fds[1]);
+
+    let child_stdout = unsafe { Stdio::from_raw_fd(child_fd) };
+    let child = Command::new("/usr/libexec/authopen")
+        .args(["-stdoutpipe", "-w", device_path])
+        .stdout(child_stdout)
+        .stderr(Stdio::null())
+        .spawn();
+    let mut child = match child {
+        Ok(c) => c,
+        Err(e) => {
+            unsafe { libc::close(parent_fd) };
+            return Err(format!("Failed to run authopen: {e}"));
+        }
+    };
+
+    // Block until authopen sends the fd (after the user approves) or exits
+    // (user cancelled the dialog → socket EOF).
+    let received_fd = unsafe {
+        let mut data = [0u8; 8];
+        let mut iov = libc::iovec {
+            iov_base: data.as_mut_ptr() as *mut libc::c_void,
+            iov_len: data.len(),
+        };
+        // Space for one fd's cmsg, generously padded.
+        let mut cmsg_buf = [0u8; 64];
+        let mut msg: libc::msghdr = std::mem::zeroed();
+        msg.msg_iov = &mut iov;
+        msg.msg_iovlen = 1;
+        msg.msg_control = cmsg_buf.as_mut_ptr() as *mut libc::c_void;
+        msg.msg_controllen = cmsg_buf.len() as _;
+
+        let n = libc::recvmsg(parent_fd, &mut msg, 0);
+        if n < 0 {
+            None
+        } else {
+            let cmsg = libc::CMSG_FIRSTHDR(&msg);
+            if !cmsg.is_null()
+                && (*cmsg).cmsg_level == libc::SOL_SOCKET
+                && (*cmsg).cmsg_type == libc::SCM_RIGHTS
+            {
+                let fd = *(libc::CMSG_DATA(cmsg) as *const i32);
+                if fd >= 0 {
+                    Some(fd)
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        }
+    };
+    unsafe { libc::close(parent_fd) };
+    let _ = child.wait();
+
+    match received_fd {
+        Some(fd) => Ok(unsafe { fs::File::from_raw_fd(fd) }),
+        None => Err("Administrator approval was denied or cancelled.".into()),
+    }
 }
 
+/// In-process macOS flash: unmount, authopen the raw device, stream the staged
+/// (already decompressed) image onto it with direct progress/cancel handling,
+/// read-back verify on the same fd, then eject. No elevated child process
+/// touches any file — the app writes the disk itself.
 #[cfg(not(target_os = "windows"))]
-fn launch_sd_flash(
-    stage_dir: &Path,
-    progress_path: &Path,
-    cancel_path: &Path,
-    image_path: &str,
+fn run_sd_flash_macos(
+    inner_state: &Arc<Mutex<InnerState>>,
+    staged_image: &Path,
     device_id: &str,
-    compressed: bool,
-) -> Result<u32, String> {
-    let launcher = write_sd_launcher(
-        stage_dir,
-        progress_path,
-        cancel_path,
-        image_path,
-        device_id,
-        compressed,
-    )?;
-    let launcher_quoted = shell_quote(&launcher.to_string_lossy());
-    let script = format!(
-        "do shell script \"/bin/sh -c \" & quoted form of {} with administrator privileges",
-        applescript_string_literal(&launcher_quoted)
-    );
-    let out = Command::new("osascript")
-        .arg("-e")
-        .arg(&script)
+) {
+    let set_phase = |phase: &str, detail: &str| {
+        if let Ok(mut inner) = inner_state.lock() {
+            if !is_terminal_sd_phase(&inner.sd_flash_phase) {
+                inner.sd_flash_phase = phase.into();
+                inner.sd_flash_detail = detail.into();
+            }
+            push_sd_log(&mut inner, detail.into());
+        }
+    };
+    let cancelled = || {
+        inner_state
+            .lock()
+            .map(|i| i.sd_flash_cancel_requested)
+            .unwrap_or(false)
+    };
+    let finish_cancelled = |staged: &Path| {
+        let _ = fs::remove_file(staged);
+        if let Ok(mut inner) = inner_state.lock() {
+            inner.sd_flash_in_flight = false;
+            inner.sd_flash_phase = "cancelled".into();
+            inner.sd_flash_detail = "Write cancelled".into();
+            push_sd_log(&mut inner, "Write cancelled".into());
+        }
+    };
+    let fail = |staged: &Path, msg: String| {
+        let _ = fs::remove_file(staged);
+        set_sd_failed(inner_state, msg);
+    };
+
+    set_phase("preparing", &format!("Unmounting /dev/{device_id}…"));
+    match Command::new("diskutil")
+        .args(["unmountDisk", device_id])
         .output()
-        .map_err(|e| format!("Failed to invoke osascript: {e}"))?;
-    if !out.status.success() {
-        let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
-        return Err(if stderr.is_empty() {
-            "Administrator approval was denied or cancelled.".into()
-        } else {
-            format!("Could not start the write with administrator privileges: {stderr}")
-        });
+    {
+        Ok(out) if out.status.success() => {}
+        Ok(out) => {
+            let err = String::from_utf8_lossy(&out.stderr);
+            let err = if err.trim().is_empty() {
+                String::from_utf8_lossy(&out.stdout).trim().to_string()
+            } else {
+                err.trim().to_string()
+            };
+            fail(staged_image, format!("Could not unmount the card: {err}"));
+            return;
+        }
+        Err(e) => {
+            fail(staged_image, format!("Could not run diskutil: {e}"));
+            return;
+        }
     }
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    stdout
-        .trim()
-        .parse::<u32>()
-        .map_err(|_| format!("Unexpected output from osascript: '{}'", stdout.trim()))
+
+    set_phase(
+        "preparing",
+        "Waiting for permission — enter your password in the macOS dialog…",
+    );
+    let rdev = format!("/dev/r{device_id}");
+    let mut disk = match authopen_rw_device(&rdev) {
+        Ok(f) => f,
+        Err(e) => {
+            fail(staged_image, e);
+            return;
+        }
+    };
+
+    let mut src = match fs::File::open(staged_image) {
+        Ok(f) => f,
+        Err(e) => {
+            fail(
+                staged_image,
+                format!("Could not open the prepared image: {e}"),
+            );
+            return;
+        }
+    };
+    let total = fs::metadata(staged_image).map(|m| m.len()).unwrap_or(0);
+
+    set_phase("writing", "Writing image to card…");
+    const CHUNK: usize = 4 * 1024 * 1024;
+    let mut buf = vec![0u8; CHUNK];
+    let mut written: u64 = 0;
+    let mut last_tick = std::time::Instant::now();
+    let mut last_bytes: u64 = 0;
+    loop {
+        if cancelled() {
+            drop(disk);
+            let _ = Command::new("diskutil").args(["eject", device_id]).output();
+            finish_cancelled(staged_image);
+            return;
+        }
+        // Fill the buffer fully so raw-device writes stay large and aligned.
+        let mut got = 0usize;
+        while got < CHUNK {
+            match src.read(&mut buf[got..]) {
+                Ok(0) => break,
+                Ok(n) => got += n,
+                Err(e) => {
+                    fail(staged_image, format!("Failed reading the image: {e}"));
+                    return;
+                }
+            }
+        }
+        if got == 0 {
+            break;
+        }
+        // Raw devices reject writes that aren't multiples of the 512-byte
+        // sector; zero-pad the final chunk if needed.
+        let mut write_len = got;
+        if write_len % 512 != 0 {
+            write_len = (got / 512 + 1) * 512;
+            for b in &mut buf[got..write_len] {
+                *b = 0;
+            }
+        }
+        if let Err(e) = disk.write_all(&buf[..write_len]) {
+            fail(staged_image, format!("Card write failed: {e}"));
+            return;
+        }
+        written += got as u64;
+
+        let now = std::time::Instant::now();
+        let dt = now.duration_since(last_tick);
+        if dt.as_millis() >= 500 {
+            let rate = ((written - last_bytes) as f64 / dt.as_secs_f64()) as u64;
+            last_tick = now;
+            last_bytes = written;
+            if let Ok(mut inner) = inner_state.lock() {
+                inner.sd_flash_comp_done = written;
+                inner.sd_flash_bytes_done = written;
+                inner.sd_flash_rate_bps = rate;
+            }
+        }
+    }
+    if let Ok(mut inner) = inner_state.lock() {
+        inner.sd_flash_comp_done = written;
+        inner.sd_flash_bytes_done = written;
+        inner.sd_flash_rate_bps = 0;
+    }
+
+    set_phase("flushing", "Flushing buffers…");
+    let _ = disk.sync_all();
+
+    set_phase("verifying", "Verifying written data…");
+    let verify_result: Result<bool, String> = (|| {
+        disk.seek(SeekFrom::Start(0))
+            .map_err(|e| format!("seek: {e}"))?;
+        src.seek(SeekFrom::Start(0))
+            .map_err(|e| format!("seek: {e}"))?;
+        let mut disk_buf = vec![0u8; CHUNK];
+        let mut src_buf = vec![0u8; CHUNK];
+        let mut remaining = total;
+        while remaining > 0 {
+            if cancelled() {
+                return Err("cancelled".into());
+            }
+            let want = remaining.min(CHUNK as u64) as usize;
+            let mut got = 0usize;
+            while got < want {
+                match src.read(&mut src_buf[got..want]) {
+                    Ok(0) => break,
+                    Ok(n) => got += n,
+                    Err(e) => return Err(format!("image read: {e}")),
+                }
+            }
+            if got == 0 {
+                break;
+            }
+            let mut disk_got = 0usize;
+            while disk_got < got {
+                match disk.read(&mut disk_buf[disk_got..got]) {
+                    Ok(0) => break,
+                    Ok(n) => disk_got += n,
+                    Err(e) => return Err(format!("card read: {e}")),
+                }
+            }
+            if disk_got < got || disk_buf[..got] != src_buf[..got] {
+                return Ok(false);
+            }
+            remaining -= got as u64;
+        }
+        Ok(true)
+    })();
+    match verify_result {
+        Ok(true) => {
+            if let Ok(mut inner) = inner_state.lock() {
+                push_sd_log(&mut inner, "Verification passed".into());
+            }
+        }
+        Ok(false) => {
+            drop(disk);
+            fail(
+                staged_image,
+                "Verification failed — the card does not match the image.".into(),
+            );
+            return;
+        }
+        Err(e) if e == "cancelled" => {
+            drop(disk);
+            let _ = Command::new("diskutil").args(["eject", device_id]).output();
+            finish_cancelled(staged_image);
+            return;
+        }
+        Err(e) => {
+            // The write itself succeeded and was flushed; a verify-read failure
+            // (e.g. a write-only fd) shouldn't scrap the card. Log and continue.
+            if let Ok(mut inner) = inner_state.lock() {
+                push_sd_log(&mut inner, format!("Read-back verification skipped: {e}"));
+            }
+        }
+    }
+
+    drop(disk);
+    set_phase("ejecting", "Ejecting card…");
+    let _ = Command::new("diskutil").args(["eject", device_id]).output();
+
+    let _ = fs::remove_file(staged_image);
+    if let Ok(mut inner) = inner_state.lock() {
+        inner.sd_flash_in_flight = false;
+        inner.sd_flash_phase = "done".into();
+        inner.sd_flash_detail = "SD card ready".into();
+        inner.sd_flash_comp_done = inner.sd_flash_comp_total;
+        push_sd_log(&mut inner, "SD card ready".into());
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -4694,14 +4835,14 @@ fn run_sd_flash(
         inner.sd_flash_progress_offset = 0;
     }
 
-    // On macOS the elevated writer runs through the privilege trampoline, whose
-    // TCC identity is NOT this app — so it cannot read protected folders like
-    // ~/Downloads even as root. Do the source read HERE, in the app process
-    // (which has the file-picker grant and Full Disk Access), staging a plaintext
-    // image into unprotected temp. The elevated writer then only touches temp and
-    // the raw device. Windows has no such restriction, so it stages nothing.
+    // On macOS everything runs in THIS process: the source read happens here
+    // (the app holds the file-picker grant, so protected folders like
+    // ~/Downloads work), the image is staged as plaintext in temp, and the raw
+    // device is opened via authopen — no elevated child process, no Full Disk
+    // Access requirement. Windows has no TCC and keeps the elevated
+    // PowerShell writer.
     #[cfg(not(target_os = "windows"))]
-    let (launch_image, launch_compressed) = {
+    {
         let staged = stage_dir.join("image.img");
         if compressed {
             if let Ok(mut inner) = inner_state.lock() {
@@ -4755,7 +4896,7 @@ fn run_sd_flash(
             }
         }
         // Staged file is plaintext; retarget totals so progress tracks the
-        // decompressed size and the writer is told the source is not compressed.
+        // decompressed size.
         let plaintext_len = fs::metadata(&staged).map(|m| m.len()).unwrap_or(0);
         if plaintext_len == 0 {
             set_sd_failed(&inner_state, "The prepared image is empty.".into());
@@ -4765,32 +4906,34 @@ fn run_sd_flash(
             inner.sd_flash_comp_total = plaintext_len;
             inner.sd_flash_compressed = false;
         }
-        (staged.to_string_lossy().into_owned(), false)
-    };
+        let _ = &cancel_path; // cancellation is signalled via state on macOS
+        run_sd_flash_macos(&inner_state, &staged, &device_id);
+        return;
+    }
 
     #[cfg(target_os = "windows")]
-    let (launch_image, launch_compressed) = (image_path.clone(), compressed);
+    {
+        let _ = compressed;
+        let pid = match launch_sd_flash(
+            &stage_dir,
+            &progress_path,
+            &cancel_path,
+            &image_path,
+            &device_id,
+            compressed,
+        ) {
+            Ok(pid) => pid,
+            Err(e) => {
+                set_sd_failed(&inner_state, e);
+                return;
+            }
+        };
 
-    let pid = match launch_sd_flash(
-        &stage_dir,
-        &progress_path,
-        &cancel_path,
-        &launch_image,
-        &device_id,
-        launch_compressed,
-    ) {
-        Ok(pid) => pid,
-        Err(e) => {
-            set_sd_failed(&inner_state, e);
-            return;
+        if let Ok(mut inner) = inner_state.lock() {
+            inner.sd_flash_pid = Some(pid);
+            inner.sd_flash_detail = "Writing with administrator privileges…".into();
+            push_sd_log(&mut inner, format!("Writer started (pid {pid})"));
         }
-    };
-
-    if let Ok(mut inner) = inner_state.lock() {
-        inner.sd_flash_pid = Some(pid);
-        inner.sd_flash_detail = "Writing with administrator privileges…".into();
-        push_sd_log(&mut inner, format!("Writer started (pid {pid})"));
-    }
 
     loop {
         thread::sleep(Duration::from_millis(500));
@@ -4821,6 +4964,7 @@ fn run_sd_flash(
             }
             break;
         }
+    }
     }
 }
 
