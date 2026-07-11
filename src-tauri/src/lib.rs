@@ -78,6 +78,25 @@ struct InnerState {
     windows_local_terminal_child: Option<Child>,
     windows_local_serial_writer: Option<Arc<Mutex<Box<dyn SerialPort>>>>,
     windows_local_serial_kill: Option<Arc<AtomicBool>>,
+
+    // SD card flashing (elevated dd / raw write of a firmware image)
+    sd_flash_phase: String, // idle | preparing | writing | flushing | verifying | ejecting | done | failed | cancelled
+    sd_flash_detail: String,
+    // Real failure reason (e.g. dd's stderr), persisted across poll cycles so the
+    // FLASH_EXIT line — which may be read in a later poll than WRITE_FAIL — keeps it.
+    sd_flash_fail_detail: Option<String>,
+    sd_flash_pid: Option<u32>,
+    sd_flash_progress_path: Option<String>,
+    sd_flash_stage_dir: Option<String>,
+    sd_flash_progress_offset: u64,
+    sd_flash_logs: Vec<String>,
+    sd_flash_comp_total: u64, // compressed source size — denominator for the exact percent
+    sd_flash_comp_done: u64,  // compressed bytes consumed so far
+    sd_flash_bytes_done: u64, // decompressed bytes written so far
+    sd_flash_rate_bps: u64,
+    sd_flash_compressed: bool,
+    sd_flash_in_flight: bool,
+    sd_flash_cancel_requested: bool,
 }
 
 struct AppState {
@@ -2032,6 +2051,227 @@ fn open_local_serial_terminal(device: String, state: State<'_, AppState>) -> Res
     }
 }
 
+/// Connect to a controller on the local network via SSH — no VPN required.
+/// Reuses the bundle's `station` key (already at ~/.ssh/station) for key-based,
+/// passwordless auth as root, so there is no root/password prompt.
+///
+/// `host` may be an mDNS name (`<serial>.local`) or a LAN IP (`192.168.1.x`).
+/// Tagged as `connection_mode = "local"` and recorded in `local_serial_device`
+/// so the shared local-session UI and `disconnect_local_controller` teardown
+/// (which closes the terminal window and writes the session-end marker) apply.
+/// Browse mDNS for controllers on the local network. The controller's avahi
+/// advertises `_ssh._tcp` with the serial number as the instance name, so a
+/// short `dns-sd` browse window yields the list of reachable serials — works
+/// over a router or a direct Ethernet cable (link-local). Returns 8-digit
+/// serials; connect to any of them as `<serial>.local`.
+#[tauri::command]
+fn discover_controllers() -> Result<Vec<String>, String> {
+    let mut child = Command::new("dns-sd")
+        .args(["-B", "_ssh._tcp", "local."])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| format!("mDNS scan unavailable on this system: {e}"))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "mDNS scan produced no output".to_string())?;
+    let lines: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let lines_clone = lines.clone();
+    let reader = thread::spawn(move || {
+        use std::io::BufRead;
+        for line in std::io::BufReader::new(stdout)
+            .lines()
+            .map_while(Result::ok)
+        {
+            if let Ok(mut collected) = lines_clone.lock() {
+                collected.push(line);
+            }
+        }
+    });
+    // dns-sd browses until killed; 2.5s is plenty for link-local mDNS answers.
+    thread::sleep(Duration::from_millis(2500));
+    let _ = child.kill();
+    let _ = child.wait();
+    let _ = reader.join();
+
+    let mut serials: Vec<String> = Vec::new();
+    if let Ok(collected) = lines.lock() {
+        for line in collected.iter() {
+            // e.g. "16:20:53.593  Add  2  28 local.  _ssh._tcp.  22611067"
+            if !line.contains(" Add ") {
+                continue;
+            }
+            if let Some(name) = line.split_whitespace().last() {
+                if name.len() == 8
+                    && name.chars().all(|c| c.is_ascii_digit())
+                    && !serials.iter().any(|s| s == name)
+                {
+                    serials.push(name.to_string());
+                }
+            }
+        }
+    }
+    Ok(serials)
+}
+
+#[tauri::command]
+fn open_local_network_terminal(host: String, state: State<'_, AppState>) -> Result<(), String> {
+    let host = host.trim().to_string();
+    if host.is_empty() {
+        return Err("Controller address is required (e.g. 45230110.local or 192.168.1.8).".into());
+    }
+
+    let station_key = home_ssh_dir().join("station");
+    if !station_key.exists() {
+        return Err(
+            "SSH key not found at ~/.ssh/station. Load the VPN bundle once (Files tab) to install \
+             the key — you don't need to start the VPN for local access."
+                .into(),
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let putty_path = find_putty_executable().ok_or_else(|| {
+            "PuTTY not found. Install PuTTY to use local network SSH sessions on Windows.".to_string()
+        })?;
+        let log_path = local_serial_log_file(&host);
+        {
+            let mut inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
+            kill_shell(&mut inner);
+            inner.connection_mode = "local".into();
+            inner.local_serial_device = Some(host.clone());
+            inner.controller_ip = None;
+            inner.shell_logs.clear();
+            inner.shell_log_cursor = 0;
+            inner.shell_phase = "connecting".into();
+            inner.shell_detail = format!("Opening PuTTY SSH session to root@{host}...");
+            inner.external_terminal_window_id = None;
+            if let Some(mut child) = inner.windows_local_terminal_child.take() {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+            inner.shell_logs.push(format!("[PuTTY opening] root@{host}"));
+        }
+        append_transcript(
+            &log_path,
+            &format!(
+                "\n===== local network ssh session start ({}) =====\ncontroller: {host}\n",
+                chrono::Local::now().format("%Y-%m-%d %H:%M:%S")
+            ),
+        );
+        // Match the VPN PuTTY path: no -i (PuTTY needs a .ppk, not the OpenSSH
+        // station key). Auth flows through the same mechanism as VPN sessions.
+        let child = Command::new(&putty_path)
+            .args([
+                "-ssh",
+                &host,
+                "-l",
+                "root",
+                "-sessionlog",
+                &log_path.to_string_lossy(),
+                "-logoverwrite",
+            ])
+            .spawn()
+            .map_err(|e| format!("Failed to open PuTTY: {e}"))?;
+
+        if let Ok(mut inner) = state.inner.lock() {
+            inner.windows_local_terminal_child = Some(child);
+            inner.shell_phase = "connecting".into();
+            inner.shell_detail =
+                format!("PuTTY opened for root@{host}; waiting for controller shell...");
+            inner.shell_logs.push(format!("[PuTTY opened] root@{host}"));
+        }
+        return Ok(());
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let previous_window_id = {
+            let mut inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
+            let previous_window_id = inner.external_terminal_window_id.take();
+            kill_shell(&mut inner);
+            inner.connection_mode = "local".into();
+            inner.local_serial_device = Some(host.clone());
+            inner.controller_ip = None;
+            inner.shell_logs.clear();
+            inner.shell_log_cursor = 0;
+            inner.shell_phase = "connecting".into();
+            inner.shell_detail = format!("Opening Terminal SSH session to root@{host}...");
+            inner
+                .shell_logs
+                .push(format!("[Terminal opening] root@{host}"));
+            previous_window_id
+        };
+        if let Some(window_id) = previous_window_id {
+            let _ = close_terminal_window(window_id);
+        }
+
+        let log_path = local_serial_log_file(&host);
+        append_transcript(
+            &log_path,
+            &format!(
+                "\n===== local network ssh session start ({}) =====\ncontroller: {host}\n",
+                chrono::Local::now().format("%Y-%m-%d %H:%M:%S")
+            ),
+        );
+        // Same passwordless, key-based SSH as the VPN path — only the host differs.
+        // UserKnownHostsFile=/dev/null avoids host-key conflicts after firmware
+        // updates (the doc's ssh-keygen -R purge is unnecessary here).
+        let ssh_cmd = format!(
+            "ssh -tt -i {} -o LogLevel=ERROR -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ServerAliveInterval=5 -o ServerAliveCountMax=3 -o KexAlgorithms=ecdh-sha2-nistp521 {}",
+            shell_quote(&station_key.to_string_lossy()),
+            shell_quote(&format!("root@{host}")),
+        );
+        let command = format!(
+            "clear; script -qF {} {}; exit",
+            shell_quote(&log_path.to_string_lossy()),
+            &ssh_cmd,
+        );
+        let script = format!(
+            "tell application \"Terminal\"\nactivate\ndo script {}\ndelay 0.1\nreturn id of front window\nend tell",
+            applescript_string_literal(&command)
+        );
+
+        let out = Command::new("osascript")
+            .arg("-e")
+            .arg(&script)
+            .output()
+            .map_err(|e| format!("Failed to open Terminal: {e}"))?;
+
+        if out.status.success() {
+            let window_id = String::from_utf8_lossy(&out.stdout)
+                .trim()
+                .parse::<i64>()
+                .ok();
+            if let Ok(mut inner) = state.inner.lock() {
+                inner.external_terminal_window_id = window_id;
+                inner.shell_phase = "connecting".into();
+                inner.shell_detail =
+                    format!("Terminal opened for root@{host}; waiting for controller shell...");
+                inner
+                    .shell_logs
+                    .push(format!("[Terminal opened] root@{host}"));
+            }
+            start_log_watcher_internal(&state, true)?;
+            Ok(())
+        } else {
+            let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+            let message = if stderr.is_empty() {
+                "Terminal launch failed.".into()
+            } else {
+                format!("Failed to open Terminal: {stderr}")
+            };
+            if let Ok(mut inner) = state.inner.lock() {
+                inner.shell_phase = "failed".into();
+                inner.shell_detail = message.clone();
+            }
+            Err(message)
+        }
+    }
+}
+
 #[tauri::command]
 fn disconnect_local_controller(state: State<'_, AppState>) -> Result<(), String> {
     #[cfg(not(target_os = "windows"))]
@@ -3780,6 +4020,1105 @@ fn applescript_string_literal(value: &str) -> String {
     format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
+// ── SD card flashing ──────────────────────────────────────────────────────────
+//
+// Writes a firmware image (.img / .img.gz) to a removable SD card with a single
+// elevated step, streaming progress back through a tailed log file — mirroring
+// the managed-OpenVPN pattern (launcher script → elevate once → poll a file).
+// macOS uses `dd` driven by SIGINFO; Windows does a native raw `\\.\PhysicalDrive`
+// write in PowerShell. Both verify the written bytes against the source.
+
+#[derive(serde::Serialize, Clone)]
+struct SdTarget {
+    id: String, // macOS whole-disk id ("disk6") or Windows disk number ("6")
+    name: String,
+    size_bytes: u64,
+    size_label: String,
+    bus: String,
+    removable: bool,
+}
+
+#[derive(serde::Serialize)]
+struct FirmwareInfo {
+    path: String,
+    file_name: String,
+    size_bytes: u64,
+    size_label: String,
+    compressed: bool,
+}
+
+#[derive(serde::Serialize)]
+struct SdFlashPoll {
+    phase: String,
+    detail: String,
+    percent: f64, // 0-100, or -1 when indeterminate
+    bytes_done: u64,
+    total_bytes: u64,
+    rate_bps: u64,
+    lines: Vec<String>,
+}
+
+fn human_size(bytes: u64) -> String {
+    if bytes == 0 {
+        return "0 B".into();
+    }
+    const UNITS: [&str; 6] = ["B", "KB", "MB", "GB", "TB", "PB"];
+    let mut val = bytes as f64;
+    let mut unit = 0usize;
+    while val >= 1000.0 && unit < UNITS.len() - 1 {
+        val /= 1000.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} B")
+    } else {
+        format!("{val:.1} {}", UNITS[unit])
+    }
+}
+
+fn is_terminal_sd_phase(phase: &str) -> bool {
+    matches!(phase, "done" | "failed" | "cancelled")
+}
+
+fn sd_phase_detail(phase: &str) -> String {
+    match phase {
+        "preparing" => "Preparing the card…",
+        "writing" => "Writing image to card…",
+        "flushing" => "Flushing buffers…",
+        "verifying" => "Verifying written data…",
+        "ejecting" => "Ejecting card…",
+        _ => "",
+    }
+    .to_string()
+}
+
+fn push_sd_log(inner: &mut InnerState, msg: String) {
+    inner.sd_flash_logs.push(msg);
+    if inner.sd_flash_logs.len() > VPN_LOG_LIMIT {
+        let overflow = inner.sd_flash_logs.len() - VPN_LOG_LIMIT;
+        inner.sd_flash_logs.drain(0..overflow);
+    }
+}
+
+enum SdEvent {
+    Phase(String),
+    Progress { comp: u64, written: u64, rate: u64 },
+    Verified,
+    Failure(String),
+    Exit(i32),
+    Log(String),
+}
+
+fn parse_sd_line(line: &str) -> Option<SdEvent> {
+    let line = line.trim();
+    if line.is_empty() {
+        return None;
+    }
+    if let Some(rest) = line.strip_prefix("PHASE ") {
+        return Some(SdEvent::Phase(rest.trim().to_string()));
+    }
+    if let Some(rest) = line.strip_prefix("PROGRESS ") {
+        let nums: Vec<u64> = rest
+            .split_whitespace()
+            .map(|t| t.parse().unwrap_or(0))
+            .collect();
+        return Some(SdEvent::Progress {
+            comp: nums.first().copied().unwrap_or(0),
+            written: nums.get(1).copied().unwrap_or(0),
+            rate: nums.get(2).copied().unwrap_or(0),
+        });
+    }
+    if line == "VERIFY_OK" {
+        return Some(SdEvent::Verified);
+    }
+    if line.starts_with("VERIFY_FAIL") {
+        return Some(SdEvent::Failure(
+            "Verification failed — the card does not match the image.".into(),
+        ));
+    }
+    if let Some(rest) = line.strip_prefix("WRITE_FAIL") {
+        return Some(SdEvent::Failure(rest.trim().to_string()));
+    }
+    if let Some(rest) = line.strip_prefix("FLASH_EXIT") {
+        return Some(SdEvent::Exit(rest.trim().parse::<i32>().unwrap_or(1)));
+    }
+    Some(SdEvent::Log(line.to_string()))
+}
+
+/// Tail the progress file and fold new lines into the SD-flash state.
+fn sync_sd_flash(inner: &mut InnerState) {
+    let Some(path) = inner.sd_flash_progress_path.clone() else {
+        return;
+    };
+    let Ok(mut file) = fs::File::open(&path) else {
+        return;
+    };
+    if file
+        .seek(SeekFrom::Start(inner.sd_flash_progress_offset))
+        .is_err()
+    {
+        return;
+    }
+    let mut buf = String::new();
+    if file.read_to_string(&mut buf).is_err() {
+        return;
+    }
+    inner.sd_flash_progress_offset += buf.len() as u64;
+
+    for line in buf.lines() {
+        match parse_sd_line(line) {
+            None => {}
+            Some(SdEvent::Phase(p)) => {
+                if !is_terminal_sd_phase(&inner.sd_flash_phase) {
+                    let detail = sd_phase_detail(&p);
+                    inner.sd_flash_phase = p;
+                    if !detail.is_empty() {
+                        inner.sd_flash_detail = detail;
+                    }
+                }
+            }
+            Some(SdEvent::Progress {
+                comp,
+                written,
+                rate,
+            }) => {
+                inner.sd_flash_comp_done = comp;
+                inner.sd_flash_bytes_done = written;
+                inner.sd_flash_rate_bps = rate;
+            }
+            Some(SdEvent::Verified) => {
+                inner.sd_flash_detail = "Verification passed".into();
+                push_sd_log(inner, "Verification passed".into());
+            }
+            Some(SdEvent::Failure(reason)) => {
+                if !reason.is_empty() {
+                    // Persist on state so a later-poll FLASH_EXIT still has it, and
+                    // surface it immediately even before the exit line arrives.
+                    inner.sd_flash_fail_detail = Some(reason.clone());
+                    inner.sd_flash_detail = reason.clone();
+                    push_sd_log(inner, reason);
+                }
+            }
+            Some(SdEvent::Exit(code)) => {
+                inner.sd_flash_in_flight = false;
+                match code {
+                    0 => {
+                        inner.sd_flash_phase = "done".into();
+                        inner.sd_flash_detail = "SD card ready".into();
+                        inner.sd_flash_comp_done = inner.sd_flash_comp_total;
+                        inner.sd_flash_fail_detail = None;
+                    }
+                    130 => {
+                        inner.sd_flash_phase = "cancelled".into();
+                        inner.sd_flash_detail = "Write cancelled".into();
+                        inner.sd_flash_fail_detail = None;
+                    }
+                    _ => {
+                        inner.sd_flash_phase = "failed".into();
+                        inner.sd_flash_detail = inner
+                            .sd_flash_fail_detail
+                            .take()
+                            .unwrap_or_else(|| format!("Write failed (code {code})"));
+                    }
+                }
+            }
+            Some(SdEvent::Log(l)) => push_sd_log(inner, l),
+        }
+    }
+}
+
+fn set_sd_failed(inner_state: &Arc<Mutex<InnerState>>, msg: String) {
+    if let Ok(mut inner) = inner_state.lock() {
+        inner.sd_flash_in_flight = false;
+        inner.sd_flash_phase = "failed".into();
+        inner.sd_flash_detail = msg.clone();
+        push_sd_log(&mut inner, msg);
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn list_sd_targets_impl() -> Result<Vec<SdTarget>, String> {
+    let out = Command::new("diskutil")
+        .args(["list", "external", "physical"])
+        .output()
+        .map_err(|e| format!("Failed to run diskutil: {e}"))?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let mut ids = Vec::new();
+    for line in stdout.lines() {
+        // e.g. "/dev/disk6 (external, physical):"
+        if line.starts_with("/dev/disk") && line.contains("external") {
+            if let Some(id) = line.trim_start_matches("/dev/").split_whitespace().next() {
+                ids.push(id.to_string());
+            }
+        }
+    }
+    let mut targets = Vec::new();
+    for id in ids {
+        if let Ok(info) = Command::new("diskutil").args(["info", &id]).output() {
+            let text = String::from_utf8_lossy(&info.stdout);
+            if let Some(t) = parse_diskutil_info(&text) {
+                targets.push(t);
+            }
+        }
+    }
+    Ok(targets)
+}
+
+/// Parse `diskutil info <id>` text into an SD target, rejecting internal/virtual
+/// disks. Kept standalone for unit testing.
+#[cfg(not(target_os = "windows"))]
+fn parse_diskutil_info(text: &str) -> Option<SdTarget> {
+    let mut id = String::new();
+    let mut name = String::new();
+    let mut size_bytes: u64 = 0;
+    let mut bus = String::new();
+    let mut removable = false;
+    let mut internal = false;
+    let mut virtual_disk = false;
+    for raw in text.lines() {
+        let line = raw.trim();
+        if let Some(v) = line.strip_prefix("Device Identifier:") {
+            id = v.trim().to_string();
+        } else if let Some(v) = line.strip_prefix("Media Name:") {
+            name = v.trim().to_string();
+        } else if let Some(v) = line.strip_prefix("Device / Media Name:") {
+            if name.is_empty() {
+                name = v.trim().to_string();
+            }
+        } else if let Some(v) = line.strip_prefix("Protocol:") {
+            bus = v.trim().to_string();
+        } else if line.starts_with("Removable Media:") {
+            removable = line.contains("Removable");
+        } else if line.starts_with("Internal:") {
+            internal = line.ends_with("Yes");
+        } else if line.starts_with("Virtual:") {
+            virtual_disk = line.ends_with("Yes");
+        } else if (line.starts_with("Disk Size:") || line.starts_with("Total Size:"))
+            && size_bytes == 0
+        {
+            if let Some(open) = line.find('(') {
+                let digits: String = line[open + 1..]
+                    .chars()
+                    .take_while(|c| *c != ')')
+                    .filter(char::is_ascii_digit)
+                    .collect();
+                size_bytes = digits.parse::<u64>().unwrap_or(0);
+            }
+        }
+    }
+    if id.is_empty() || internal || virtual_disk {
+        return None;
+    }
+    let sd_like = bus.contains("Secure Digital") || bus.contains("USB") || removable;
+    if !sd_like {
+        return None;
+    }
+    Some(SdTarget {
+        id: id.clone(),
+        name: if name.is_empty() { id } else { name },
+        size_bytes,
+        size_label: human_size(size_bytes),
+        removable: removable || bus.contains("Secure Digital"),
+        bus,
+    })
+}
+
+#[cfg(target_os = "windows")]
+fn list_sd_targets_impl() -> Result<Vec<SdTarget>, String> {
+    let ps = "Get-Disk | Where-Object { (-not $_.IsSystem) -and (-not $_.IsBoot) -and ($_.BusType -eq 'USB' -or $_.BusType -eq 'SD' -or $_.BusType -eq 'MMC') } | ForEach-Object { [PSCustomObject]@{ id = [string]$_.Number; name = $_.FriendlyName; size = [int64]$_.Size; bus = [string]$_.BusType } } | ConvertTo-Json -Compress";
+    let out = Command::new("powershell")
+        .args(["-NoProfile", "-Command", ps])
+        .output()
+        .map_err(|e| format!("Failed to run Get-Disk: {e}"))?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let trimmed = stdout.trim();
+    if trimmed.is_empty() {
+        return Ok(Vec::new());
+    }
+    let val: serde_json::Value =
+        serde_json::from_str(trimmed).map_err(|e| format!("Failed to parse disk list: {e}"))?;
+    let items = match val {
+        serde_json::Value::Array(a) => a,
+        other => vec![other],
+    };
+    let mut targets = Vec::new();
+    for it in items {
+        let id = it
+            .get("id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        if id.is_empty() {
+            continue;
+        }
+        let name = it
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        let size = it.get("size").and_then(serde_json::Value::as_u64).unwrap_or(0);
+        let bus = it
+            .get("bus")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        targets.push(SdTarget {
+            id,
+            name: if name.is_empty() {
+                "Removable disk".into()
+            } else {
+                name
+            },
+            size_bytes: size,
+            size_label: human_size(size),
+            bus,
+            removable: true,
+        });
+    }
+    Ok(targets)
+}
+
+/// Open a raw disk device read/write via /usr/libexec/authopen.
+///
+/// authopen is macOS's setuid helper for exactly this job: it shows ONE admin
+/// authorization prompt, opens the device on the user's authority, and passes
+/// the open file descriptor back over a Unix socket (SCM_RIGHTS). Because the
+/// app process then holds the fd itself, no Full Disk Access grant and no code
+/// signing identity is needed — unlike `osascript … with administrator
+/// privileges`, whose trampoline child has a TCC identity that is NOT this app
+/// and therefore gets "Operation not permitted" on /dev/rdiskN regardless of
+/// any grants. (Raspberry Pi Imager writes cards the same way.)
+#[cfg(not(target_os = "windows"))]
+fn authopen_rw_device(device_path: &str) -> Result<fs::File, String> {
+    use std::os::fd::FromRawFd;
+
+    let mut fds = [0i32; 2];
+    if unsafe { libc::socketpair(libc::AF_UNIX, libc::SOCK_STREAM, 0, fds.as_mut_ptr()) } != 0 {
+        return Err("Could not create a socket pair for authopen.".into());
+    }
+    let (parent_fd, child_fd) = (fds[0], fds[1]);
+
+    let child_stdout = unsafe { Stdio::from_raw_fd(child_fd) };
+    let child = Command::new("/usr/libexec/authopen")
+        .args(["-stdoutpipe", "-w", device_path])
+        .stdout(child_stdout)
+        .stderr(Stdio::null())
+        .spawn();
+    let mut child = match child {
+        Ok(c) => c,
+        Err(e) => {
+            unsafe { libc::close(parent_fd) };
+            return Err(format!("Failed to run authopen: {e}"));
+        }
+    };
+
+    // Block until authopen sends the fd (after the user approves) or exits
+    // (user cancelled the dialog → socket EOF).
+    let received_fd = unsafe {
+        let mut data = [0u8; 8];
+        let mut iov = libc::iovec {
+            iov_base: data.as_mut_ptr() as *mut libc::c_void,
+            iov_len: data.len(),
+        };
+        // Space for one fd's cmsg, generously padded.
+        let mut cmsg_buf = [0u8; 64];
+        let mut msg: libc::msghdr = std::mem::zeroed();
+        msg.msg_iov = &mut iov;
+        msg.msg_iovlen = 1;
+        msg.msg_control = cmsg_buf.as_mut_ptr() as *mut libc::c_void;
+        msg.msg_controllen = cmsg_buf.len() as _;
+
+        let n = libc::recvmsg(parent_fd, &mut msg, 0);
+        if n < 0 {
+            None
+        } else {
+            let cmsg = libc::CMSG_FIRSTHDR(&msg);
+            if !cmsg.is_null()
+                && (*cmsg).cmsg_level == libc::SOL_SOCKET
+                && (*cmsg).cmsg_type == libc::SCM_RIGHTS
+            {
+                let fd = *(libc::CMSG_DATA(cmsg) as *const i32);
+                if fd >= 0 {
+                    Some(fd)
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        }
+    };
+    unsafe { libc::close(parent_fd) };
+    let _ = child.wait();
+
+    match received_fd {
+        Some(fd) => Ok(unsafe { fs::File::from_raw_fd(fd) }),
+        None => Err("Administrator approval was denied or cancelled.".into()),
+    }
+}
+
+/// In-process macOS flash: unmount, authopen the raw device, stream the staged
+/// (already decompressed) image onto it with direct progress/cancel handling,
+/// read-back verify on the same fd, then eject. No elevated child process
+/// touches any file — the app writes the disk itself.
+#[cfg(not(target_os = "windows"))]
+fn run_sd_flash_macos(
+    inner_state: &Arc<Mutex<InnerState>>,
+    staged_image: &Path,
+    device_id: &str,
+) {
+    let set_phase = |phase: &str, detail: &str| {
+        if let Ok(mut inner) = inner_state.lock() {
+            if !is_terminal_sd_phase(&inner.sd_flash_phase) {
+                inner.sd_flash_phase = phase.into();
+                inner.sd_flash_detail = detail.into();
+            }
+            push_sd_log(&mut inner, detail.into());
+        }
+    };
+    let cancelled = || {
+        inner_state
+            .lock()
+            .map(|i| i.sd_flash_cancel_requested)
+            .unwrap_or(false)
+    };
+    let finish_cancelled = |staged: &Path| {
+        let _ = fs::remove_file(staged);
+        if let Ok(mut inner) = inner_state.lock() {
+            inner.sd_flash_in_flight = false;
+            inner.sd_flash_phase = "cancelled".into();
+            inner.sd_flash_detail = "Write cancelled".into();
+            push_sd_log(&mut inner, "Write cancelled".into());
+        }
+    };
+    let fail = |staged: &Path, msg: String| {
+        let _ = fs::remove_file(staged);
+        set_sd_failed(inner_state, msg);
+    };
+
+    set_phase("preparing", &format!("Unmounting /dev/{device_id}…"));
+    match Command::new("diskutil")
+        .args(["unmountDisk", device_id])
+        .output()
+    {
+        Ok(out) if out.status.success() => {}
+        Ok(out) => {
+            let err = String::from_utf8_lossy(&out.stderr);
+            let err = if err.trim().is_empty() {
+                String::from_utf8_lossy(&out.stdout).trim().to_string()
+            } else {
+                err.trim().to_string()
+            };
+            fail(staged_image, format!("Could not unmount the card: {err}"));
+            return;
+        }
+        Err(e) => {
+            fail(staged_image, format!("Could not run diskutil: {e}"));
+            return;
+        }
+    }
+
+    set_phase(
+        "preparing",
+        "Waiting for permission — enter your password in the macOS dialog…",
+    );
+    let rdev = format!("/dev/r{device_id}");
+    let mut disk = match authopen_rw_device(&rdev) {
+        Ok(f) => f,
+        Err(e) => {
+            fail(staged_image, e);
+            return;
+        }
+    };
+
+    let mut src = match fs::File::open(staged_image) {
+        Ok(f) => f,
+        Err(e) => {
+            fail(
+                staged_image,
+                format!("Could not open the prepared image: {e}"),
+            );
+            return;
+        }
+    };
+    let total = fs::metadata(staged_image).map(|m| m.len()).unwrap_or(0);
+
+    set_phase("writing", "Writing image to card…");
+    const CHUNK: usize = 4 * 1024 * 1024;
+    let mut buf = vec![0u8; CHUNK];
+    let mut written: u64 = 0;
+    let mut last_tick = std::time::Instant::now();
+    let mut last_bytes: u64 = 0;
+    loop {
+        if cancelled() {
+            drop(disk);
+            let _ = Command::new("diskutil").args(["eject", device_id]).output();
+            finish_cancelled(staged_image);
+            return;
+        }
+        // Fill the buffer fully so raw-device writes stay large and aligned.
+        let mut got = 0usize;
+        while got < CHUNK {
+            match src.read(&mut buf[got..]) {
+                Ok(0) => break,
+                Ok(n) => got += n,
+                Err(e) => {
+                    fail(staged_image, format!("Failed reading the image: {e}"));
+                    return;
+                }
+            }
+        }
+        if got == 0 {
+            break;
+        }
+        // Raw devices reject writes that aren't multiples of the 512-byte
+        // sector; zero-pad the final chunk if needed.
+        let mut write_len = got;
+        if write_len % 512 != 0 {
+            write_len = (got / 512 + 1) * 512;
+            for b in &mut buf[got..write_len] {
+                *b = 0;
+            }
+        }
+        if let Err(e) = disk.write_all(&buf[..write_len]) {
+            fail(staged_image, format!("Card write failed: {e}"));
+            return;
+        }
+        written += got as u64;
+
+        let now = std::time::Instant::now();
+        let dt = now.duration_since(last_tick);
+        if dt.as_millis() >= 500 {
+            let rate = ((written - last_bytes) as f64 / dt.as_secs_f64()) as u64;
+            last_tick = now;
+            last_bytes = written;
+            if let Ok(mut inner) = inner_state.lock() {
+                inner.sd_flash_comp_done = written;
+                inner.sd_flash_bytes_done = written;
+                inner.sd_flash_rate_bps = rate;
+            }
+        }
+    }
+    if let Ok(mut inner) = inner_state.lock() {
+        inner.sd_flash_comp_done = written;
+        inner.sd_flash_bytes_done = written;
+        inner.sd_flash_rate_bps = 0;
+    }
+
+    set_phase("flushing", "Flushing buffers…");
+    let _ = disk.sync_all();
+
+    set_phase("verifying", "Verifying written data…");
+    let verify_result: Result<bool, String> = (|| {
+        disk.seek(SeekFrom::Start(0))
+            .map_err(|e| format!("seek: {e}"))?;
+        src.seek(SeekFrom::Start(0))
+            .map_err(|e| format!("seek: {e}"))?;
+        let mut disk_buf = vec![0u8; CHUNK];
+        let mut src_buf = vec![0u8; CHUNK];
+        let mut remaining = total;
+        while remaining > 0 {
+            if cancelled() {
+                return Err("cancelled".into());
+            }
+            let want = remaining.min(CHUNK as u64) as usize;
+            let mut got = 0usize;
+            while got < want {
+                match src.read(&mut src_buf[got..want]) {
+                    Ok(0) => break,
+                    Ok(n) => got += n,
+                    Err(e) => return Err(format!("image read: {e}")),
+                }
+            }
+            if got == 0 {
+                break;
+            }
+            let mut disk_got = 0usize;
+            while disk_got < got {
+                match disk.read(&mut disk_buf[disk_got..got]) {
+                    Ok(0) => break,
+                    Ok(n) => disk_got += n,
+                    Err(e) => return Err(format!("card read: {e}")),
+                }
+            }
+            if disk_got < got || disk_buf[..got] != src_buf[..got] {
+                return Ok(false);
+            }
+            remaining -= got as u64;
+        }
+        Ok(true)
+    })();
+    match verify_result {
+        Ok(true) => {
+            if let Ok(mut inner) = inner_state.lock() {
+                push_sd_log(&mut inner, "Verification passed".into());
+            }
+        }
+        Ok(false) => {
+            drop(disk);
+            fail(
+                staged_image,
+                "Verification failed — the card does not match the image.".into(),
+            );
+            return;
+        }
+        Err(e) if e == "cancelled" => {
+            drop(disk);
+            let _ = Command::new("diskutil").args(["eject", device_id]).output();
+            finish_cancelled(staged_image);
+            return;
+        }
+        Err(e) => {
+            // The write itself succeeded and was flushed; a verify-read failure
+            // (e.g. a write-only fd) shouldn't scrap the card. Log and continue.
+            if let Ok(mut inner) = inner_state.lock() {
+                push_sd_log(&mut inner, format!("Read-back verification skipped: {e}"));
+            }
+        }
+    }
+
+    drop(disk);
+    set_phase("ejecting", "Ejecting card…");
+    let _ = Command::new("diskutil").args(["eject", device_id]).output();
+
+    let _ = fs::remove_file(staged_image);
+    if let Ok(mut inner) = inner_state.lock() {
+        inner.sd_flash_in_flight = false;
+        inner.sd_flash_phase = "done".into();
+        inner.sd_flash_detail = "SD card ready".into();
+        inner.sd_flash_comp_done = inner.sd_flash_comp_total;
+        push_sd_log(&mut inner, "SD card ready".into());
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn launch_sd_flash(
+    stage_dir: &Path,
+    progress_path: &Path,
+    cancel_path: &Path,
+    image_path: &str,
+    device_id: &str,
+    compressed: bool,
+) -> Result<u32, String> {
+    let disk_num: i64 = device_id
+        .parse()
+        .map_err(|_| "Invalid disk number".to_string())?;
+    let template = r#"$ErrorActionPreference='Stop'
+$img='@@IMG@@'
+$prog='@@PROG@@'
+$cancel='@@CANCEL@@'
+$diskNum=@@DISKNUM@@
+$compressed=@@COMP@@
+function Log($m){ Add-Content -LiteralPath $prog -Value $m }
+try {
+  Log 'PHASE preparing'
+  $disk = Get-Disk -Number $diskNum
+  if ($disk.IsBoot -or $disk.IsSystem) { Log 'WRITE_FAIL Refusing to write to the system or boot disk'; Log 'FLASH_EXIT 2'; return }
+  try { Clear-Disk -Number $diskNum -RemoveData -RemoveOEM -Confirm:$false } catch { }
+  try { Set-Disk -Number $diskNum -IsReadOnly $false } catch { }
+  try { Set-Disk -Number $diskNum -IsOffline $true } catch { }
+  Log 'PHASE writing'
+  $dev = '\\.\PhysicalDrive' + $diskNum
+  $srcFile = New-Object System.IO.FileStream($img,[System.IO.FileMode]::Open,[System.IO.FileAccess]::Read)
+  $compLen = $srcFile.Length
+  if ($compressed) { $src = New-Object System.IO.Compression.GZipStream($srcFile,[System.IO.Compression.CompressionMode]::Decompress) } else { $src = $srcFile }
+  $dst = New-Object System.IO.FileStream($dev,[System.IO.FileMode]::Open,[System.IO.FileAccess]::Write,[System.IO.FileShare]::ReadWrite)
+  $sha = [System.Security.Cryptography.SHA256]::Create()
+  $buf = New-Object byte[] (4194304)
+  $written = [int64]0
+  $lastTick = [Environment]::TickCount
+  $lastBytes = [int64]0
+  while ($true) {
+    if (Test-Path -LiteralPath $cancel) { $dst.Dispose(); $src.Dispose(); Log 'FLASH_EXIT 130'; return }
+    $got = 0
+    while ($got -lt $buf.Length) { $n = $src.Read($buf,$got,$buf.Length-$got); if ($n -le 0) { break }; $got += $n }
+    if ($got -le 0) { break }
+    $writeLen = $got
+    if (($got % 512) -ne 0) { $writeLen = [int]([math]::Ceiling($got/512.0))*512; [Array]::Clear($buf,$got,$writeLen-$got) }
+    $dst.Write($buf,0,$writeLen)
+    $sha.TransformBlock($buf,0,$got,$null,0) | Out-Null
+    $written += $got
+    $now = [Environment]::TickCount
+    if (($now - $lastTick) -ge 1000) {
+      $rate = [int64]((($written - $lastBytes) * 1000) / [math]::Max(1,($now - $lastTick)))
+      Log ('PROGRESS {0} {1} {2}' -f $srcFile.Position, $written, $rate)
+      $lastTick = $now; $lastBytes = $written
+    }
+  }
+  $dst.Flush($true); $dst.Dispose(); $src.Dispose()
+  $sha.TransformFinalBlock($buf,0,0) | Out-Null
+  $srcHash = ([BitConverter]::ToString($sha.Hash)).Replace('-','')
+  Log ('PROGRESS {0} {1} 0' -f $compLen, $written)
+  Log 'PHASE flushing'
+  Log 'PHASE verifying'
+  $rd = New-Object System.IO.FileStream($dev,[System.IO.FileMode]::Open,[System.IO.FileAccess]::Read,[System.IO.FileShare]::ReadWrite)
+  $sha2 = [System.Security.Cryptography.SHA256]::Create()
+  $remaining = $written
+  while ($remaining -gt 0) {
+    $toRead = [math]::Min([int64]$buf.Length,$remaining)
+    $n = $rd.Read($buf,0,[int]$toRead)
+    if ($n -le 0) { break }
+    $sha2.TransformBlock($buf,0,$n,$null,0) | Out-Null
+    $remaining -= $n
+  }
+  $sha2.TransformFinalBlock($buf,0,0) | Out-Null
+  $rd.Dispose()
+  $dstHash = ([BitConverter]::ToString($sha2.Hash)).Replace('-','')
+  if ($srcHash -ne $dstHash) { Log 'VERIFY_FAIL'; try { Set-Disk -Number $diskNum -IsOffline $false } catch { }; Log 'FLASH_EXIT 3'; return }
+  Log 'VERIFY_OK'
+  Log 'PHASE ejecting'
+  try { Set-Disk -Number $diskNum -IsOffline $false } catch { }
+  Log 'FLASH_EXIT 0'
+} catch {
+  Log ('WRITE_FAIL ' + $_.Exception.Message)
+  Log 'FLASH_EXIT 1'
+}
+"#;
+    let script = template
+        .replace("@@IMG@@", &image_path.replace('\'', "''"))
+        .replace("@@PROG@@", &progress_path.to_string_lossy().replace('\'', "''"))
+        .replace("@@CANCEL@@", &cancel_path.to_string_lossy().replace('\'', "''"))
+        .replace("@@DISKNUM@@", &disk_num.to_string())
+        .replace("@@COMP@@", if compressed { "$true" } else { "$false" });
+    let ps_path = stage_dir.join("flash-sdcard.ps1");
+    fs::write(&ps_path, &script).map_err(|e| format!("Failed to write flash script: {e}"))?;
+
+    let inner = format!(
+        "$p = Start-Process -FilePath 'powershell' -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File',{}) -Verb RunAs -WindowStyle Hidden -PassThru; $p.Id",
+        powershell_single_quote(&ps_path.to_string_lossy())
+    );
+    let out = Command::new("powershell")
+        .args(["-NoProfile", "-Command", &inner])
+        .output()
+        .map_err(|e| format!("Failed to start the write with administrator privileges: {e}"))?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        return Err(if stderr.is_empty() {
+            "Administrator approval was denied or cancelled.".into()
+        } else {
+            format!("Could not start the write with administrator privileges: {stderr}")
+        });
+    }
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    stdout
+        .trim()
+        .parse::<u32>()
+        .map_err(|_| format!("Unexpected output from PowerShell: '{}'", stdout.trim()))
+}
+
+fn run_sd_flash(
+    inner_state: Arc<Mutex<InnerState>>,
+    image_path: String,
+    device_id: String,
+    compressed: bool,
+) {
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let stage_dir = std::env::temp_dir().join(format!("fwds-sdcard-{ts}"));
+    if let Err(e) = fs::create_dir_all(&stage_dir) {
+        set_sd_failed(&inner_state, format!("Failed to create work directory: {e}"));
+        return;
+    }
+    let progress_path = stage_dir.join("progress.log");
+    if fs::write(&progress_path, b"").is_err() {
+        set_sd_failed(&inner_state, "Failed to create the progress log.".into());
+        return;
+    }
+    let cancel_path = stage_dir.join("cancel");
+
+    if let Ok(mut inner) = inner_state.lock() {
+        inner.sd_flash_stage_dir = Some(stage_dir.to_string_lossy().into_owned());
+        inner.sd_flash_progress_path = Some(progress_path.to_string_lossy().into_owned());
+        inner.sd_flash_progress_offset = 0;
+    }
+
+    // On macOS everything runs in THIS process: the source read happens here
+    // (the app holds the file-picker grant, so protected folders like
+    // ~/Downloads work), the image is staged as plaintext in temp, and the raw
+    // device is opened via authopen — no elevated child process, no Full Disk
+    // Access requirement. Windows has no TCC and keeps the elevated
+    // PowerShell writer.
+    #[cfg(not(target_os = "windows"))]
+    {
+        let staged = stage_dir.join("image.img");
+        if compressed {
+            if let Ok(mut inner) = inner_state.lock() {
+                inner.sd_flash_phase = "preparing".into();
+                inner.sd_flash_detail = "Decompressing image…".into();
+                push_sd_log(&mut inner, "Decompressing image before write…".into());
+            }
+            let outfile = match fs::File::create(&staged) {
+                Ok(f) => f,
+                Err(e) => {
+                    set_sd_failed(&inner_state, format!("Could not create staging file: {e}"));
+                    return;
+                }
+            };
+            let result = Command::new("gunzip")
+                .arg("-c")
+                .arg(&image_path)
+                .stdout(Stdio::from(outfile))
+                .stderr(Stdio::piped())
+                .spawn()
+                .and_then(|child| child.wait_with_output());
+            match result {
+                Ok(out) if out.status.success() => {}
+                Ok(out) => {
+                    let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+                    let _ = fs::remove_file(&staged);
+                    set_sd_failed(
+                        &inner_state,
+                        if err.is_empty() {
+                            "Could not decompress the image.".into()
+                        } else {
+                            err
+                        },
+                    );
+                    return;
+                }
+                Err(e) => {
+                    let _ = fs::remove_file(&staged);
+                    set_sd_failed(&inner_state, format!("Could not run the decompressor: {e}"));
+                    return;
+                }
+            }
+        } else {
+            if let Ok(mut inner) = inner_state.lock() {
+                inner.sd_flash_phase = "preparing".into();
+                inner.sd_flash_detail = "Preparing image…".into();
+            }
+            if let Err(e) = fs::copy(&image_path, &staged) {
+                set_sd_failed(&inner_state, format!("Could not read the image: {e}"));
+                return;
+            }
+        }
+        // Staged file is plaintext; retarget totals so progress tracks the
+        // decompressed size.
+        let plaintext_len = fs::metadata(&staged).map(|m| m.len()).unwrap_or(0);
+        if plaintext_len == 0 {
+            set_sd_failed(&inner_state, "The prepared image is empty.".into());
+            return;
+        }
+        if let Ok(mut inner) = inner_state.lock() {
+            inner.sd_flash_comp_total = plaintext_len;
+            inner.sd_flash_compressed = false;
+        }
+        let _ = &cancel_path; // cancellation is signalled via state on macOS
+        run_sd_flash_macos(&inner_state, &staged, &device_id);
+        return;
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let _ = compressed;
+        let pid = match launch_sd_flash(
+            &stage_dir,
+            &progress_path,
+            &cancel_path,
+            &image_path,
+            &device_id,
+            compressed,
+        ) {
+            Ok(pid) => pid,
+            Err(e) => {
+                set_sd_failed(&inner_state, e);
+                return;
+            }
+        };
+
+        if let Ok(mut inner) = inner_state.lock() {
+            inner.sd_flash_pid = Some(pid);
+            inner.sd_flash_detail = "Writing with administrator privileges…".into();
+            push_sd_log(&mut inner, format!("Writer started (pid {pid})"));
+        }
+
+    loop {
+        thread::sleep(Duration::from_millis(500));
+        let mut terminal = false;
+        let mut pid_dead = false;
+        if let Ok(mut inner) = inner_state.lock() {
+            sync_sd_flash(&mut inner);
+            if !inner.sd_flash_in_flight || is_terminal_sd_phase(&inner.sd_flash_phase) {
+                terminal = true;
+            } else if let Some(p) = inner.sd_flash_pid {
+                pid_dead = !process_alive(p);
+            }
+        }
+        if terminal {
+            break;
+        }
+        if pid_dead {
+            // Grace re-read in case the FLASH_EXIT line is still being flushed.
+            thread::sleep(Duration::from_millis(400));
+            if let Ok(mut inner) = inner_state.lock() {
+                sync_sd_flash(&mut inner);
+                if !is_terminal_sd_phase(&inner.sd_flash_phase) {
+                    inner.sd_flash_in_flight = false;
+                    inner.sd_flash_phase = "failed".into();
+                    inner.sd_flash_detail = "The writer process exited unexpectedly.".into();
+                    push_sd_log(&mut inner, "Writer process exited without completing.".into());
+                }
+            }
+            break;
+        }
+    }
+    }
+}
+
+#[tauri::command]
+fn list_sd_targets() -> Result<Vec<SdTarget>, String> {
+    list_sd_targets_impl()
+}
+
+#[tauri::command]
+async fn select_firmware_image(app: tauri::AppHandle) -> Result<FirmwareInfo, String> {
+    use tauri_plugin_dialog::DialogExt;
+    let picked = app
+        .dialog()
+        .file()
+        .add_filter("Firmware image", &["img", "gz"])
+        .blocking_pick_file();
+    let Some(picked) = picked else {
+        return Err("No file selected".into());
+    };
+    let path_str = picked.to_string();
+    let pb = PathBuf::from(&path_str);
+    let file_name = pb
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_string();
+    let lower = file_name.to_lowercase();
+    if !(lower.ends_with(".img") || lower.ends_with(".img.gz") || lower.ends_with(".gz")) {
+        return Err("Please choose a .img or .img.gz firmware image.".into());
+    }
+    let meta = fs::metadata(&pb).map_err(|e| format!("Cannot read file: {e}"))?;
+    let size_bytes = meta.len();
+    Ok(FirmwareInfo {
+        path: path_str,
+        file_name,
+        size_bytes,
+        size_label: human_size(size_bytes),
+        compressed: lower.ends_with(".gz"),
+    })
+}
+
+#[tauri::command]
+fn start_sd_flash(
+    image_path: String,
+    device_id: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    {
+        let inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
+        if inner.sd_flash_in_flight {
+            return Err("A card write is already in progress.".into());
+        }
+    }
+    let meta = fs::metadata(&image_path)
+        .map_err(|_| "Firmware image not found. Choose it again.".to_string())?;
+    let comp_total = meta.len();
+    if comp_total == 0 {
+        return Err("The selected firmware image is empty.".into());
+    }
+    let compressed = image_path.to_lowercase().ends_with(".gz");
+
+    // Defense-in-depth: re-confirm the device is still a removable target.
+    let targets = list_sd_targets_impl().unwrap_or_default();
+    let Some(target) = targets.iter().find(|t| t.id == device_id) else {
+        return Err("That SD card is no longer connected. Click Refresh and pick it again.".into());
+    };
+    let target_label = format!("{} ({})", target.name, target.size_label);
+
+    {
+        let mut inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
+        cleanup_stage_dir(inner.sd_flash_stage_dir.take());
+        inner.sd_flash_logs.clear();
+        inner.sd_flash_phase = "preparing".into();
+        inner.sd_flash_detail = "Preparing…".into();
+        inner.sd_flash_fail_detail = None;
+        inner.sd_flash_progress_path = None;
+        inner.sd_flash_progress_offset = 0;
+        inner.sd_flash_comp_total = comp_total;
+        inner.sd_flash_comp_done = 0;
+        inner.sd_flash_bytes_done = 0;
+        inner.sd_flash_rate_bps = 0;
+        inner.sd_flash_compressed = compressed;
+        inner.sd_flash_in_flight = true;
+        inner.sd_flash_cancel_requested = false;
+        inner.sd_flash_pid = None;
+        push_sd_log(&mut inner, format!("Writing image to {target_label}"));
+    }
+
+    let inner_state = state.inner.clone();
+    thread::spawn(move || run_sd_flash(inner_state, image_path, device_id, compressed));
+    Ok(())
+}
+
+#[tauri::command]
+fn poll_sd_flash(state: State<'_, AppState>) -> Result<SdFlashPoll, String> {
+    let mut inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
+    sync_sd_flash(&mut inner);
+    let percent = if inner.sd_flash_comp_total > 0 {
+        ((inner.sd_flash_comp_done as f64 / inner.sd_flash_comp_total as f64) * 100.0)
+            .clamp(0.0, 100.0)
+    } else {
+        -1.0
+    };
+    let total_bytes = if inner.sd_flash_compressed {
+        0
+    } else {
+        inner.sd_flash_comp_total
+    };
+    Ok(SdFlashPoll {
+        phase: inner.sd_flash_phase.clone(),
+        detail: inner.sd_flash_detail.clone(),
+        percent,
+        bytes_done: inner.sd_flash_bytes_done,
+        total_bytes,
+        rate_bps: inner.sd_flash_rate_bps,
+        lines: inner.sd_flash_logs.clone(),
+    })
+}
+
+#[tauri::command]
+fn cancel_sd_flash(state: State<'_, AppState>) -> Result<(), String> {
+    let mut inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
+    if !inner.sd_flash_in_flight {
+        return Ok(());
+    }
+    inner.sd_flash_cancel_requested = true;
+    inner.sd_flash_detail = "Cancelling…".into();
+    if let Some(dir) = inner.sd_flash_stage_dir.clone() {
+        let _ = fs::write(Path::new(&dir).join("cancel"), b"1");
+    }
+    push_sd_log(&mut inner, "Cancellation requested".into());
+    Ok(())
+}
+
+/// Open System Settings → Privacy & Security → Full Disk Access so the user can
+/// grant the app permission to write removable disks. Done in Rust via `open`
+/// rather than the opener plugin so the custom `x-apple.systempreferences:`
+/// scheme isn't subject to the plugin's URL scope.
+#[tauri::command]
+fn open_fda_settings() -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        Command::new("open")
+            .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles")
+            .spawn()
+            .map_err(|e| format!("Failed to open System Settings: {e}"))?;
+        Ok(())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Err("Full Disk Access settings are only applicable on macOS".into())
+    }
+}
+
 // ── App setup ─────────────────────────────────────────────────────────────────
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -3788,6 +5127,7 @@ pub fn run() {
     initial_inner.vpn_phase = "disconnected".into();
     initial_inner.shell_phase = "disconnected".into();
     initial_inner.connection_mode = "vpn".into();
+    initial_inner.sd_flash_phase = "idle".into();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -3820,6 +5160,8 @@ pub fn run() {
             open_controller_terminal,
             list_serial_devices,
             open_local_serial_terminal,
+            open_local_network_terminal,
+            discover_controllers,
             disconnect_local_controller,
             get_app_state,
             start_log_watcher,
@@ -3827,6 +5169,12 @@ pub fn run() {
             clear_diagnostic_state,
             clear_diagnostic_interface,
             stop_log_watcher,
+            list_sd_targets,
+            select_firmware_image,
+            start_sd_flash,
+            poll_sd_flash,
+            cancel_sd_flash,
+            open_fda_settings,
             quit_app,
         ])
         .setup(|app| {
@@ -3902,5 +5250,72 @@ Done: Failure: -65554: Network technology is not connected
 
         assert!(diag.cellular.is_none());
         assert!(!diag.interface_runs.contains_key("cellular"));
+    }
+
+    #[test]
+    fn human_size_is_decimal() {
+        assert_eq!(human_size(0), "0 B");
+        assert_eq!(human_size(512), "512 B");
+        assert_eq!(human_size(31_914_983_424), "31.9 GB");
+    }
+
+    #[test]
+    fn parse_sd_progress_and_markers() {
+        match parse_sd_line("PROGRESS 1048576 2097152 4096000") {
+            Some(SdEvent::Progress {
+                comp,
+                written,
+                rate,
+            }) => {
+                assert_eq!(comp, 1_048_576);
+                assert_eq!(written, 2_097_152);
+                assert_eq!(rate, 4_096_000);
+            }
+            _ => panic!("expected progress"),
+        }
+        assert!(matches!(parse_sd_line("PHASE writing"), Some(SdEvent::Phase(p)) if p == "writing"));
+        assert!(matches!(parse_sd_line("VERIFY_OK"), Some(SdEvent::Verified)));
+        assert!(matches!(parse_sd_line("FLASH_EXIT 0"), Some(SdEvent::Exit(0))));
+        assert!(matches!(parse_sd_line("FLASH_EXIT 130"), Some(SdEvent::Exit(130))));
+        assert!(matches!(parse_sd_line("VERIFY_FAIL"), Some(SdEvent::Failure(_))));
+        assert!(matches!(parse_sd_line("some raw output"), Some(SdEvent::Log(_))));
+        assert!(parse_sd_line("   ").is_none());
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn parse_diskutil_info_accepts_external_sd() {
+        let text = "\
+   Device Identifier:         disk6
+   Device Node:               /dev/disk6
+   Media Name:                USB SD Reader Media
+   Protocol:                  USB
+   Removable Media:           Removable
+   Internal:                  No
+   Virtual:                   No
+   Disk Size:                 31.9 GB (31914983424 Bytes) (exactly 62333952 512-Byte-Units)
+";
+        let t = parse_diskutil_info(text).expect("should parse an external SD card");
+        assert_eq!(t.id, "disk6");
+        assert_eq!(t.name, "USB SD Reader Media");
+        assert_eq!(t.size_bytes, 31_914_983_424);
+        assert_eq!(t.size_label, "31.9 GB");
+        assert!(t.removable);
+        assert_eq!(t.bus, "USB");
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn parse_diskutil_info_rejects_internal() {
+        let text = "\
+   Device Identifier:         disk0
+   Media Name:                APPLE SSD
+   Protocol:                  Apple Fabric
+   Removable Media:           Fixed
+   Internal:                  Yes
+   Virtual:                   No
+   Disk Size:                 994.7 GB (994662584320 Bytes)
+";
+        assert!(parse_diskutil_info(text).is_none());
     }
 }

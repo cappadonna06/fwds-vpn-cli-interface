@@ -6,6 +6,7 @@ import { confirm } from "@tauri-apps/plugin-dialog";
 import SessionTab from "./components/tabs/SessionTab";
 import CommandsTab from "./components/tabs/CommandsTab";
 import WizardTab from "./components/tabs/WizardTab";
+import SDCardTab from "./components/tabs/SDCardTab";
 import ReportTab from "./components/tabs/ReportTab";
 import DiagnosticsTab from "./components/tabs/DiagnosticsTab";
 import SystemConfigurationTab from "./components/tabs/SystemConfigurationTab";
@@ -17,8 +18,16 @@ import { StatusPillState } from "./components/shell/StatusPill";
 import "./App.css";
 import "./components/tabs/tabs.css";
 
-type Tab = "session" | "commands" | "wizard" | "system-configuration" | "report" | "diagnostics";
+type Tab =
+  | "session"
+  | "commands"
+  | "wizard"
+  | "sd-card"
+  | "system-configuration"
+  | "report"
+  | "diagnostics";
 
+// Controller tabs — everything that talks to (or about) a connected controller.
 const TABS: { id: Tab; label: string; badge?: string }[] = [
   { id: "session", label: "Connect" },
   { id: "commands", label: "Commands" },
@@ -26,6 +35,11 @@ const TABS: { id: Tab; label: string; badge?: string }[] = [
   { id: "system-configuration", label: "System Configuration" },
   { id: "diagnostics", label: "Diagnostics", badge: "Beta" },
   { id: "report", label: "Report", badge: "Beta" },
+];
+
+// Standalone local utilities that don't require a controller connection.
+const TOOL_TABS: { id: Tab; label: string; badge?: string }[] = [
+  { id: "sd-card", label: "Create SD Card" },
 ];
 
 let closeGuard = false;
@@ -276,6 +290,19 @@ export default function App() {
                   onClick={() => setActiveTab(tab.id)}
                 />
               ))}
+
+              <div className="sidebar-nav-section" role="presentation">
+                Additional Tools
+              </div>
+              {TOOL_TABS.map((tab) => (
+                <SidebarNavItem
+                  key={tab.id}
+                  label={tab.label}
+                  badge={tab.badge}
+                  selected={activeTab === tab.id}
+                  onClick={() => setActiveTab(tab.id)}
+                />
+              ))}
             </nav>
           }
         />
@@ -289,6 +316,9 @@ export default function App() {
           </div>
           <div style={{ display: activeTab === "wizard" ? "contents" : "none" }}>
             <WizardTab />
+          </div>
+          <div style={{ display: activeTab === "sd-card" ? "contents" : "none" }}>
+            <SDCardTab />
           </div>
           <div style={{ display: activeTab === "system-configuration" ? "contents" : "none" }}>
             <SystemConfigurationTab />

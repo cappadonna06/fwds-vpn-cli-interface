@@ -198,6 +198,18 @@
   gap: 2px;
 }
 
+.sidebar-nav-section {
+  margin-top: 18px;
+  padding: 6px 14px 4px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-tertiary, var(--text-secondary));
+  border-top: 1px solid var(--border, rgba(0, 0, 0, 0.08));
+  padding-top: 14px;
+}
+
 .sidebar-nav-item {
   position: relative;
   display: flex;

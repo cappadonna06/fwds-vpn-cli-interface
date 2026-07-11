@@ -28,8 +28,12 @@ pub fn parse_log_into_state(log: &str, state: &mut DiagnosticState) {
     if let Some(ref mut cell_diag) = cellular {
         detect_setup_cellular_events(log, cell_diag);
 
+        // "Hardware not responding" means the modem answered its identity (IMEI read back)
+        // but its AT control channel is dead. A setup-cellular *connection* timeout is NOT
+        // evidence of that — a healthy modem in a no-coverage area times out the same way —
+        // so gate only on a genuine AT-interface failure, never on setup_timed_out.
         cell_diag.modem_unreachable = cell_diag.imei.is_some()
-            && (cell_diag.at_interface_failed == Some(true) || cell_diag.setup_timed_out)
+            && cell_diag.at_interface_failed == Some(true)
             && (cell_diag.cellular_disabled || cell_diag.setup_attempted);
 
         if cell_diag.modem_unreachable {
@@ -1474,6 +1478,48 @@ ERROR: device "/dev/ttyUSB2" does not exist
         let cell = parse_cellular(block);
         assert_eq!(cell.check_result, "Failure");
         assert_eq!(cell.modem_present, Some(false));
+        assert_eq!(cell.status, crate::DiagStatus::Red);
+        assert_eq!(cell.summary, "No modem detected");
+    }
+
+    #[test]
+    fn parse_cellular_bad_modem_field_capture_classifies_no_modem_red() {
+        // Real field capture from a controller with a dead/absent modem: cell-status and the
+        // cell-* identity commands all print "No cellular modems detected", connman has no
+        // cellular technology, wwan0 is gone, and every AT command errors on missing ttyUSB2.
+        let block = r#"
+===== CELLULAR CONNECTIVITY TEST =====
+Testing Cellular...
+Done: Failure: -65552: Network technology not available
+
+===== BASIC CELL INFO =====
+ERROR: No cellular modems detected.
+ERROR: No cellular modems detected.
+ERROR: No cellular modems detected.
+ERROR: No Cellular modems detected.
+
+===== NETWORK TECHNOLOGY =====
+/net/connman/technology/ethernet
+  Name = Wired
+  Type = ethernet
+  Powered = True
+  Connected = False
+
+===== INTERFACE / ROUTING =====
+Device "wwan0" does not exist.
+Device "wwan0" does not exist.
+
+===== MODEM / RADIO DIAGNOSTICS =====
+Running AT commands...
+ERROR: device "/dev/ttyUSB2" does not exist
+ERROR: device "/dev/ttyUSB2" does not exist
+"#;
+        let cell = parse_cellular(block);
+        assert_eq!(cell.modem_present, Some(false));
+        assert!(cell.modem_not_present);
+        assert_eq!(cell.imei, None);
+        // No IMEI + absent modem must never be mistaken for the AT-dead "unreachable" state.
+        assert!(!cell.modem_unreachable);
         assert_eq!(cell.status, crate::DiagStatus::Red);
         assert_eq!(cell.summary, "No modem detected");
     }
@@ -4596,6 +4642,12 @@ fn parse_cellular_check_text(text: &str, diag: &mut CellularDiagnostic) {
 }
 
 fn parse_basic_cell_info(text: &str, diag: &mut CellularDiagnostic) {
+    // Authoritative no-modem signal: cell-status / cell-imei / cell-ccid etc. all print
+    // "No cellular modems detected" when the modem never enumerated. This is the device's
+    // own verdict, so trust it directly rather than inferring absence from error codes.
+    if text.to_ascii_lowercase().contains("no cellular modems detected") {
+        diag.modem_present = Some(false);
+    }
     let lines: Vec<String> = text
         .lines()
         .map(|l| l.trim().to_string())
@@ -5220,12 +5272,16 @@ fn determine_recommendation(diag: &mut SimPickerDiagnostic) {
 /// Pre-compute boolean flag fields from raw parsed data.
 /// Must be called before determine_cellular_status.
 fn compute_cellular_flags(diag: &mut CellularDiagnostic) {
-    diag.modem_not_present = diag
-        .check_error
-        .as_deref()
-        .map(|e| e.contains("-65552"))
-        .unwrap_or(false)
-        && (diag.modem_present == Some(false) || !diag.wwan_exists);
+    // The modem is absent if it explicitly failed to enumerate (device says "no cellular
+    // modems detected", or /dev/ttyUSB2 is gone → modem_present == Some(false)), OR the
+    // connectivity check reported "-65552: technology not available" with no wwan interface.
+    diag.modem_not_present = diag.modem_present == Some(false)
+        || (diag
+            .check_error
+            .as_deref()
+            .map(|e| e.contains("-65552"))
+            .unwrap_or(false)
+            && !diag.wwan_exists);
 
     diag.cellular_disabled = diag.connman_cell_powered == Some(false)
         || diag
@@ -5261,10 +5317,18 @@ fn detect_setup_cellular_events(log: &str, diag: &mut CellularDiagnostic) {
 fn determine_cellular_status(diag: &mut CellularDiagnostic) {
     // 1. Hardware not present at all
     if diag.modem_not_present {
-        diag.status = DiagStatus::Unknown;
+        // Modem never enumerated — this is a hardware fault, not a coverage/SIM problem.
+        // Reboot re-probes the USB/AT bus and clears most transient cases; if the modem is
+        // still missing afterward it needs physical service (nothing to reseat externally).
+        diag.status = DiagStatus::Red;
         diag.summary = "No modem detected".into();
-        diag.recommended_action = Some("Check modem connection and seating".into());
-        diag.other_actions = vec!["Reboot controller".into(), "Check modem hardware".into()];
+        diag.recommended_action =
+            Some("Reboot controller — if modem still not detected, hardware service needed".into());
+        diag.other_actions = vec![
+            "Reboot usually re-detects the modem".into(),
+            "Verify the modem board is seated".into(),
+            "If still missing after reboot, the modem needs service".into(),
+        ];
         return;
     }
 
