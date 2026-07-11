@@ -4383,3 +4383,154 @@
   max-height: 220px;
   flex: none;
 }
+
+/* ============================================================
+   LED decoder tool
+   ============================================================ */
+
+/* Flashing lens animations — VERBATIM from the web tool's globals.css.
+   Square-wave on/off (steps) at the LED's real rate; `alt` swaps green<->amber. */
+@keyframes fl-led-blink {
+  0%, 49.9% { opacity: 1; }
+  50%, 100% { opacity: 0.12; }
+}
+@keyframes fl-led-alt {
+  0%, 49.9% { fill: #27d965; }
+  50%, 100% { fill: #f7a911; }
+}
+.fl-led-b2 { animation: fl-led-blink 0.5s steps(1, end) infinite; }   /* 2 Hz */
+.fl-led-b1 { animation: fl-led-blink 1s steps(1, end) infinite; }     /* 1 Hz */
+.fl-led-b4 { animation: fl-led-blink 0.25s steps(1, end) infinite; }  /* 4 Hz */
+.fl-led-alt { animation: fl-led-alt 1.1s steps(1, end) infinite; }
+@media (prefers-reduced-motion: reduce) {
+  .fl-led-b2, .fl-led-b1, .fl-led-b4, .fl-led-alt { animation: none; }
+}
+
+/* Severity tone tokens (scoped to the tool). The shared .tab-content clips overflow;
+   this tool is taller than the viewport, so let it own a vertical scroll region. */
+.led-decoder-tab {
+  --led-good: var(--success, #1f9d55);
+  --led-info: var(--accent, #2f6fe4);
+  --led-warn: var(--warning, #d08700);
+  --led-bad: var(--danger, #dc2626);
+  overflow-y: auto;
+}
+
+/* Neutral badge variant (the app defines .badge but no neutral tone). */
+.badge-neutral { color: var(--text-muted); background: var(--bg-2); }
+
+/* Heading */
+.led-heading { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; }
+.led-eyebrow {
+  text-transform: uppercase; letter-spacing: 0.14em; font-size: 11px; font-weight: 700;
+  color: var(--text-muted);
+}
+.led-title { font-size: 20px; font-weight: 700; color: var(--text-primary); margin: 0; }
+
+/* Two-column layout: sticky faceplate + controls */
+.led-layout {
+  display: grid; gap: 20px; align-items: start;
+  grid-template-columns: minmax(0, 320px) 1fr;
+}
+@media (max-width: 900px) { .led-layout { grid-template-columns: 1fr; } }
+
+.led-faceplate-card { position: sticky; top: 16px; }
+.led-faceplate {
+  position: relative; width: 100%; max-width: 300px; margin: 0 auto;
+  aspect-ratio: 279 / 356;
+}
+.led-faceplate-img,
+.led-faceplate-overlay {
+  position: absolute; inset: 0; width: 100%; height: 100%;
+}
+.led-faceplate-img { object-fit: contain; user-select: none; }
+.led-faceplate-overlay { pointer-events: none; }
+.led-faceplate-note {
+  margin-top: 12px; text-align: center; font-size: 12px; color: var(--text-muted);
+}
+
+.led-right { display: flex; flex-direction: column; gap: 16px; }
+
+/* Control rows */
+.led-control-row {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between;
+  gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--border-soft);
+}
+.led-control-row:last-child { border-bottom: 0; }
+.led-control-name { min-width: 68px; }
+.led-control-title { font-size: 15px; font-weight: 700; color: var(--text-primary); }
+.led-control-alias { font-size: 11px; color: var(--text-muted); }
+.led-control-pickers { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+
+/* Segmented pill picker */
+.led-seg {
+  display: inline-flex; flex-wrap: wrap; gap: 4px; padding: 4px;
+  background: var(--bg-2); border-radius: 10px;
+}
+.led-seg-btn {
+  border: 0; cursor: pointer; padding: 6px 12px; border-radius: 8px;
+  font-size: 13px; font-weight: 600; color: var(--text-secondary);
+  background: transparent; transition: background 0.12s, color 0.12s;
+}
+.led-seg-btn:hover { color: var(--text-primary); }
+.led-seg-btn.is-on {
+  background: var(--bg-1); color: var(--text-primary);
+  box-shadow: 0 1px 2px rgba(31, 42, 55, 0.12);
+}
+
+/* Status banner */
+.led-banner {
+  display: flex; align-items: flex-start; gap: 12px; padding: 16px;
+  border: 1px solid var(--border); border-radius: 12px; background: var(--bg-2);
+}
+.led-banner-dot { margin-top: 6px; width: 12px; height: 12px; border-radius: 50%;
+  flex-shrink: 0; background: var(--text-muted); }
+.led-banner-title { font-size: 18px; font-weight: 700; color: var(--text-primary); }
+.led-banner-sub { font-size: 14px; color: var(--text-secondary); }
+.led-tone-good    { border-color: color-mix(in srgb, var(--led-good) 35%, transparent);
+  background: color-mix(in srgb, var(--led-good) 10%, transparent); }
+.led-tone-good .led-banner-dot { background: var(--led-good); }
+.led-tone-warn    { border-color: color-mix(in srgb, var(--led-warn) 35%, transparent);
+  background: color-mix(in srgb, var(--led-warn) 10%, transparent); }
+.led-tone-warn .led-banner-dot { background: var(--led-warn); }
+.led-tone-bad     { border-color: color-mix(in srgb, var(--led-bad) 35%, transparent);
+  background: color-mix(in srgb, var(--led-bad) 10%, transparent); }
+.led-tone-bad .led-banner-dot { background: var(--led-bad); }
+.led-tone-neutral { }
+
+/* "What this means" blocks */
+.led-blocks { display: flex; flex-direction: column; gap: 20px; }
+.led-block + .led-block { border-top: 1px solid var(--border-soft); padding-top: 20px; }
+.led-block-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.led-block-name { font-size: 15px; font-weight: 800; color: var(--text-primary); }
+.led-block-caption {
+  font-size: 11px; font-weight: 700; color: var(--text-secondary);
+  background: var(--bg-2); border-radius: 999px; padding: 2px 8px;
+}
+.led-multi-note { font-size: 12px; color: var(--text-muted); margin: 0 0 4px; }
+
+/* Meaning cards */
+.led-meaning-list { display: flex; flex-direction: column; gap: 8px; }
+.led-meaning {
+  display: flex; gap: 10px; padding: 12px; border-radius: 8px;
+  border: 1px solid var(--border); background: var(--bg-2);
+}
+.led-dot { margin-top: 6px; width: 10px; height: 10px; border-radius: 50%;
+  flex-shrink: 0; background: var(--text-muted); }
+.led-meaning-summary { font-size: 15px; font-weight: 600; color: var(--text-primary); }
+.led-meaning-detail { font-size: 13px; color: var(--text-secondary); }
+
+.led-sev-good { border-color: color-mix(in srgb, var(--led-good) 25%, transparent);
+  background: color-mix(in srgb, var(--led-good) 8%, transparent); }
+.led-sev-good .led-dot { background: var(--led-good); }
+.led-sev-info { border-color: color-mix(in srgb, var(--led-info) 20%, transparent);
+  background: color-mix(in srgb, var(--led-info) 6%, transparent); }
+.led-sev-info .led-dot { background: var(--led-info); }
+.led-sev-warn { border-color: color-mix(in srgb, var(--led-warn) 25%, transparent);
+  background: color-mix(in srgb, var(--led-warn) 8%, transparent); }
+.led-sev-warn .led-dot { background: var(--led-warn); }
+.led-sev-bad  { border-color: color-mix(in srgb, var(--led-bad) 25%, transparent);
+  background: color-mix(in srgb, var(--led-bad) 8%, transparent); }
+.led-sev-bad .led-dot { background: var(--led-bad); }
+
+.led-footnote { font-size: 12px; color: var(--text-muted); margin: 0; }
