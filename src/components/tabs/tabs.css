@@ -183,6 +183,65 @@
   color: var(--text-muted);
 }
 
+/* Missing-dependency heads-up (shown before Connect when a required tool —
+   minicom / ssh / OpenVPN / PuTTY — isn't installed). Amber = "action needed
+   before you can proceed", one step below the red post-failure bar. */
+.dependency-notice {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 11px 12px;
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--warning) 12%, white);
+  border: 1px solid color-mix(in srgb, var(--warning) 32%, white);
+}
+
+.dependency-notice-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--warning-ink);
+}
+
+.dependency-notice-icon {
+  width: 15px;
+  height: 15px;
+  flex-shrink: 0;
+  fill: var(--warning);
+}
+
+.dependency-notice-glyph {
+  fill: white;
+}
+
+.dependency-notice-body {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-secondary);
+}
+
+.dependency-install {
+  align-self: flex-start;
+  max-width: 100%;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-primary);
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 8px;
+  overflow-x: auto;
+  white-space: nowrap;
+  user-select: all;
+}
+
+.dependency-notice-actions {
+  display: flex;
+}
+
 /* Session Tab refresh (Connect page) */
 .session-tab {
   overflow-y: auto;
