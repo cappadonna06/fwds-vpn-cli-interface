@@ -17,6 +17,16 @@ const DEFAULTS: Record<string, unknown> = {
     local_serial_device: null,
   },
   get_diagnostic_state: { system: null },
+  // List commands must return arrays — the UI maps over them on render.
+  list_serial_devices: [],
+  discover_controllers: [],
+  // Preview default: all connection dependencies present (the common case).
+  // Flip an `installed` to false here to preview the missing-dependency notice.
+  check_dependencies: [
+    { id: "minicom", label: "minicom", method: "serial", installed: true, install_hint: "brew install minicom", found_path: "/opt/homebrew/bin/minicom" },
+    { id: "ssh", label: "OpenSSH (ssh)", method: "network", installed: true, install_hint: "Install the OpenSSH client", found_path: "/usr/bin/ssh" },
+    { id: "openvpn", label: "OpenVPN", method: "vpn", installed: true, install_hint: "brew install openvpn", found_path: "/opt/homebrew/sbin/openvpn" },
+  ],
 };
 
 export function installBrowserTauriShim(): void {

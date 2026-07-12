@@ -1850,6 +1850,113 @@ fn run_preflight(ip: String) -> Result<serde_json::Value, String> {
     }))
 }
 
+/// The install status of one external tool a connection method depends on.
+/// Surfaced to the UI so a missing tool can be flagged *before* a connection is
+/// attempted, instead of failing silently inside a terminal window that just
+/// opens and closes.
+#[derive(serde::Serialize)]
+struct DependencyStatus {
+    /// Stable identifier (`minicom`, `ssh`, `openvpn`, `putty`).
+    id: String,
+    /// Human label shown in the UI.
+    label: String,
+    /// Which connection method needs it: `serial`, `network`, or `vpn`.
+    method: String,
+    /// Whether we could locate the tool on this machine.
+    installed: bool,
+    /// One-line, copy-pasteable install instruction (empty if none applies).
+    install_hint: String,
+    /// Where we found it, when installed (handy for support/tooltips).
+    found_path: Option<String>,
+}
+
+/// Report whether the external tools each connection method needs are installed.
+/// Platform-aware and cheap (path probes + `which`/`where`), so the Connect page
+/// can call it on load and warn up front. Pairs with the launch-time preflights
+/// in `open_local_serial_terminal` / `open_*_terminal` / `resolve_openvpn`, which
+/// remain the hard guarantee — this is the friendly heads-up before the click.
+#[tauri::command]
+fn check_dependencies() -> Vec<DependencyStatus> {
+    #[cfg(target_os = "windows")]
+    {
+        let putty = find_putty_executable();
+        let putty_installed = putty.is_some();
+        let ssh_installed = windows_command_exists("ssh");
+        let openvpn = resolve_openvpn().ok();
+        vec![
+            DependencyStatus {
+                id: "putty".into(),
+                label: "PuTTY".into(),
+                method: "serial".into(),
+                installed: putty_installed,
+                install_hint: "Install PuTTY from putty.org".into(),
+                found_path: putty.as_ref().map(|p| p.display().to_string()),
+            },
+            DependencyStatus {
+                id: "putty-or-ssh".into(),
+                label: "PuTTY or the OpenSSH client".into(),
+                method: "network".into(),
+                installed: putty_installed || ssh_installed,
+                install_hint:
+                    "Install PuTTY, or enable the OpenSSH Client optional feature in Windows Settings"
+                        .into(),
+                found_path: None,
+            },
+            DependencyStatus {
+                id: "openvpn".into(),
+                label: "OpenVPN".into(),
+                method: "vpn".into(),
+                installed: openvpn.is_some(),
+                install_hint: "Install OpenVPN Community or OpenVPN Connect".into(),
+                found_path: openvpn.map(|p| p.display().to_string()),
+            },
+        ]
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let minicom = resolve_unix_command("minicom");
+        let ssh = resolve_unix_command("ssh");
+        let openvpn = resolve_openvpn().ok();
+        vec![
+            DependencyStatus {
+                id: "minicom".into(),
+                label: "minicom".into(),
+                method: "serial".into(),
+                installed: minicom.is_some(),
+                install_hint: "brew install minicom".into(),
+                found_path: minicom.map(|p| p.display().to_string()),
+            },
+            DependencyStatus {
+                id: "ssh".into(),
+                label: "OpenSSH (ssh)".into(),
+                method: "network".into(),
+                installed: ssh.is_some(),
+                install_hint: "Install the OpenSSH client".into(),
+                found_path: ssh.map(|p| p.display().to_string()),
+            },
+            DependencyStatus {
+                id: "openvpn".into(),
+                label: "OpenVPN".into(),
+                method: "vpn".into(),
+                installed: openvpn.is_some(),
+                install_hint: "brew install openvpn".into(),
+                found_path: openvpn.map(|p| p.display().to_string()),
+            },
+        ]
+    }
+}
+
+/// Best-effort "is this command on PATH" check for Windows, via `where`.
+#[cfg(target_os = "windows")]
+fn windows_command_exists(name: &str) -> bool {
+    Command::new("where")
+        .arg(name)
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
 /// Open the active controller connection in Terminal.app for full interactive setup.
 /// SSH session is wrapped with `script` and logged to the app's controller log path
 /// so the diagnostics watcher tails the same visible Terminal session.
@@ -5414,6 +5521,7 @@ pub fn run() {
             toggle_debug,
             disconnect_controller,
             run_preflight,
+            check_dependencies,
             open_controller_terminal,
             list_serial_devices,
             open_local_serial_terminal,
@@ -5456,6 +5564,19 @@ mod tests {
         // resolve it; a nonsense name must resolve to nothing.
         assert!(resolve_unix_command("sh").is_some());
         assert!(resolve_unix_command("definitely-not-a-real-binary-xyz").is_none());
+    }
+
+    #[test]
+    fn check_dependencies_covers_every_method() {
+        let deps = check_dependencies();
+        // One entry per connection method, each with a non-empty label/hint.
+        let mut methods: Vec<&str> = deps.iter().map(|d| d.method.as_str()).collect();
+        methods.sort();
+        assert_eq!(methods, vec!["network", "serial", "vpn"]);
+        for d in &deps {
+            assert!(!d.label.is_empty());
+            assert!(!d.install_hint.is_empty());
+        }
     }
 
     #[cfg(not(target_os = "windows"))]

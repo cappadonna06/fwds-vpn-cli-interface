@@ -40,6 +40,15 @@ interface PreflightResult {
   detail: string;
 }
 
+interface DependencyStatus {
+  id: string;
+  label: string;
+  method: "serial" | "network" | "vpn";
+  installed: boolean;
+  install_hint: string;
+  found_path: string | null;
+}
+
 function statusTone(status: VpnStatus | ControllerStatus): "neutral" | "ok" | "warn" | "fail" {
   if (status === "connected") return "ok";
   if (status === "connecting" || status === "starting" || status === "stopping" || status === "manual") return "warn";
@@ -70,6 +79,8 @@ export default function SessionTab({ onControllerConnected }: SessionTabProps) {
 
   const [preflight, setPreflight] = useState<PreflightResult | null>(null);
   const [preflightRunning, setPreflightRunning] = useState(false);
+  const [dependencies, setDependencies] = useState<DependencyStatus[] | null>(null);
+  const [dependenciesChecking, setDependenciesChecking] = useState(false);
   const [serialDevice, setSerialDevice] = useState("");
   const [serialDevices, setSerialDevices] = useState<string[]>([]);
   const [serialDetail, setSerialDetail] = useState("");
@@ -333,6 +344,60 @@ export default function SessionTab({ onControllerConnected }: SessionTabProps) {
     } catch (e) {
       setSerialDetail(String(e));
     }
+  }
+
+  // Probe for the external tools each connection method needs (minicom, ssh,
+  // OpenVPN / PuTTY depending on platform) so we can flag a missing one before
+  // the user clicks Connect rather than after it fails inside a terminal window.
+  async function checkDependencies() {
+    setDependenciesChecking(true);
+    try {
+      const result = await invoke<DependencyStatus[]>("check_dependencies");
+      setDependencies(result);
+    } catch {
+      // A failed probe shouldn't block the UI — leave the notice hidden and let
+      // the launch-time preflight surface any real problem.
+      setDependencies(null);
+    } finally {
+      setDependenciesChecking(false);
+    }
+  }
+
+  useEffect(() => {
+    checkDependencies();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Renders an amber heads-up when the tool the given method needs is missing.
+  // Returns null (no clutter) when the dependency is present or unknown.
+  function renderDependencyNotice(method: DependencyStatus["method"]) {
+    const dep = dependencies?.find((d) => d.method === method && !d.installed);
+    if (!dep) return null;
+    const consequence =
+      method === "serial"
+        ? "The serial console can’t open without it."
+        : method === "vpn"
+        ? "The VPN can’t start without it."
+        : "The SSH session can’t open without it.";
+    return (
+      <div className="dependency-notice" role="alert">
+        <div className="dependency-notice-head">
+          <svg className="dependency-notice-icon" viewBox="0 0 16 16" aria-hidden="true">
+            <path d="M7.13 2.19a1 1 0 0 1 1.74 0l5.7 9.87A1 1 0 0 1 13.7 13.6H2.3a1 1 0 0 1-.87-1.5z" />
+            <rect className="dependency-notice-glyph" x="7.25" y="5.4" width="1.5" height="4" rx="0.75" />
+            <circle className="dependency-notice-glyph" cx="8" cy="11" r="0.95" />
+          </svg>
+          <span>{dep.label} isn’t installed</span>
+        </div>
+        <p className="dependency-notice-body">{consequence} Install it, then re-check:</p>
+        {dep.install_hint && <code className="dependency-install">{dep.install_hint}</code>}
+        <div className="dependency-notice-actions">
+          <button className="btn-link" onClick={checkDependencies} disabled={dependenciesChecking}>
+            {dependenciesChecking ? "Checking…" : "Re-check"}
+          </button>
+        </div>
+      </div>
+    );
   }
 
   async function launchLocalSerialTerminal() {
@@ -604,6 +669,8 @@ export default function SessionTab({ onControllerConnected }: SessionTabProps) {
                   )}
                 </div>
 
+                {renderDependencyNotice("serial")}
+
                 <div className="card-actions">
                   <button className="btn btn-primary" disabled={!serialDevice} onClick={launchLocalSerialTerminal}>
                     Connect
@@ -667,6 +734,8 @@ export default function SessionTab({ onControllerConnected }: SessionTabProps) {
                     or a LAN IP. Passwordless via the bundle's SSH key.
                   </p>
                 </div>
+
+                {renderDependencyNotice("network")}
 
                 <div className="card-actions">
                   <button className="btn btn-primary" disabled={!networkHost.trim()} onClick={launchLocalNetworkTerminal}>
@@ -825,6 +894,8 @@ export default function SessionTab({ onControllerConnected }: SessionTabProps) {
                     </div>
                   )}
                 </div>
+
+                {renderDependencyNotice("vpn")}
 
                 <div className="card-actions">
                   {hasActiveControllerSession && (
