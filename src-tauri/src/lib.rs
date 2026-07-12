@@ -723,6 +723,135 @@ fn find_putty_executable() -> Option<PathBuf> {
     .find(|path| !path.as_os_str().is_empty() && path.exists())
 }
 
+/// Locate `puttygen.exe`, the PuTTY suite's key converter. Mirrors
+/// `find_putty_executable` — it ships in the same install directory, so the
+/// same PATH + standard-location search finds it.
+#[cfg(target_os = "windows")]
+fn find_puttygen_executable() -> Option<PathBuf> {
+    if let Some(paths) = std::env::var_os("PATH") {
+        for dir in std::env::split_paths(&paths) {
+            let candidate = dir.join("puttygen.exe");
+            if candidate.exists() {
+                return Some(candidate);
+            }
+        }
+    }
+
+    [
+        PathBuf::from(r"C:\Program Files\PuTTY\puttygen.exe"),
+        PathBuf::from(r"C:\Program Files (x86)\PuTTY\puttygen.exe"),
+        std::env::var_os("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .map(|p| p.join(r"Programs\PuTTY\puttygen.exe"))
+            .unwrap_or_default(),
+    ]
+    .into_iter()
+    .find(|path| !path.as_os_str().is_empty() && path.exists())
+}
+
+/// PuTTY can't read the OpenSSH-format `station` key its `-i` option wants a
+/// native `.ppk`. Convert `~/.ssh/station` → `~/.ssh/station.ppk` with puttygen
+/// so the Windows PuTTY sessions can authenticate with the same key macOS uses.
+/// The `station` key is passphraseless, so the conversion is non-interactive.
+/// Returns the `.ppk` path when it exists (freshly made or already present), or
+/// `None` if the key is missing or puttygen isn't installed — callers then fall
+/// back to the built-in OpenSSH client.
+#[cfg(target_os = "windows")]
+fn ensure_station_ppk() -> Option<PathBuf> {
+    let station = home_ssh_dir().join("station");
+    if !station.exists() {
+        return None;
+    }
+    let ppk = home_ssh_dir().join("station.ppk");
+
+    // Regenerate when the ppk is missing or older than the source key.
+    let up_to_date = match (fs::metadata(&ppk), fs::metadata(&station)) {
+        (Ok(p), Ok(s)) => match (p.modified(), s.modified()) {
+            (Ok(pm), Ok(sm)) => pm >= sm,
+            _ => true, // ppk exists; if we can't compare times, trust it
+        },
+        _ => false,
+    };
+    if ppk.exists() && up_to_date {
+        return Some(ppk);
+    }
+
+    let puttygen = find_puttygen_executable()?;
+    let out = Command::new(&puttygen)
+        .args([
+            station.as_os_str(),
+            std::ffi::OsStr::new("-O"),
+            std::ffi::OsStr::new("private"),
+            std::ffi::OsStr::new("-o"),
+            ppk.as_os_str(),
+        ])
+        .output()
+        .ok()?;
+    if out.status.success() && ppk.exists() {
+        Some(ppk)
+    } else {
+        None
+    }
+}
+
+/// Win32 OpenSSH refuses a private key whose file ACL lets other users read it
+/// ("UNPROTECTED PRIVATE KEY FILE"). Restrict the key to the current user so the
+/// built-in `ssh.exe` fallback accepts it. Best-effort — mirrors the `#[cfg(unix)]`
+/// `chmod 0600` on the macOS side.
+#[cfg(target_os = "windows")]
+fn harden_windows_key_acl(path: &Path) {
+    let user = std::env::var("USERNAME").unwrap_or_default();
+    if user.is_empty() {
+        return;
+    }
+    let path_str = path.to_string_lossy();
+    let grant = format!("{user}:F");
+    let _ = Command::new("icacls")
+        .args([
+            path_str.as_ref(),
+            "/inheritance:r",
+            "/grant:r",
+            grant.as_str(),
+        ])
+        .output();
+}
+
+/// Launch the Windows built-in OpenSSH client (`ssh.exe`) in its own console
+/// window, reusing `~/.ssh/station` exactly like the macOS Terminal path. Used
+/// when PuTTY isn't installed or its key can't be produced. `CREATE_NEW_CONSOLE`
+/// gives ssh its own window while we keep the Child handle for liveness/kill.
+#[cfg(target_os = "windows")]
+fn spawn_windows_ssh_console(host: &str, key: &Path) -> Result<Child, String> {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
+    Command::new("ssh")
+        .args([
+            "-i",
+            &key.to_string_lossy(),
+            "-o",
+            "LogLevel=ERROR",
+            "-o",
+            "StrictHostKeyChecking=no",
+            "-o",
+            "UserKnownHostsFile=NUL",
+            "-o",
+            "ServerAliveInterval=5",
+            "-o",
+            "ServerAliveCountMax=3",
+            "-o",
+            "KexAlgorithms=ecdh-sha2-nistp521",
+            &format!("root@{host}"),
+        ])
+        .creation_flags(CREATE_NEW_CONSOLE)
+        .spawn()
+        .map_err(|e| {
+            format!(
+                "Neither PuTTY nor the Windows OpenSSH client could be started: {e}. \
+                 Install PuTTY, or enable the OpenSSH Client optional feature in Windows Settings."
+            )
+        })
+}
+
 #[cfg(target_os = "windows")]
 fn sync_windows_terminal_child(inner: &mut InnerState) {
     let Some(mut child) = inner.windows_local_terminal_child.take() else {
@@ -1748,9 +1877,12 @@ fn open_controller_terminal(state: State<'_, AppState>, ip: Option<String>) -> R
 
     #[cfg(target_os = "windows")]
     {
-        let putty_path = find_putty_executable().ok_or_else(|| {
-            "PuTTY not found. Install PuTTY to use controller VPN sessions on Windows.".to_string()
-        })?;
+        // Prefer PuTTY (keeps Send-to-window + session logging) with the station
+        // key converted to a .ppk; fall back to the built-in OpenSSH client when
+        // PuTTY or puttygen isn't installed. Either way auth is passwordless via
+        // the same station key macOS uses.
+        let ppk = ensure_station_ppk();
+        let putty = find_putty_executable();
         let log_path = log_file_path(&ip);
         {
             let mut inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
@@ -1761,36 +1893,44 @@ fn open_controller_terminal(state: State<'_, AppState>, ip: Option<String>) -> R
             inner.shell_logs.clear();
             inner.shell_log_cursor = 0;
             inner.shell_phase = "connecting".into();
-            inner.shell_detail = format!("Opening PuTTY SSH session to root@{ip}...");
-            inner.shell_logs.push(format!("[PuTTY opening] root@{ip}"));
+            inner.shell_detail = format!("Opening SSH session to root@{ip}...");
+            inner.shell_logs.push(format!("[connecting] root@{ip}"));
         }
         append_transcript(
             &log_path,
             &format!(
-                "\n===== vpn putty session start ({}) =====\ncontroller: {ip}\n",
+                "\n===== vpn ssh session start ({}) =====\ncontroller: {ip}\n",
                 chrono::Local::now().format("%Y-%m-%d %H:%M:%S")
             ),
         );
-        let child = Command::new(&putty_path)
-            .args([
-                "-ssh",
-                &ip,
-                "-l",
-                "root",
-                "-sessionlog",
-                &log_path.to_string_lossy(),
-                "-logoverwrite",
-            ])
-            .spawn()
-            .map_err(|e| format!("Failed to open PuTTY: {e}"))?;
+        let (child, via) = match (putty, ppk) {
+            (Some(putty_path), Some(ppk)) => {
+                let child = Command::new(&putty_path)
+                    .args([
+                        "-ssh",
+                        &ip,
+                        "-l",
+                        "root",
+                        "-i",
+                        &ppk.to_string_lossy(),
+                        "-sessionlog",
+                        &log_path.to_string_lossy(),
+                        "-logoverwrite",
+                    ])
+                    .spawn()
+                    .map_err(|e| format!("Failed to open PuTTY: {e}"))?;
+                (child, "PuTTY")
+            }
+            _ => (spawn_windows_ssh_console(&ip, &station_key)?, "OpenSSH"),
+        };
 
         if let Ok(mut inner) = state.inner.lock() {
             inner.windows_local_terminal_child = Some(child);
             inner.shell_phase = "connecting".into();
             inner.shell_detail =
-                format!("PuTTY opened for root@{ip}; waiting for controller shell...");
+                format!("{via} opened for root@{ip}; waiting for controller shell...");
             inner.external_terminal_window_id = None;
-            inner.shell_logs.push(format!("[PuTTY opened] root@{ip}"));
+            inner.shell_logs.push(format!("[{via} opened] root@{ip}"));
         }
         return Ok(());
     }
@@ -2220,9 +2360,12 @@ fn open_local_network_terminal(host: String, state: State<'_, AppState>) -> Resu
 
     #[cfg(target_os = "windows")]
     {
-        let putty_path = find_putty_executable().ok_or_else(|| {
-            "PuTTY not found. Install PuTTY to use local network SSH sessions on Windows.".to_string()
-        })?;
+        // Prefer PuTTY (keeps Send-to-window + session logging) with the station
+        // key converted to a .ppk — PuTTY's -i can't read the OpenSSH station key
+        // directly. Fall back to the built-in OpenSSH client when PuTTY or
+        // puttygen isn't installed. Same passwordless station key as macOS.
+        let ppk = ensure_station_ppk();
+        let putty = find_putty_executable();
         let log_path = local_serial_log_file(&host);
         {
             let mut inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
@@ -2233,13 +2376,13 @@ fn open_local_network_terminal(host: String, state: State<'_, AppState>) -> Resu
             inner.shell_logs.clear();
             inner.shell_log_cursor = 0;
             inner.shell_phase = "connecting".into();
-            inner.shell_detail = format!("Opening PuTTY SSH session to root@{host}...");
+            inner.shell_detail = format!("Opening SSH session to root@{host}...");
             inner.external_terminal_window_id = None;
             if let Some(mut child) = inner.windows_local_terminal_child.take() {
                 let _ = child.kill();
                 let _ = child.wait();
             }
-            inner.shell_logs.push(format!("[PuTTY opening] root@{host}"));
+            inner.shell_logs.push(format!("[connecting] root@{host}"));
         }
         append_transcript(
             &log_path,
@@ -2248,27 +2391,33 @@ fn open_local_network_terminal(host: String, state: State<'_, AppState>) -> Resu
                 chrono::Local::now().format("%Y-%m-%d %H:%M:%S")
             ),
         );
-        // Match the VPN PuTTY path: no -i (PuTTY needs a .ppk, not the OpenSSH
-        // station key). Auth flows through the same mechanism as VPN sessions.
-        let child = Command::new(&putty_path)
-            .args([
-                "-ssh",
-                &host,
-                "-l",
-                "root",
-                "-sessionlog",
-                &log_path.to_string_lossy(),
-                "-logoverwrite",
-            ])
-            .spawn()
-            .map_err(|e| format!("Failed to open PuTTY: {e}"))?;
+        let (child, via) = match (putty, ppk) {
+            (Some(putty_path), Some(ppk)) => {
+                let child = Command::new(&putty_path)
+                    .args([
+                        "-ssh",
+                        &host,
+                        "-l",
+                        "root",
+                        "-i",
+                        &ppk.to_string_lossy(),
+                        "-sessionlog",
+                        &log_path.to_string_lossy(),
+                        "-logoverwrite",
+                    ])
+                    .spawn()
+                    .map_err(|e| format!("Failed to open PuTTY: {e}"))?;
+                (child, "PuTTY")
+            }
+            _ => (spawn_windows_ssh_console(&host, &station_key)?, "OpenSSH"),
+        };
 
         if let Ok(mut inner) = state.inner.lock() {
             inner.windows_local_terminal_child = Some(child);
             inner.shell_phase = "connecting".into();
             inner.shell_detail =
-                format!("PuTTY opened for root@{host}; waiting for controller shell...");
-            inner.shell_logs.push(format!("[PuTTY opened] root@{host}"));
+                format!("{via} opened for root@{host}; waiting for controller shell...");
+            inner.shell_logs.push(format!("[{via} opened] root@{host}"));
         }
         return Ok(());
     }
@@ -3299,6 +3448,14 @@ fn stage_bundle(folder_path: &str) -> Result<PathBuf, String> {
             use std::os::unix::fs::PermissionsExt;
             let _ = fs::set_permissions(&station_dst, fs::Permissions::from_mode(0o600));
         }
+        // Windows equivalents of the 0600 chmod: tighten the key ACL so the
+        // built-in OpenSSH client accepts it, and pre-convert it to the .ppk
+        // PuTTY needs. Both are best-effort; the connect commands retry/fall back.
+        #[cfg(target_os = "windows")]
+        {
+            harden_windows_key_acl(&station_dst);
+            let _ = ensure_station_ppk();
+        }
     }
 
     Ok(stage_dir)
@@ -4121,8 +4278,9 @@ fn applescript_string_literal(value: &str) -> String {
 // Writes a firmware image (.img / .img.gz) to a removable SD card with a single
 // elevated step, streaming progress back through a tailed log file — mirroring
 // the managed-OpenVPN pattern (launcher script → elevate once → poll a file).
-// macOS uses `dd` driven by SIGINFO; Windows does a native raw `\\.\PhysicalDrive`
-// write in PowerShell. Both verify the written bytes against the source.
+// macOS writes the raw device in-process via `authopen` (no `dd`); Windows does a
+// native raw `\\.\PhysicalDrive` write in an elevated PowerShell writer. Both
+// verify the written bytes against the source.
 
 #[derive(serde::Serialize, Clone)]
 struct SdTarget {
@@ -4852,11 +5010,14 @@ try {
   $sha2 = [System.Security.Cryptography.SHA256]::Create()
   $remaining = $written
   while ($remaining -gt 0) {
-    $toRead = [math]::Min([int64]$buf.Length,$remaining)
-    $n = $rd.Read($buf,0,[int]$toRead)
+    # Raw \\.\PhysicalDrive reads must be sector-aligned, so always request the
+    # full (512-multiple) buffer and hash only the meaningful bytes; a non-aligned
+    # trailing read would throw and be misread as a write failure.
+    $n = $rd.Read($buf,0,$buf.Length)
     if ($n -le 0) { break }
-    $sha2.TransformBlock($buf,0,$n,$null,0) | Out-Null
-    $remaining -= $n
+    $use = [int][math]::Min([int64]$n,$remaining)
+    $sha2.TransformBlock($buf,0,$use,$null,0) | Out-Null
+    $remaining -= $use
   }
   $sha2.TransformFinalBlock($buf,0,0) | Out-Null
   $rd.Dispose()

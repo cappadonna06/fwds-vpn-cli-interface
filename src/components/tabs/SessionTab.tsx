@@ -400,8 +400,10 @@ export default function SessionTab({ onControllerConnected }: SessionTabProps) {
       if (isWindows) {
         await invoke("start_log_watcher").catch(() => {});
       }
-      setSerialDetail(isWindows ? "Connected via PuTTY" : "Connected");
-      showSuccess(isWindows ? "Connection successful - PuTTY opened" : "Connection successful - terminal window opened");
+      // Windows opens PuTTY when available, else the built-in OpenSSH console —
+      // keep the copy neutral so it reads correctly either way.
+      setSerialDetail("Connected");
+      showSuccess("Connection successful - terminal window opened");
       onControllerConnected?.();
     } catch (e) {
       setSerialDetail(`Failed: ${String(e)}`);
