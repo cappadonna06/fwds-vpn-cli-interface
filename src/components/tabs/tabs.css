@@ -1095,12 +1095,6 @@
   }
 }
 
-/* Logs Tab */
-.log-source-tabs {
-  display: flex;
-  gap: 2px;
-}
-
 /* ─── Commands Tab ─────────────────────────────────────────────────────────── */
 
 .commands-page {
