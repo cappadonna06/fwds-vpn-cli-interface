@@ -1,0 +1,53 @@
+# Releasing & the changelog
+
+We keep a human-readable changelog in [`CHANGELOG.md`](CHANGELOG.md), following the
+[Keep a Changelog](https://keepachangelog.com) format. It is written for the people who
+use the console in the field, not for engineers.
+
+## Keeping the changelog
+
+Every user-visible change adds a bullet under the **`## [Unreleased]`** section at the top
+of `CHANGELOG.md`, in the right group:
+
+- **New** — a new feature or capability (Keep a Changelog's *Added*)
+- **Improved** — a change to existing behavior or look (*Changed*)
+- **Fixed** — a bug fix (*Fixed*)
+
+Write each entry for a field user: say what changed **for them**, in plain language, not how
+the code changed. Internal detail belongs in the pull request, not here.
+
+If a change has no user-visible effect (refactor, tooling, tests), it needs no changelog entry.
+
+## Cutting a release
+
+Releases go out through a **release PR**. It should:
+
+1. In `CHANGELOG.md`, rename `## [Unreleased]` to `## [X.Y.Z] — <Month Year>`, then add a
+   fresh empty `## [Unreleased]` section above it.
+2. Bump the version to `X.Y.Z` in:
+   - `package.json`
+   - `src-tauri/tauri.conf.json`
+   - `src-tauri/Cargo.toml`
+
+   (`package-lock.json` and `Cargo.lock` update to match.)
+
+After the release PR merges to `main`, tag the release:
+
+```bash
+git fetch
+git tag -a vX.Y.Z origin/main -m "vX.Y.Z"
+git push origin vX.Y.Z
+```
+
+## Versioning
+
+We use [semantic versioning](https://semver.org): `MAJOR.MINOR.PATCH`.
+
+- **PATCH** — bug fixes, no new features.
+- **MINOR** — new features, backward compatible.
+- **MAJOR** — breaking changes.
+
+## History
+
+`v0.1.2` was the first shipped release (macOS Apr 24 2026 / Windows Apr 27 2026) and was
+tagged retroactively; every release since goes through the process above.

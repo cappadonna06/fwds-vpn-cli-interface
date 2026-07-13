@@ -1,17 +1,19 @@
 <!--
-  Maintainer note (not shown when this renders): this is the customer- and
-  field-facing release log. Keep it in plain language — what changed for the
-  person using the app, not how the code changed. On each release: add a new
-  "## vX.Y.Z — <Month Year>" section at the top under New / Improved / Fixed,
-  bump the version in package.json and src-tauri/tauri.conf.json, and tag the
-  release commit (git tag vX.Y.Z).
+  Maintainer note (not shown when this renders): customer- and field-facing
+  release log. Keep it plain — what changed for the person using the app, not
+  how the code changed. New changes go under [Unreleased]. See RELEASING.md for
+  the changelog + release-PR process.
 -->
 
 # FWDS Controller Console — Release Notes
 
 The latest updates to the console, in plain terms for the people who use it in the field.
 
-## v0.2.0 — July 2026
+## [Unreleased]
+
+Nothing yet. New changes land here before the next release.
+
+## [0.2.0] — July 2026
 
 A new way to reach a controller, two new tools, a fresh look, and clearer diagnostics.
 
@@ -30,7 +32,7 @@ A new way to reach a controller, two new tools, a fresh look, and clearer diagno
 
 - **Cellular diagnostics now read true.** The card separates three cases that used to blur together: no modem detected (a hardware fault), no service (the modem is fine but can't attach; check antenna, coverage, or SIM), and a modem that isn't responding. A healthy modem in a no-coverage area is no longer flagged as failed hardware.
 
-## v0.1.2 — April 2026
+## [0.1.2] — April 2026
 
 The first released version of the console.
 
