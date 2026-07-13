@@ -1,13 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { openUrl } from "@tauri-apps/plugin-opener";
 import { SdTarget, FirmwareInfo, SdFlashPoll } from "../../types/sdcard";
 
 type Step = "source" | "select" | "confirm" | "run";
-
-// Internal firmware release location (Step 0 in the field guide).
-const FIRMWARE_URL =
-  "https://drive.google.com/drive/folders/1EqNYpwu-Dg_WrIMaYR5x3wytYcBgziQW";
 
 // macOS TCC blocks raw-disk writes AND reads of protected folders like
 // ~/Downloads (even as root) unless the app has Full Disk Access. Detect that
@@ -50,7 +45,6 @@ const isWindows =
 
 export default function SDCardTab() {
   const [step, setStep] = useState<Step>("source");
-  const [showHelp, setShowHelp] = useState(false);
 
   const [firmware, setFirmware] = useState<FirmwareInfo | null>(null);
   const [pickError, setPickError] = useState<string | null>(null);
@@ -244,33 +238,6 @@ export default function SDCardTab() {
             </div>
           )}
           {pickError && <div className="sd-warn" style={{ marginTop: 10 }}>{pickError}</div>}
-
-          <button
-            type="button"
-            className="btn-link sd-help-toggle"
-            onClick={() => setShowHelp((v) => !v)}
-          >
-            {showHelp ? "▾" : "▸"} Where do I download firmware?
-          </button>
-          {showHelp && (
-            <div className="sd-help">
-              <ol>
-                <li>Open the internal firmware release location.</li>
-                <li>
-                  Download the file ending in <code>.img.gz</code> (tens of MB
-                  compressed) — not the <code>.sha256sum</code> checksum file.
-                </li>
-                <li>Save it to Downloads, then choose it above.</li>
-              </ol>
-              <button
-                type="button"
-                className="btn btn-secondary"
-                onClick={() => openUrl(FIRMWARE_URL).catch(() => {})}
-              >
-                Open firmware downloads ↗
-              </button>
-            </div>
-          )}
 
           <div className="sd-actions">
             <button
