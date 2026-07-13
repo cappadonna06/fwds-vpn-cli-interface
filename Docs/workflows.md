@@ -1,4 +1,4 @@
-# Frontline Remote Controller Console - Workflows
+# Operator workflows
 
 ## Overview
 
@@ -149,4 +149,5 @@ End the local session cleanly.
 - Better reboot and reconnect guidance
 - Importing real intake JSON files instead of only using mocked development data
 
-- Windows Surface Pro local serial notes: `Docs/windows-local-serial-notes.md`
+See [`platform-notes.md`](platform-notes.md) for macOS OpenVPN and Windows
+local-serial specifics.

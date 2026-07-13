@@ -1,0 +1,7 @@
+# Code owners for the FWDS Controller Console.
+# Owners are requested for review automatically on merge requests.
+# Replace the placeholder handle(s) with the real GitLab username(s) or group.
+#
+# Docs: https://docs.gitlab.com/ee/user/project/codeowners/
+
+* @REPLACE-WITH-GITLAB-HANDLE

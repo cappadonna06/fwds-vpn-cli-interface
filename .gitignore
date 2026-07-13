@@ -16,6 +16,30 @@ build/
 # Tauri
 src-tauri/target/
 
-# IDE
+# IDE / editor
 .vscode/
 .idea/
+
+# Agent / assistant local state
+.claude/
+
+# --- Local-only, never publish ---------------------------------------------
+# Internal working notes, handoffs, and cross-repo comparisons kept out of the
+# published repository (see CONTRIBUTING.md).
+Docs/_local/
+
+# Internal engineering reference material staged locally.
+Docs/Context additional info/
+Docs/SOPs/
+
+# VPN bundles, certificates, keys, and any credential material — MUST NOT be
+# committed under any circumstances.
+Docs/VPN INFO*/
+**/vpn_info/
+*.ovpn
+ovpn.conf
+*.crt
+*.key
+*.pem
+id_rsa*
+station

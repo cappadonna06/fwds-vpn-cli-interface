@@ -39,6 +39,16 @@ git tag -a vX.Y.Z origin/main -m "vX.Y.Z"
 git push origin vX.Y.Z
 ```
 
+Then create a **GitLab Release** for the tag and attach the field-facing
+deliverables as release assets (they are intentionally not tracked in the repo):
+
+- the end-user guide (`FWDS Controller Console - User Guide (vX.Y).pptx`, and a
+  PDF export if available)
+- the built app bundles, if you are distributing them through GitLab
+
+The current guide and its rebuild fonts are kept locally under
+`Docs/_local/` for re-export between releases.
+
 ## Versioning
 
 We use [semantic versioning](https://semver.org): `MAJOR.MINOR.PATCH`.
