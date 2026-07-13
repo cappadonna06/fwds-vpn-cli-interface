@@ -558,22 +558,67 @@ const REQUIRED_FILES: &[&str] = &[
     "connect-local.bin",
 ];
 
-// ── Commands ──────────────────────────────────────────────────────────────────
+// ── Session transcript logging ──────────────────────────────────────────────
+//
+// Transcripts are stored in the app's *private* per-user data directory — never
+// the Desktop or Documents, which on macOS sync to iCloud. The directory is
+// created 0700 on Unix; on Windows we rely on the default per-user ACLs of
+// %LOCALAPPDATA%. Logging is opt-out (`TRANSCRIPT_LOGGING`), secret values are
+// redacted before they touch disk (`redact_secrets`), files roll over past a
+// size ceiling, and stale files are pruned on launch (`prune_old_transcripts`).
+
+/// Bundle identifier — matches `identifier` in tauri.conf.json. Scopes our
+/// files under the platform's per-user app-data directory.
+const APP_IDENTIFIER: &str = "com.frontlinewildfire.controller-console";
+
+/// Days a transcript is kept before it is pruned on the next launch.
+const TRANSCRIPT_RETENTION_DAYS: u64 = 14;
+
+/// Per-file size ceiling; the file rolls over to `<name>.1` once exceeded.
+const TRANSCRIPT_MAX_BYTES: u64 = 5 * 1024 * 1024;
+
+/// Whether plaintext session transcripts are written to disk. Mirrors the
+/// persisted `AppSettings::transcript_logging_enabled` so hot paths
+/// (`append_transcript`, the Windows PuTTY spawns) can check it lock-free.
+static TRANSCRIPT_LOGGING: AtomicBool = AtomicBool::new(true);
+
+/// Cross-chunk redaction state. The macOS SSH reader streams stdout in chunks
+/// that can split a "password:" prompt from the value echoed on the next chunk,
+/// so we carry an "armed" flag between `append_transcript` calls.
+static REDACT_STATE: Mutex<RedactState> = Mutex::new(RedactState { armed: false });
+
+/// The app's private per-user data directory (parent of `logs/`).
+fn app_data_dir() -> PathBuf {
+    let base = dirs::data_local_dir()
+        .filter(|path| !path.as_os_str().is_empty())
+        .or_else(|| dirs::home_dir().map(|home| home.join(".local").join("share")))
+        .unwrap_or_else(std::env::temp_dir);
+    base.join(APP_IDENTIFIER)
+}
 
 fn controller_logs_dir() -> PathBuf {
-    let base = dirs::desktop_dir()
-        .filter(|path| !path.as_os_str().is_empty())
-        .or_else(|| dirs::document_dir().filter(|path| !path.as_os_str().is_empty()))
-        .or_else(|| {
-            std::env::var_os("USERPROFILE").map(|home| PathBuf::from(home).join("Documents"))
-        })
-        .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
-        .unwrap_or_else(std::env::temp_dir);
-
-    let dir = base.join("FWDS Controller Logs");
+    let dir = app_data_dir().join("logs");
     let _ = fs::create_dir_all(&dir);
+    harden_dir_permissions(&dir);
     dir
 }
+
+/// Restrict a directory (and its app-data parent) to the owner on Unix. No-op
+/// on Windows, where the default ACLs on %LOCALAPPDATA% are already per-user.
+fn harden_dir_permissions(dir: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(dir, fs::Permissions::from_mode(0o700));
+        if let Some(parent) = dir.parent() {
+            let _ = fs::set_permissions(parent, fs::Permissions::from_mode(0o700));
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = dir;
+}
+
+// ── Commands ──────────────────────────────────────────────────────────────────
 
 fn log_file_path(ip: &str) -> PathBuf {
     let date = chrono::Local::now().format("%Y-%m-%d").to_string();
@@ -592,13 +637,297 @@ fn local_serial_log_file(device: &str) -> PathBuf {
 }
 
 fn append_transcript(path: &Path, text: &str) {
-    if text.is_empty() {
+    if text.is_empty() || !TRANSCRIPT_LOGGING.load(Ordering::Relaxed) {
         return;
     }
+    let redacted = {
+        let mut state = REDACT_STATE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        redact_secrets(&mut state, text)
+    };
+    // Roll over once the file grows past the ceiling so a long session can't
+    // produce an unbounded plaintext file.
+    if let Ok(meta) = fs::metadata(path) {
+        if meta.len() > TRANSCRIPT_MAX_BYTES {
+            let rotated = rotated_transcript_path(path);
+            let _ = fs::remove_file(&rotated);
+            let _ = fs::rename(path, &rotated);
+        }
+    }
     if let Ok(mut file) = fs::OpenOptions::new().create(true).append(true).open(path) {
-        let _ = file.write_all(text.as_bytes());
+        harden_file_permissions(&file);
+        let _ = file.write_all(redacted.as_bytes());
         let _ = file.flush();
     }
+}
+
+fn rotated_transcript_path(path: &Path) -> PathBuf {
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "transcript.txt".into());
+    path.with_file_name(format!("{name}.1"))
+}
+
+fn harden_file_permissions(file: &fs::File) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = file.set_permissions(fs::Permissions::from_mode(0o600));
+    }
+    #[cfg(not(unix))]
+    let _ = file;
+}
+
+// ── Transcript redaction ────────────────────────────────────────────────────
+
+/// Marker written in place of a redacted secret.
+const REDACTED: &str = "••••[redacted]";
+
+/// Case-insensitive keywords that mark a line as carrying (or prompting for) a
+/// secret. Kept deliberately narrow to avoid masking useful diagnostics.
+const SECRET_KEYWORDS: &[&str] = &["password", "passphrase", "pre-shared", "psk"];
+
+struct RedactState {
+    /// True when a preceding line ended at a secret prompt (e.g. "password:"),
+    /// so the next line is the value being echoed back and must be masked.
+    armed: bool,
+}
+
+fn line_has_secret_keyword(lower: &str) -> bool {
+    SECRET_KEYWORDS.iter().any(|kw| lower.contains(kw))
+}
+
+/// Redact secret values from transcript text before it is written to disk.
+///
+/// Handles three shapes:
+///   • inline   — `password: hunter2`  → `password: ••••[redacted]`
+///   • pre-fill — `passphrase [old]: `  → `passphrase [••••[redacted]]: `
+///   • split    — `wifi password:` in one chunk, `hunter2` in the next
+///
+/// `state.armed` carries the split case across calls because the macOS SSH
+/// reader can deliver the prompt and the echoed value in separate chunks.
+fn redact_secrets(state: &mut RedactState, text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut segments = text.split('\n').peekable();
+    while let Some(seg) = segments.next() {
+        let newline_after = segments.peek().is_some();
+
+        // The value echoed back after an armed secret prompt.
+        if state.armed {
+            if !seg.is_empty() {
+                out.push_str(REDACTED);
+            }
+            // The echoed value ends once its line terminates; disarm then.
+            if newline_after {
+                state.armed = false;
+                out.push('\n');
+            }
+            continue;
+        }
+
+        let lower = seg.to_ascii_lowercase();
+        if line_has_secret_keyword(&lower) {
+            out.push_str(&redact_keyword_segment(seg));
+            // Arm when the line is a prompt awaiting a value on the next line,
+            // i.e. it ends at a ':' / '?' separator with nothing after it.
+            let trimmed = seg.trim_end();
+            if trimmed.ends_with(':') || trimmed.ends_with('?') {
+                state.armed = true;
+            }
+        } else {
+            out.push_str(seg);
+        }
+        if newline_after {
+            out.push('\n');
+        }
+    }
+    out
+}
+
+/// Redact the secret portion of a single line already known to contain a
+/// keyword: the value after the field separator and any bracketed pre-fill.
+fn redact_keyword_segment(seg: &str) -> String {
+    let lower = seg.to_ascii_lowercase();
+    // End index of the secret keyword nearest the value (rightmost match), so
+    // the separator we key off belongs to the field and not an earlier colon.
+    let Some(kw_end) = SECRET_KEYWORDS
+        .iter()
+        .filter_map(|kw| lower.rfind(kw).map(|pos| pos + kw.len()))
+        .max()
+    else {
+        return seg.to_string();
+    };
+
+    match seg[kw_end..].find([':', '=', '?']) {
+        Some(rel) => {
+            let sep = kw_end + rel;
+            let sep_ch = seg[sep..].chars().next().unwrap_or(':');
+            let label = mask_bracketed(&seg[..sep]);
+            let value = &seg[sep + sep_ch.len_utf8()..];
+            if value.trim().is_empty() {
+                format!("{label}{sep_ch}{value}")
+            } else {
+                let lead = value.len() - value.trim_start().len();
+                format!("{label}{sep_ch}{}{REDACTED}", &value[..lead])
+            }
+        }
+        // Keyword with a bracketed pre-fill but no separator on this line.
+        None => mask_bracketed(seg),
+    }
+}
+
+/// Replace the contents of the first `[...]` pre-fill with the redaction marker.
+fn mask_bracketed(s: &str) -> String {
+    if let (Some(open), Some(close)) = (s.find('['), s.rfind(']')) {
+        if close > open + 1 && !s[open + 1..close].trim().is_empty() {
+            return format!("{}[{}]{}", &s[..open], REDACTED, &s[close + 1..]);
+        }
+    }
+    s.to_string()
+}
+
+// ── Transcript retention / migration ────────────────────────────────────────
+
+/// Remove transcripts older than the retention window. Called on launch so a
+/// laptop doesn't accumulate customer PII indefinitely.
+fn prune_old_transcripts() {
+    let dir = controller_logs_dir();
+    let Ok(entries) = fs::read_dir(&dir) else {
+        return;
+    };
+    let Some(cutoff) = std::time::SystemTime::now()
+        .checked_sub(Duration::from_secs(TRANSCRIPT_RETENTION_DAYS * 24 * 60 * 60))
+    else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        if let Ok(modified) = entry.metadata().and_then(|m| m.modified()) {
+            if modified < cutoff {
+                let _ = fs::remove_file(&path);
+            }
+        }
+    }
+}
+
+/// Best-effort one-time relocation of transcripts written by older builds to
+/// the (unsafe) Desktop/Documents location. Moves them into the private dir so
+/// pre-existing customer PII stops syncing to iCloud. Never deletes log data.
+fn migrate_legacy_transcripts() {
+    let dest = controller_logs_dir();
+    let legacy_dirs = [dirs::desktop_dir(), dirs::document_dir()]
+        .into_iter()
+        .flatten()
+        .map(|base| base.join("FWDS Controller Logs"));
+
+    for legacy in legacy_dirs {
+        if legacy == dest || !legacy.is_dir() {
+            continue;
+        }
+        if let Ok(entries) = fs::read_dir(&legacy) {
+            for entry in entries.flatten() {
+                let from = entry.path();
+                let Some(name) = from.file_name() else { continue };
+                if !from.is_file() {
+                    continue;
+                }
+                let mut to = dest.join(name);
+                if to.exists() {
+                    to = dest.join(format!("{}.legacy", name.to_string_lossy()));
+                }
+                // Prefer rename; fall back to copy+remove across volumes.
+                if fs::rename(&from, &to).is_err() && fs::copy(&from, &to).is_ok() {
+                    let _ = fs::remove_file(&from);
+                }
+            }
+        }
+        // Remove the legacy dir only if it is now empty.
+        let _ = fs::remove_dir(&legacy);
+    }
+}
+
+// ── App settings ────────────────────────────────────────────────────────────
+
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
+struct AppSettings {
+    #[serde(default = "default_true")]
+    transcript_logging_enabled: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl Default for AppSettings {
+    fn default() -> Self {
+        Self {
+            transcript_logging_enabled: true,
+        }
+    }
+}
+
+fn app_settings_path() -> PathBuf {
+    app_data_dir().join("settings.json")
+}
+
+fn load_app_settings() -> AppSettings {
+    match fs::read_to_string(app_settings_path()) {
+        Ok(raw) => serde_json::from_str(&raw).unwrap_or_default(),
+        Err(_) => AppSettings::default(),
+    }
+}
+
+fn save_app_settings(settings: &AppSettings) {
+    let dir = app_data_dir();
+    let _ = fs::create_dir_all(&dir);
+    harden_dir_permissions(&dir);
+    if let Ok(raw) = serde_json::to_string_pretty(settings) {
+        let _ = fs::write(app_settings_path(), raw);
+    }
+}
+
+#[derive(serde::Serialize)]
+struct LogSettings {
+    transcript_logging_enabled: bool,
+    log_dir: String,
+    retention_days: u64,
+}
+
+#[tauri::command]
+fn get_log_settings() -> LogSettings {
+    LogSettings {
+        transcript_logging_enabled: TRANSCRIPT_LOGGING.load(Ordering::Relaxed),
+        log_dir: controller_logs_dir().to_string_lossy().into_owned(),
+        retention_days: TRANSCRIPT_RETENTION_DAYS,
+    }
+}
+
+#[tauri::command]
+fn set_transcript_logging(enabled: bool) -> Result<(), String> {
+    TRANSCRIPT_LOGGING.store(enabled, Ordering::Relaxed);
+    save_app_settings(&AppSettings {
+        transcript_logging_enabled: enabled,
+    });
+    Ok(())
+}
+
+#[tauri::command]
+fn reveal_log_dir() -> Result<(), String> {
+    let dir = controller_logs_dir();
+    #[cfg(target_os = "macos")]
+    let program = "open";
+    #[cfg(target_os = "windows")]
+    let program = "explorer";
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let program = "xdg-open";
+    Command::new(program)
+        .arg(&dir)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("Failed to open log folder: {e}"))
 }
 
 #[cfg(target_os = "windows")]
@@ -2012,18 +2341,18 @@ fn open_controller_terminal(state: State<'_, AppState>, ip: Option<String>) -> R
         );
         let (child, via) = match (putty, ppk) {
             (Some(putty_path), Some(ppk)) => {
+                let ppk_str = ppk.to_string_lossy();
+                let log_str = log_path.to_string_lossy();
+                let mut putty_args: Vec<&str> =
+                    vec!["-ssh", ip.as_str(), "-l", "root", "-i", ppk_str.as_ref()];
+                // Only write PuTTY's own session log when transcript logging is
+                // enabled. PuTTY writes the file itself, so app-side redaction
+                // can't reach it — the operator is warned of this in Settings.
+                if TRANSCRIPT_LOGGING.load(Ordering::Relaxed) {
+                    putty_args.extend(["-sessionlog", log_str.as_ref(), "-logoverwrite"]);
+                }
                 let child = Command::new(&putty_path)
-                    .args([
-                        "-ssh",
-                        &ip,
-                        "-l",
-                        "root",
-                        "-i",
-                        &ppk.to_string_lossy(),
-                        "-sessionlog",
-                        &log_path.to_string_lossy(),
-                        "-logoverwrite",
-                    ])
+                    .args(&putty_args)
                     .spawn()
                     .map_err(|e| format!("Failed to open PuTTY: {e}"))?;
                 (child, "PuTTY")
@@ -2258,29 +2587,31 @@ fn open_local_serial_terminal(device: String, state: State<'_, AppState>) -> Res
             inner.shell_log_cursor = inner.shell_logs.len();
         }
 
-        let mut transcript = fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&log_path)
-            .map_err(|e| format!("Failed to open transcript log: {e}"))?;
-        let _ = writeln!(
-            transcript,
-            "\n===== local serial session start ({}) =====",
-            chrono::Local::now().format("%Y-%m-%d %H:%M:%S")
-        );
-        let _ = writeln!(transcript, "device: {com_port} @ 115200");
-        let _ = transcript.flush();
+        if TRANSCRIPT_LOGGING.load(Ordering::Relaxed) {
+            let mut transcript = fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&log_path)
+                .map_err(|e| format!("Failed to open transcript log: {e}"))?;
+            let _ = writeln!(
+                transcript,
+                "\n===== local serial session start ({}) =====",
+                chrono::Local::now().format("%Y-%m-%d %H:%M:%S")
+            );
+            let _ = writeln!(transcript, "device: {com_port} @ 115200");
+            let _ = transcript.flush();
+        }
 
+        let log_str = log_path.to_string_lossy();
+        let mut putty_args: Vec<&str> =
+            vec!["-serial", com_port.as_str(), "-sercfg", "115200,8,n,1,N"];
+        // Serial transcripts are PuTTY's own -sessionlog file (there is no
+        // in-app SSH stream to capture here); gate it on the logging setting.
+        if TRANSCRIPT_LOGGING.load(Ordering::Relaxed) {
+            putty_args.extend(["-sessionlog", log_str.as_ref(), "-logoverwrite"]);
+        }
         let child = Command::new(&putty_path)
-            .args([
-                "-serial",
-                &com_port,
-                "-sercfg",
-                "115200,8,n,1,N",
-                "-sessionlog",
-                &log_path.to_string_lossy(),
-                "-logoverwrite",
-            ])
+            .args(&putty_args)
             .spawn()
             .map_err(|e| format!("Failed to open PuTTY: {e}"))?;
 
@@ -2500,18 +2831,17 @@ fn open_local_network_terminal(host: String, state: State<'_, AppState>) -> Resu
         );
         let (child, via) = match (putty, ppk) {
             (Some(putty_path), Some(ppk)) => {
+                let ppk_str = ppk.to_string_lossy();
+                let log_str = log_path.to_string_lossy();
+                let mut putty_args: Vec<&str> =
+                    vec!["-ssh", host.as_str(), "-l", "root", "-i", ppk_str.as_ref()];
+                // See the VPN path above: PuTTY owns this log file, so it is
+                // only created when transcript logging is enabled.
+                if TRANSCRIPT_LOGGING.load(Ordering::Relaxed) {
+                    putty_args.extend(["-sessionlog", log_str.as_ref(), "-logoverwrite"]);
+                }
                 let child = Command::new(&putty_path)
-                    .args([
-                        "-ssh",
-                        &host,
-                        "-l",
-                        "root",
-                        "-i",
-                        &ppk.to_string_lossy(),
-                        "-sessionlog",
-                        &log_path.to_string_lossy(),
-                        "-logoverwrite",
-                    ])
+                    .args(&putty_args)
                     .spawn()
                     .map_err(|e| format!("Failed to open PuTTY: {e}"))?;
                 (child, "PuTTY")
@@ -2635,18 +2965,20 @@ fn disconnect_local_controller(state: State<'_, AppState>) -> Result<(), String>
     {
         let mut inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
         if let Some(device) = inner.local_serial_device.clone() {
-            let log_path = local_serial_log_file(&device);
-            if let Ok(mut f) = fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(log_path)
-            {
-                let _ = writeln!(
-                    f,
-                    "\n===== local serial session end ({}) =====",
-                    chrono::Local::now().format("%Y-%m-%d %H:%M:%S")
-                );
-                let _ = f.flush();
+            if TRANSCRIPT_LOGGING.load(Ordering::Relaxed) {
+                let log_path = local_serial_log_file(&device);
+                if let Ok(mut f) = fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(log_path)
+                {
+                    let _ = writeln!(
+                        f,
+                        "\n===== local serial session end ({}) =====",
+                        chrono::Local::now().format("%Y-%m-%d %H:%M:%S")
+                    );
+                    let _ = f.flush();
+                }
             }
         }
         if let Some(kill) = inner.windows_local_serial_kill.take() {
@@ -5540,6 +5872,9 @@ pub fn run() {
             poll_sd_flash,
             cancel_sd_flash,
             open_fda_settings,
+            get_log_settings,
+            set_transcript_logging,
+            reveal_log_dir,
             quit_app,
         ])
         .setup(|app| {
@@ -5547,6 +5882,14 @@ pub fn run() {
             if let Ok(mut h) = state.app_handle.lock() {
                 *h = Some(app.handle().clone());
             }
+            // Apply the persisted logging preference, relocate any transcripts
+            // an older build left on the Desktop, then prune stale files.
+            TRANSCRIPT_LOGGING.store(
+                load_app_settings().transcript_logging_enabled,
+                Ordering::Relaxed,
+            );
+            migrate_legacy_transcripts();
+            prune_old_transcripts();
             Ok(())
         })
         .run(tauri::generate_context!())
@@ -5556,6 +5899,66 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn redact(text: &str) -> String {
+        let mut state = RedactState { armed: false };
+        redact_secrets(&mut state, text)
+    }
+
+    #[test]
+    fn redacts_inline_secret_values() {
+        assert_eq!(
+            redact("Wi-Fi password: hunter2\n"),
+            "Wi-Fi password: ••••[redacted]\n"
+        );
+        assert_eq!(redact("PSK=hunter2"), "PSK=••••[redacted]");
+        assert_eq!(
+            redact("passphrase = s3cret\n"),
+            "passphrase = ••••[redacted]\n"
+        );
+    }
+
+    #[test]
+    fn redacts_bracketed_prefill_and_typed_value() {
+        assert_eq!(
+            redact("Wi-Fi password [oldpass]: newpass\n"),
+            "Wi-Fi password [••••[redacted]]: ••••[redacted]\n"
+        );
+    }
+
+    #[test]
+    fn redacts_password_echoed_in_a_later_chunk() {
+        // The macOS SSH reader can split the prompt and the value echoed back
+        // across two append_transcript calls; the secret must still be masked.
+        let mut state = RedactState { armed: false };
+        let prompt = redact_secrets(&mut state, "Enter Wi-Fi password: ");
+        assert_eq!(prompt, "Enter Wi-Fi password: ");
+        assert!(state.armed);
+        let echo = redact_secrets(&mut state, "hunter2\n");
+        assert_eq!(echo, "••••[redacted]\n");
+        assert!(!state.armed);
+    }
+
+    #[test]
+    fn keeps_non_secret_lines_intact() {
+        assert_eq!(redact("controller: 10.8.0.1\n"), "controller: 10.8.0.1\n");
+        assert_eq!(redact("SSID: FrontlineNet\n"), "SSID: FrontlineNet\n");
+        // "password" in prose (no prompt/assignment) is left readable.
+        assert_eq!(
+            redact("The password was updated\n"),
+            "The password was updated\n"
+        );
+    }
+
+    #[test]
+    fn transcripts_never_live_on_desktop_or_documents() {
+        let lossy = controller_logs_dir().to_string_lossy().to_lowercase();
+        assert!(!lossy.contains("desktop"), "must not be on the Desktop: {lossy}");
+        assert!(
+            !lossy.contains("documents"),
+            "must not be in Documents: {lossy}"
+        );
+    }
 
     #[cfg(not(target_os = "windows"))]
     #[test]
