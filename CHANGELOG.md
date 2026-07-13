@@ -32,6 +32,11 @@ A new way to reach a controller, two new tools, a fresh look, and clearer diagno
 
 - **Cellular diagnostics now read true.** The card separates three cases that used to blur together: no modem detected (a hardware fault), no service (the modem is fine but can't attach; check antenna, coverage, or SIM), and a modem that isn't responding. A healthy modem in a no-coverage area is no longer flagged as failed hardware.
 
+### Privacy & security
+
+- **Session logs stay private.** Session transcripts are now kept in the console's own private storage instead of on your Desktop, so they no longer sync to iCloud. Secrets like Wi-Fi passwords are hidden automatically before anything is written, and logs older than two weeks clear out on their own.
+- **You decide whether to log.** A new Settings tab lets you turn session logging off entirely, and shows you exactly where the log files are kept.
+
 ## [0.1.2] — April 2026
 
 The first released version of the console.
