@@ -13,9 +13,9 @@ The latest updates to the console, in plain terms for the people who use it in t
 
 Nothing yet. New changes land here before the next release.
 
-## [0.2.0] — July 2026
+## [0.2.1] — July 2026
 
-A new way to reach a controller, two new tools, a fresh look, and clearer diagnostics.
+The first update since April's 0.1.2 — a new way to reach a controller, two new tools, a fresh look, clearer diagnostics, and stronger session-log privacy.
 
 ### New
 

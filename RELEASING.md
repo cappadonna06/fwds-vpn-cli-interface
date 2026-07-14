@@ -61,3 +61,7 @@ We use [semantic versioning](https://semver.org): `MAJOR.MINOR.PATCH`.
 
 `v0.1.2` was the first shipped release (macOS Apr 24 2026 / Windows Apr 27 2026) and was
 tagged retroactively; every release since goes through the process above.
+
+`0.2.0` was prepared in the repo (changelog entry and version bump) but never tagged or
+distributed. Its changes shipped for the first time in `v0.2.1`, which is why there is no
+`v0.2.0` tag and the changelog jumps from `0.1.2` straight to `0.2.1`.
