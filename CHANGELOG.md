@@ -11,7 +11,9 @@ The latest updates to the console, in plain terms for the people who use it in t
 
 ## [Unreleased]
 
-Nothing yet. New changes land here before the next release.
+### Fixed
+
+- **No false wiring warning on an unpressurized system.** With no pressure in the lines, the source and distribution readings both hover near zero (the source often reads slightly negative), and the System Pressure card used to misread that as a P2/P3 sensor swap and tell you to check the wiring at the controller. It now flags a possible swap only when there's a genuine, non-zero reading showing distribution above source or supply — a truly dead source is still reported.
 
 ## [0.2.1] — July 2026
 

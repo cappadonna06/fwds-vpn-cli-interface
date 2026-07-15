@@ -1993,6 +1993,80 @@ INFO: 1 Distribution 225.00 PSI
     }
 
     #[test]
+    fn pressure_miswire_p2_gt_p3_suppressed_when_both_effectively_zero() {
+        // Both source and distribution read within the near-zero band (noise around zero),
+        // so the P2 > P3 ordering is meaningless and must not be flagged as a miswire.
+        let system = SystemDiagnostic {
+            system_type: Some("MP3".into()),
+            ..Default::default()
+        };
+        let text = r#"
+INFO: 2 Source -2.41 PSI
+INFO: 1 Distribution 0.13 PSI
+"#;
+        let pressure = build_pressure_from_text(text, &system).expect("pressure should parse");
+        assert!(!pressure.issues.iter().any(|i| i.id == "WARN_P2_GT_P3"));
+        // The legitimate "source effectively zero" note still fires.
+        assert!(pressure
+            .issues
+            .iter()
+            .any(|i| i.id == "ERR_P3_CRITICALLY_LOW"));
+    }
+
+    #[test]
+    fn pressure_miswire_p2_gt_p3_fires_when_distribution_nonzero() {
+        // Distribution is genuinely pressurized above a near-zero source: a real miswire signal.
+        let system = SystemDiagnostic {
+            system_type: Some("MP3".into()),
+            ..Default::default()
+        };
+        let text = r#"
+INFO: 2 Source 0.13 PSI
+INFO: 1 Distribution 60.00 PSI
+"#;
+        let pressure = build_pressure_from_text(text, &system).expect("pressure should parse");
+        assert!(pressure
+            .issues
+            .iter()
+            .any(|i| i.id == "WARN_P2_GT_P3" && i.severity == DiagStatus::Orange));
+    }
+
+    #[test]
+    fn pressure_miswire_p2_gt_p1_suppressed_when_both_effectively_zero() {
+        // HP6 wires P1/Supply. Supply and distribution both effectively zero -> no miswire.
+        let system = SystemDiagnostic {
+            system_type: Some("HP6".into()),
+            ..Default::default()
+        };
+        let text = r#"
+INFO: 2 Source 74.00 PSI
+INFO: 1 Distribution 0.20 PSI
+INFO: 0 Supply -1.50 PSI
+"#;
+        let pressure = build_pressure_from_text(text, &system).expect("pressure should parse");
+        assert!(!pressure.issues.iter().any(|i| i.id == "WARN_P2_GT_P1"));
+    }
+
+    #[test]
+    fn pressure_miswire_p2_gt_p1_fires_when_distribution_nonzero() {
+        // Distribution genuinely pressurized above a near-zero supply: a real miswire signal.
+        let system = SystemDiagnostic {
+            system_type: Some("HP6".into()),
+            ..Default::default()
+        };
+        let text = r#"
+INFO: 2 Source 74.00 PSI
+INFO: 1 Distribution 60.00 PSI
+INFO: 0 Supply 0.20 PSI
+"#;
+        let pressure = build_pressure_from_text(text, &system).expect("pressure should parse");
+        assert!(pressure
+            .issues
+            .iter()
+            .any(|i| i.id == "WARN_P2_GT_P1" && i.severity == DiagStatus::Orange));
+    }
+
+    #[test]
     fn pressure_requested_sensors_without_readings_emit_missing_sensor_issues() {
         let system = SystemDiagnostic {
             system_type: Some("MP3".into()),
@@ -3684,6 +3758,9 @@ fn build_pressure_from_text(text: &str, system: &SystemDiagnostic) -> Option<Pre
             String::new()
         }
     };
+    // A reading at or below the near-zero ceiling carries no meaningful pressure, so an
+    // ordering between two such readings is sensor noise, not a real miswiring differential.
+    let is_effectively_zero = |value: f64| value <= PRESSURE_NEAR_ZERO_MAX;
 
     let p1_missing = sensor_missing(0);
     let p2_missing = sensor_missing(1);
@@ -3855,7 +3932,9 @@ fn build_pressure_from_text(text: &str, system: &SystemDiagnostic) -> Option<Pre
     }
 
     if let (Some(p2_value), Some(p1_value)) = (p2, p1) {
-        if p2_value > p1_value {
+        if p2_value > p1_value
+            && !(is_effectively_zero(p2_value) && is_effectively_zero(p1_value))
+        {
             issues.push(PressureIssue {
             id: "WARN_P2_GT_P1".into(),
             severity: DiagStatus::Orange,
@@ -3869,7 +3948,9 @@ fn build_pressure_from_text(text: &str, system: &SystemDiagnostic) -> Option<Pre
         }
     }
     if let (Some(p2_value), Some(p3_value)) = (p2, p3) {
-        if p2_value > p3_value {
+        if p2_value > p3_value
+            && !(is_effectively_zero(p2_value) && is_effectively_zero(p3_value))
+        {
             issues.push(PressureIssue {
             id: "WARN_P2_GT_P3".into(),
             severity: DiagStatus::Orange,
