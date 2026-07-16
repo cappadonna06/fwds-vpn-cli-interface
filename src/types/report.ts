@@ -50,6 +50,12 @@ export interface SessionReport {
   /** User-edited overrides for network status rows — suppresses auto-population for edited fields. */
   networkOverrides: Record<string, NetworkOverride>;
   pressureOverrides: Record<string, NetworkOverride>;
+  /**
+   * Generated keys the user has taken ownership of by removing or editing the row.
+   * Diagnostics polling must never re-add these, so a dismissed or edited action stays put.
+   */
+  dismissedActionKeys: string[];
+  dismissedRecommendedKeys: string[];
   recommendedActions: ReportRecommendedAction[];
   notes: string;
   outcome: Outcome;
@@ -68,6 +74,8 @@ export const emptyReport = (): SessionReport => ({
   networkNotes: { Ethernet: "", "Wi-Fi": "", Cellular: "", Satellite: "" },
   networkOverrides: {},
   pressureOverrides: {},
+  dismissedActionKeys: [],
+  dismissedRecommendedKeys: [],
   recommendedActions: [],
   notes: "",
   outcome: "complete",

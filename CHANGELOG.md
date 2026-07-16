@@ -11,8 +11,13 @@ The latest updates to the console, in plain terms for the people who use it in t
 
 ## [Unreleased]
 
+### Improved
+
+- **Quick-select now names the system type.** In the Report tab, the "Configured zones" quick-select used to read "System configured: 4 zones". It now includes the system type read from the controller — "System configured: MP3 · 4 zones".
+
 ### Fixed
 
+- **Report actions stay where you put them.** In the Report tab, an action you deleted from Recommended Actions or Actions Taken would come back on its own a second or two later, and editing one could leave you with a stray copy of the original next to your edit. Actions still fill in automatically from diagnostics, but once you delete or edit one, it stays that way for the rest of the session. Clear starts the report over from fresh diagnostics.
 - **No false wiring warning on an unpressurized system.** With no pressure in the lines, the source and distribution readings both hover near zero (the source often reads slightly negative), and the System Pressure card used to misread that as a P2/P3 sensor swap and tell you to check the wiring at the controller. It now flags a possible swap only when there's a genuine, non-zero reading showing distribution above source or supply — a truly dead source is still reported.
 
 ## [0.2.1] — July 2026
