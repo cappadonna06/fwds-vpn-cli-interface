@@ -1052,9 +1052,10 @@ fn find_putty_executable() -> Option<PathBuf> {
     .find(|path| !path.as_os_str().is_empty() && path.exists())
 }
 
-/// Locate `puttygen.exe`, the PuTTY suite's key converter. Mirrors
-/// `find_putty_executable` — it ships in the same install directory, so the
-/// same PATH + standard-location search finds it.
+/// Locate `puttygen.exe`, the PuTTY suite's key converter. Used only as a
+/// fallback: `ensure_station_ppk` prefers the converter sitting next to the
+/// `putty.exe` it will actually launch (see there for why), and only reaches
+/// for this independent PATH + standard-location search when that fails.
 #[cfg(target_os = "windows")]
 fn find_puttygen_executable() -> Option<PathBuf> {
     if let Some(paths) = std::env::var_os("PATH") {
@@ -1105,7 +1106,22 @@ fn ensure_station_ppk() -> Option<PathBuf> {
         return Some(ppk);
     }
 
-    let puttygen = find_puttygen_executable()?;
+    // Resolve puttygen NEXT TO the putty.exe we'll actually launch, before
+    // falling back to an independent PATH search. A stray puttygen.exe earlier
+    // on PATH (from another tool, or an old build) may not accept PuTTY's `-O`
+    // conversion flag — and because puttygen.exe is a windowed program with no
+    // console, that CLI error surfaces as a modal "unrecognized option '-O'"
+    // dialog that blocks the connect until it's dismissed, after which the ppk
+    // is missing and we silently drop to the ssh.exe fallback. Preferring
+    // PuTTY's own sibling converter keeps the two tools from mismatching.
+    let puttygen = find_putty_executable()
+        .and_then(|p| p.parent().map(|dir| dir.join("puttygen.exe")))
+        .filter(|p| p.exists())
+        .or_else(find_puttygen_executable)?;
+
+    // Suppress the transient console window the conversion would otherwise flash.
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     let out = Command::new(&puttygen)
         .args([
             station.as_os_str(),
@@ -1114,6 +1130,7 @@ fn ensure_station_ppk() -> Option<PathBuf> {
             std::ffi::OsStr::new("-o"),
             ppk.as_os_str(),
         ])
+        .creation_flags(CREATE_NO_WINDOW)
         .output()
         .ok()?;
     if out.status.success() && ppk.exists() {
