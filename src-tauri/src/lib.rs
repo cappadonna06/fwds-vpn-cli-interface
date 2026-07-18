@@ -939,7 +939,7 @@ fn reveal_log_dir() -> Result<(), String> {
 
 #[cfg(target_os = "windows")]
 struct PuttyWindowSearch {
-    target_pid: Option<u32>,
+    target_pid: u32,
     found: Option<HWND>,
 }
 
@@ -957,14 +957,12 @@ unsafe extern "system" fn enum_putty_windows(hwnd: HWND, lparam: LPARAM) -> BOOL
         return TRUE;
     }
 
-    if let Some(target_pid) = search.target_pid {
-        let mut window_pid = 0u32;
-        unsafe {
-            GetWindowThreadProcessId(hwnd, &mut window_pid);
-        }
-        if window_pid != target_pid {
-            return TRUE;
-        }
+    let mut window_pid = 0u32;
+    unsafe {
+        GetWindowThreadProcessId(hwnd, &mut window_pid);
+    }
+    if window_pid != search.target_pid {
+        return TRUE;
     }
 
     search.found = Some(hwnd);
@@ -972,7 +970,10 @@ unsafe extern "system" fn enum_putty_windows(hwnd: HWND, lparam: LPARAM) -> BOOL
 }
 
 #[cfg(target_os = "windows")]
-fn find_putty_window(pid: Option<u32>) -> Option<HWND> {
+fn find_putty_window(pid: u32) -> Option<HWND> {
+    // Commands may change controller hardware state. Only target the PuTTY
+    // process launched for this session; another open PuTTY window is never a
+    // safe fallback while this terminal is still starting or has already closed.
     let mut search = PuttyWindowSearch {
         target_pid: pid,
         found: None,
@@ -983,26 +984,12 @@ fn find_putty_window(pid: Option<u32>) -> Option<HWND> {
             &mut search as *mut PuttyWindowSearch as LPARAM,
         );
     }
-    if search.found.is_some() || pid.is_none() {
-        return search.found;
-    }
-
-    let mut fallback = PuttyWindowSearch {
-        target_pid: None,
-        found: None,
-    };
-    unsafe {
-        EnumWindows(
-            Some(enum_putty_windows),
-            &mut fallback as *mut PuttyWindowSearch as LPARAM,
-        );
-    }
-    fallback.found
+    search.found
 }
 
 #[cfg(target_os = "windows")]
 fn send_text_to_putty_window(
-    pid: Option<u32>,
+    pid: u32,
     _device: Option<&str>,
     text: &str,
 ) -> Result<(), String> {
@@ -2682,7 +2669,7 @@ fn open_local_serial_terminal(device: String, state: State<'_, AppState>) -> Res
                 .push(format!("[PuTTY opened] {com_port} @ 115200"));
         }
 
-        let _ = send_text_to_putty_window(Some(putty_pid), Some(&com_port), "");
+        let _ = send_text_to_putty_window(putty_pid, Some(&com_port), "");
 
         return Ok(());
     }
@@ -3117,10 +3104,8 @@ fn send_external_input(text: String, state: State<'_, AppState>) -> Result<(), S
             let putty_pid = inner
                 .windows_local_terminal_child
                 .as_ref()
-                .map(|child| child.id());
-            if putty_pid.is_none() {
-                return Err("Session not open".into());
-            }
+                .map(|child| child.id())
+                .ok_or_else(|| "Session not open".to_string())?;
             drop(inner);
             return send_text_to_putty_window(putty_pid, None, &text);
         }
@@ -3159,11 +3144,10 @@ fn send_external_input(text: String, state: State<'_, AppState>) -> Result<(), S
                 .flush()
                 .map_err(|e| format!("Failed to flush command: {e}"))?;
             return Ok(());
-        } else if putty_pid.is_some() || local_device.is_some() {
-            return send_text_to_putty_window(putty_pid, local_device.as_deref(), &text);
-        } else {
-            return Err("Session not open".into());
         }
+
+        let putty_pid = putty_pid.ok_or_else(|| "Session not open".to_string())?;
+        send_text_to_putty_window(putty_pid, local_device.as_deref(), &text)
     }
 
     #[cfg(not(target_os = "windows"))]
