@@ -9,6 +9,8 @@
 
 The latest updates to the console, in plain terms for the people who use it in the field.
 
+## [Unreleased]
+
 ## [0.2.2] — July 2026
 
 The first update since April's 0.1.2: a new way to reach a controller, two new tools, a fresh look, clearer diagnostics, full Windows support, and stronger session-log privacy.
