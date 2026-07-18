@@ -6,6 +6,7 @@ type ControllerStatus = "disconnected" | "connecting" | "connected" | "failed";
 type LocalStatusTone = "neutral" | "ok" | "fail";
 type ConnectionMode = "vpn" | "local";
 type RemoteAccessState = "disabled" | "enabled-unconfigured" | "ready";
+type LocalNetworkStatus = "disconnected" | "connecting" | "connected" | "failed";
 
 const VPN_LABELS: Record<VpnStatus, string> = {
   disconnected: "Not connected",
@@ -49,6 +50,23 @@ interface DependencyStatus {
   found_path: string | null;
 }
 
+interface DiscoveredController {
+  serial: string;
+  address: string;
+  hostname: string;
+}
+
+interface LocalAppState {
+  shell_phase: string;
+  shell_detail?: string;
+  connection_mode?: string;
+  local_serial_device?: string | null;
+}
+
+interface DiagnosticSnapshot {
+  system?: { sid?: string | null } | null;
+}
+
 function statusTone(status: VpnStatus | ControllerStatus): "neutral" | "ok" | "warn" | "fail" {
   if (status === "connected") return "ok";
   if (status === "connecting" || status === "starting" || status === "stopping" || status === "manual") return "warn";
@@ -86,8 +104,13 @@ export default function SessionTab({ onControllerConnected }: SessionTabProps) {
   const [serialDetail, setSerialDetail] = useState("");
   const [localMethod, setLocalMethod] = useState<"serial" | "network">("serial");
   const [networkHost, setNetworkHost] = useState("");
+  const [networkCheck, setNetworkCheck] = useState<PreflightResult | null>(null);
+  const [networkChecking, setNetworkChecking] = useState(false);
   const [scanningNetwork, setScanningNetwork] = useState(false);
-  const [foundControllers, setFoundControllers] = useState<string[]>([]);
+  const [networkScanComplete, setNetworkScanComplete] = useState(false);
+  const [networkConnectionStatus, setNetworkConnectionStatus] = useState<LocalNetworkStatus>("disconnected");
+  const [localControllerSid, setLocalControllerSid] = useState("");
+  const [foundControllers, setFoundControllers] = useState<DiscoveredController[]>([]);
   const [scanNote, setScanNote] = useState("");
 
   const [successBanner, setSuccessBanner] = useState<string | null>(null);
@@ -116,6 +139,21 @@ export default function SessionTab({ onControllerConnected }: SessionTabProps) {
 
     const savedHost = localStorage.getItem("local_network_host");
     if (savedHost) setNetworkHost(savedHost);
+  }, []);
+
+  useEffect(() => {
+    invoke<LocalAppState>("get_app_state")
+      .then((appState) => {
+        const target = appState.local_serial_device?.trim() ?? "";
+        const isSerialDevice = /^COM\d+/i.test(target) || target.startsWith("/dev/");
+        if (appState.connection_mode !== "local" || !target || isSerialDevice) return;
+        setLocalMethod("network");
+        setNetworkHost(target);
+        if (appState.shell_phase === "connected") setNetworkConnectionStatus("connected");
+        else if (appState.shell_phase === "connecting") setNetworkConnectionStatus("connecting");
+        else if (appState.shell_phase === "failed") setNetworkConnectionStatus("failed");
+      })
+      .catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -422,22 +460,28 @@ export default function SessionTab({ onControllerConnected }: SessionTabProps) {
   // network (router or direct Ethernet cable) with zero typing.
   async function scanForControllers() {
     setScanningNetwork(true);
+    setNetworkScanComplete(false);
     setScanNote("");
     try {
-      const found = await invoke<string[]>("discover_controllers");
+      const found = await invoke<DiscoveredController[]>("discover_controllers");
       setFoundControllers(found);
       if (found.length === 0) {
-        setScanNote(
-          "No controllers found. Make sure the controller and this computer are on the same network — a direct Ethernet cable, or both on the same router — then Scan again. You can also enter an address manually below."
-        );
-      } else if (found.length === 1 && !networkHost.trim()) {
+        setScanNote("No controller found yet.");
+      } else if (found.length === 1) {
         // One controller on the network and nothing typed yet — prefill it.
-        setNetworkHost(found[0]);
+        setNetworkHost(found[0].address);
+        setLocalControllerSid(found[0].serial);
+      } else {
+        setScanNote("Choose the controller in front of you.");
+        if (!found.some((controller) => controller.address === networkHost.trim())) {
+          setNetworkHost("");
+        }
       }
     } catch (e) {
-      setScanNote(String(e));
+      setScanNote(`Scan failed: ${String(e)}`);
     } finally {
       setScanningNetwork(false);
+      setNetworkScanComplete(true);
     }
   }
 
@@ -445,6 +489,48 @@ export default function SessionTab({ onControllerConnected }: SessionTabProps) {
   useEffect(() => {
     if (localMethod === "network") scanForControllers();
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [localMethod]);
+
+  useEffect(() => {
+    if (localMethod !== "network") return;
+    let cancelled = false;
+
+    async function syncLocalNetworkState() {
+      try {
+        const [appState, diagnostic] = await Promise.all([
+          invoke<LocalAppState>("get_app_state"),
+          invoke<DiagnosticSnapshot>("get_diagnostic_state").catch(() => ({ system: null } as DiagnosticSnapshot)),
+        ]);
+        if (cancelled) return;
+
+        const target = appState.local_serial_device?.trim() ?? "";
+        const isSerialDevice = /^COM\d+/i.test(target) || target.startsWith("/dev/");
+        const isLocalNetworkSession = appState.connection_mode === "local" && target !== "" && !isSerialDevice;
+        if (isLocalNetworkSession) {
+          setNetworkHost(target);
+          if (appState.shell_phase === "connected") setNetworkConnectionStatus("connected");
+          else if (appState.shell_phase === "connecting") setNetworkConnectionStatus("connecting");
+          else if (appState.shell_phase === "failed") setNetworkConnectionStatus("failed");
+          if (appState.shell_detail) setSerialDetail(appState.shell_detail);
+        } else {
+          setNetworkConnectionStatus((current) =>
+            current === "connected" || current === "connecting" ? "disconnected" : current,
+          );
+        }
+
+        const sid = diagnostic.system?.sid?.trim();
+        if (sid) setLocalControllerSid(sid);
+      } catch {
+        // Launch errors are surfaced by the primary action; polling is best effort.
+      }
+    }
+
+    syncLocalNetworkState();
+    const id = setInterval(syncLocalNetworkState, 1000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
   }, [localMethod]);
 
   // Turn user input into an ssh host. A bare 8-digit serial → mDNS name
@@ -459,25 +545,38 @@ export default function SessionTab({ onControllerConnected }: SessionTabProps) {
     const host = normalizeNetworkHost(networkHost);
     if (!host) return;
     try {
-      setSerialDetail(`Connecting to root@${host}...`);
+      setNetworkConnectionStatus("connecting");
+      setSerialDetail(`Opening ${isWindows ? "PuTTY" : "Terminal"}...`);
       localStorage.setItem("local_network_host", networkHost.trim());
       await invoke("open_local_network_terminal", { host });
       if (isWindows) {
         await invoke("start_log_watcher").catch(() => {});
       }
-      // Windows opens PuTTY when available, else the built-in OpenSSH console —
-      // keep the copy neutral so it reads correctly either way.
-      setSerialDetail("Connected");
-      showSuccess("Connection successful - terminal window opened");
+      showSuccess(isWindows ? "PuTTY opened" : "Terminal opened");
       onControllerConnected?.();
     } catch (e) {
+      setNetworkConnectionStatus("failed");
       setSerialDetail(`Failed: ${String(e)}`);
+    }
+  }
+
+  async function checkLocalNetworkTarget() {
+    const host = normalizeNetworkHost(networkHost);
+    if (!host) return;
+    setNetworkChecking(true);
+    try {
+      setNetworkCheck(await invoke<PreflightResult>("run_preflight", { ip: host }));
+    } catch (e) {
+      setNetworkCheck({ ping_ok: false, port_ok: false, detail: String(e) });
+    } finally {
+      setNetworkChecking(false);
     }
   }
 
   async function disconnectLocalSession() {
     try {
       await invoke("disconnect_local_controller");
+      setNetworkConnectionStatus("disconnected");
       setSerialDetail("Local session disconnected.");
     } catch (e) {
       setSerialDetail(String(e));
@@ -502,6 +601,7 @@ export default function SessionTab({ onControllerConnected }: SessionTabProps) {
   const displayVpnConnected = vpnStatus === "connected" || manualVpnReady;
   const displayedVpnStatus: VpnStatus = displayVpnConnected ? "connected" : vpnStatus;
   const canConnect = octetValid && (vpnStatus === "connected" || manualVpnReady);
+  const networkTarget = normalizeNetworkHost(networkHost);
   const showPreflight = octetValid && (vpnStatus === "connected" || (isWindows && vpnStatus === "manual"));
   const hasActiveControllerSession =
     Boolean(vpnIp)
@@ -544,6 +644,66 @@ export default function SessionTab({ onControllerConnected }: SessionTabProps) {
     if (normalized.includes("disconnected")) return { label: "Idle", tone: "neutral" };
     return { label: "Idle", tone: "neutral" };
   }, [serialDetail]);
+
+  const selectedController = useMemo(() => {
+    const target = networkHost.trim().toLowerCase();
+    return foundControllers.find((controller) =>
+      [controller.address, controller.hostname, controller.serial, `${controller.serial}.local`]
+        .some((value) => value.toLowerCase() === target),
+    );
+  }, [foundControllers, networkHost]);
+
+  const inferredSerial = useMemo(() => {
+    if (selectedController?.serial) return selectedController.serial;
+    if (networkConnectionStatus !== "disconnected" && localControllerSid) return localControllerSid;
+    const match = networkHost.trim().match(/^(\d{8})(?:\.local)?$/i);
+    return match?.[1] ?? "";
+  }, [localControllerSid, networkConnectionStatus, networkHost, selectedController]);
+
+  const networkUiState = useMemo(() => {
+    const terminalName = isWindows ? "PuTTY" : "Terminal";
+    if (networkConnectionStatus === "connected") {
+      return { label: "Connected", tone: "ok", title: inferredSerial ? `Controller ${inferredSerial}` : "Controller connected", detail: `Session open in ${terminalName}.` };
+    }
+    if (networkConnectionStatus === "connecting") {
+      return { label: "Connecting", tone: "warn", title: inferredSerial ? `Controller ${inferredSerial}` : "Connecting to controller", detail: `Opening ${terminalName}...` };
+    }
+    if (networkConnectionStatus === "failed") {
+      return { label: "Failed", tone: "fail", title: "Could not connect", detail: serialDetail.replace(/^Failed:\s*/i, "") || "Try again or use another address." };
+    }
+    if (scanningNetwork) {
+      return { label: "Looking", tone: "neutral", title: "Looking for your controller", detail: "Checking the local network..." };
+    }
+    if (selectedController || foundControllers.length === 1) {
+      const controller = selectedController ?? foundControllers[0];
+      return { label: "Found", tone: "ok", title: `Controller ${controller.serial}`, detail: `Ready at ${controller.address}` };
+    }
+    if (foundControllers.length > 1) {
+      return { label: "Found", tone: "ok", title: `${foundControllers.length} controllers found`, detail: "Choose the controller in front of you." };
+    }
+    if (scanNote.startsWith("Scan failed:")) {
+      return { label: "Failed", tone: "fail", title: "Could not scan", detail: "Try again or enter an address manually." };
+    }
+    if (networkTarget && networkScanComplete) {
+      return { label: "Ready", tone: "neutral", title: "Controller address ready", detail: networkTarget };
+    }
+    if (networkScanComplete) {
+      return { label: "Not found", tone: "fail", title: "No controller found", detail: "Check the cable or local network, then scan again." };
+    }
+    return { label: "Looking", tone: "neutral", title: "Looking for your controller", detail: "This usually takes a few seconds." };
+  }, [foundControllers, inferredSerial, isWindows, networkConnectionStatus, networkScanComplete, networkTarget, scanNote, scanningNetwork, selectedController, serialDetail]);
+
+  const networkPrimaryLabel = networkConnectionStatus === "connected"
+    ? "Disconnect"
+    : networkConnectionStatus === "connecting"
+      ? `Opening ${isWindows ? "PuTTY" : "Terminal"}...`
+      : networkTarget
+        ? "Connect"
+        : scanningNetwork
+          ? "Looking..."
+          : foundControllers.length > 1
+            ? "Choose a controller"
+            : "Scan again";
 
   function preflightDotClass(kind: "ping" | "port", ok: boolean | undefined): string {
     if (preflight === null) return "idle";
@@ -605,11 +765,13 @@ export default function SessionTab({ onControllerConnected }: SessionTabProps) {
             <div className="connect-card-head">
               <div>
                 <h2>Connect locally</h2>
-                <p>{localMethod === "network" ? "Same-network SSH access" : "USB / serial access"}</p>
+                <p>Use USB or the local network.</p>
               </div>
-              <div className="status-chip-row">
-                <span className={`status-chip ${localState.tone}`}>{localState.label}</span>
-              </div>
+              {localMethod === "serial" && (
+                <div className="status-chip-row">
+                  <span className={`status-chip ${localState.tone}`}>{localState.label}</span>
+                </div>
+              )}
             </div>
 
             <div className="local-method-toggle" role="tablist">
@@ -629,7 +791,7 @@ export default function SessionTab({ onControllerConnected }: SessionTabProps) {
                 className={`chip-button ${localMethod === "network" ? "active" : ""}`}
                 onClick={() => { setLocalMethod("network"); localStorage.setItem("local_method", "network"); }}
               >
-                Network (SSH)
+                Network
               </button>
             </div>
 
@@ -684,24 +846,72 @@ export default function SessionTab({ onControllerConnected }: SessionTabProps) {
               </>
             ) : (
               <>
+                <div className={`network-controller-state ${networkUiState.tone}`} aria-live="polite">
+                  <span className="network-state-dot" aria-hidden="true" />
+                  <div className="network-controller-copy">
+                    <span className="network-controller-eyebrow">{networkUiState.label}</span>
+                    <strong>{networkUiState.title}</strong>
+                    <span>{networkUiState.detail}</span>
+                  </div>
+                </div>
+
+                {foundControllers.length > 1 && networkConnectionStatus === "disconnected" && (
+                  <div className="network-controller-choices" aria-label="Discovered controllers">
+                    {foundControllers.map((controller) => (
+                      <button
+                        key={`${controller.serial}-${controller.address}`}
+                        className={`chip-button ${networkHost.trim() === controller.address ? "active" : ""}`}
+                        onClick={() => {
+                          setNetworkHost(controller.address);
+                          setLocalControllerSid(controller.serial);
+                          setNetworkCheck(null);
+                        }}
+                        type="button"
+                      >
+                        {controller.serial}
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                {renderDependencyNotice("network")}
+
+                <div className="card-actions network-primary-actions">
+                  <button
+                    className={`btn ${networkConnectionStatus === "connected" ? "btn-secondary" : "btn-primary"}`}
+                    disabled={networkConnectionStatus === "connecting" || scanningNetwork || (foundControllers.length > 1 && !networkTarget)}
+                    onClick={networkConnectionStatus === "connected"
+                      ? disconnectLocalSession
+                      : networkTarget
+                        ? launchLocalNetworkTerminal
+                        : scanForControllers}
+                  >
+                    {networkPrimaryLabel}
+                  </button>
+                </div>
+
+                <details className="network-fallback">
+                  <summary>{networkTarget ? "Use another controller" : "Enter an address manually"}</summary>
                 <div className="flow-group flow-group-soft">
                   <p className="hint session-hint net-requirement">
-                    <strong>Same network required.</strong> Connect the controller and this
-                    computer to the same network — a direct Ethernet cable between them, or
-                    both on the same router (controller by Ethernet; this computer on Wi‑Fi
-                    or Ethernet). Different networks or a VPN won't work.
+                    The controller and this computer must share the same local network. A direct
+                    Ethernet cable works.
                   </p>
                   <div className="flow-row">
                     <div className="row-context">Controller</div>
                     <div className="serial-quick-picks">
-                      {foundControllers.map((serial) => (
+                      {foundControllers.map((controller) => (
                         <button
-                          key={serial}
-                          className={`chip-button ${networkHost.trim() === serial ? "active" : ""}`}
-                          onClick={() => setNetworkHost(serial)}
+                          key={`${controller.serial}-${controller.address}`}
+                          className={`chip-button ${networkHost.trim() === controller.address ? "active" : ""}`}
+                          onClick={() => {
+                            setNetworkHost(controller.address);
+                            setLocalControllerSid(controller.serial);
+                            setNetworkCheck(null);
+                          }}
                           type="button"
                         >
-                          {serial}
+                          {controller.serial}
                         </button>
                       ))}
                       <button
@@ -718,39 +928,43 @@ export default function SessionTab({ onControllerConnected }: SessionTabProps) {
                     <p className="hint session-hint">{scanNote}</p>
                   )}
                   <div className="flow-row">
-                    <div className="row-context">Address</div>
+                    <div className="row-context">Controller address</div>
                     <div className="serial-picker-row">
                       <input
                         value={networkHost}
-                        onChange={(e) => setNetworkHost(e.target.value)}
+                        onChange={(e) => { setNetworkHost(e.target.value); setNetworkCheck(null); }}
                         placeholder="45230110.local or 192.168.1.8"
                         onKeyDown={(e) => { if (e.key === "Enter") launchLocalNetworkTerminal(); }}
                       />
                     </div>
                   </div>
-                  <p className="hint session-hint">
-                    Found controllers appear above — click one, then Connect. Or enter a serial
-                    (auto-resolves to <code>&lt;serial&gt;.local</code>), a <code>.local</code> name,
-                    or a LAN IP. Passwordless via the bundle's SSH key.
-                  </p>
-                </div>
-
-                {renderDependencyNotice("network")}
-
-                <div className="card-actions">
-                  <button className="btn btn-primary" disabled={!networkHost.trim()} onClick={launchLocalNetworkTerminal}>
-                    Connect
-                  </button>
-                  {localState.tone === "ok" && (
-                    <button className="btn btn-secondary" onClick={disconnectLocalSession}>
-                      Disconnect
-                    </button>
+                  {networkTarget && (
+                    <p className="hint session-hint">
+                      {isWindows ? "PuTTY" : "Terminal"} will connect as <code>root@{networkTarget}</code>.
+                    </p>
                   )}
+                  {networkCheck && (
+                    <p className={`hint session-hint ${networkCheck.port_ok ? "status-success" : "status-error"}`}>
+                      {networkCheck.detail}
+                    </p>
+                  )}
+                  <div className="card-actions network-fallback-actions">
+                    <button className="btn btn-secondary" onClick={scanForControllers} disabled={scanningNetwork}>
+                      {scanningNetwork ? "Scanning..." : "Scan again"}
+                    </button>
+                    <button className="btn btn-secondary" disabled={!networkTarget || networkChecking} onClick={checkLocalNetworkTarget}>
+                      {networkChecking ? "Checking..." : "Check address"}
+                    </button>
+                  </div>
+                  <p className="hint session-hint">Use a controller serial, local hostname, or IP address.</p>
                 </div>
+
+                </details>
+
               </>
             )}
 
-            {serialDetail && <div className="hint session-hint">{serialDetail}</div>}
+            {localMethod === "serial" && serialDetail && <div className="hint session-hint">{serialDetail}</div>}
           </section>
         ) : (
           <section className="connect-card connect-card-single">

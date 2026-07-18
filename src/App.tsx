@@ -12,7 +12,6 @@ import ReportTab from "./components/tabs/ReportTab";
 import DiagnosticsTab from "./components/tabs/DiagnosticsTab";
 import SystemConfigurationTab from "./components/tabs/SystemConfigurationTab";
 import SettingsTab from "./components/tabs/SettingsTab";
-import ControllerTerminalWindow from "./components/tabs/ControllerTerminalWindow";
 import Sidebar from "./components/shell/Sidebar";
 import SidebarHeader from "./components/shell/SidebarHeader";
 import SidebarNavItem from "./components/shell/SidebarNavItem";
@@ -93,12 +92,6 @@ function mapLocalState(connectionMode?: string, serialDevice?: string | null): S
 }
 
 export default function App() {
-  const terminalWindowMode =
-    new URLSearchParams(window.location.search).get("terminalWindow") === "1";
-  if (terminalWindowMode) {
-    return <ControllerTerminalWindow />;
-  }
-
   const [activeTab, setActiveTab] = useState<Tab>("session");
   const [appStatus, setAppStatus] = useState<AppStatus>({
     vpn_phase: "disconnected",

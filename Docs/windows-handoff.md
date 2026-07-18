@@ -4,6 +4,24 @@
 > Windows connection paths as of branch `fix/windows-puttygen-ppk-resolution`.
 > This doc is a WIP artifact — safe to remove before merging to `main`.
 
+## Implementation update (July 17, 2026)
+
+The historical investigation below led to a different final implementation:
+
+- Windows SSH opens in a real external PuTTY terminal. The in-app terminal and
+  piped `ssh.exe` experiment were removed.
+- The app converts the bundle's PKCS#1/OpenSSH RSA `station` key to an
+  unencrypted PPK v3 file in-process. It never invokes PuTTYgen, so the
+  unsupported `-O` option and its modal popup are gone.
+- Command buttons still send to the PuTTY window, and diagnostic cards still
+  parse PuTTY's session log.
+- Local controllers are discovered with an embedded mDNS browser. Windows no
+  longer needs Bonjour/`dns-sd.exe`; a single detected controller's resolved IP
+  is filled automatically, with manual address entry retained as a fallback.
+
+The sections below are retained as historical diagnosis and should not be read
+as the current implementation state.
+
 ## TL;DR
 
 - **Connect works** on both VPN and local SSH — a controller terminal window opens.
@@ -136,21 +154,21 @@ no window to find, no `WM_CHAR`, no session-log file, no host-key dialog
 `connect_controller` fn was reaching for. It would fix send AND diagnostics AND delete
 the sessionlog dependency in one move. Bigger change; a maintainer decision.
 
-## 4. Other known Windows issues (from code review — not yet device-tested)
+## 4. Other Windows issue disposition
 
-Independent of the blocker; listed for completeness:
-
-- **SD Card Maker may list non-removable USB drives** (backup drives/SSDs).
-  Enumeration filters system/boot disks (boot disk is safe) but then **hardcodes
-  `removable: true`** (~5085), so the "only removable cards shown" UI text isn't
-  enforced. Data-loss risk — verify the picker before writing.
-- **Turning session logging OFF breaks Windows diagnostics + VPN connection-state.**
-  No `-sessionlog` → no file → cards stay empty and VPN phase can stick on
-  "connecting" (the state machine reads that file). Leave logging **on** while testing.
-- **Local → Network discovery** shows a raw error on arrival (needs Apple Bonjour /
-  `dns-sd`, not installed by default). Manual IP / `.local` entry still works.
-- **A Windows "permission denied" can pop the macOS Full-Disk-Access panel**
-  (mis-gated, no platform check).
+- **SD Card Maker:** zero-byte reader slots are now hidden on Windows and macOS.
+  System/boot disks remain excluded, the UI no longer claims every listed USB
+  device is removable, and the erase confirmation shows the selected name and
+  size. Windows cannot reliably distinguish every USB SD reader from an external
+  USB drive, so the operator must still confirm the target before writing.
+- **Session logging:** PuTTY SSH logging remains enabled on Windows because
+  connection state and diagnostic cards consume it. Settings now distinguishes
+  app-managed transcripts from this required PuTTY log and accurately warns that
+  PuTTY cannot redact typed credentials.
+- **Local → Network discovery:** fixed with the embedded mDNS browser; Bonjour and
+  `dns-sd.exe` are no longer required.
+- **Full Disk Access recovery:** the frontend now shows this macOS-only recovery
+  panel only on macOS; Windows permission errors retain the ordinary failure UI.
 
 ## 5. Docs to fix (currently mislead a technician)
 

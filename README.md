@@ -32,7 +32,7 @@ See [`CHANGELOG.md`](CHANGELOG.md) for what shipped in each release.
 | Platform | Connection method | Notes |
 | --- | --- | --- |
 | macOS | OpenVPN, or local network (SSH) | VPN startup uses an elevated launch path; see [`Docs/platform-notes.md`](Docs/platform-notes.md). |
-| Windows | Local serial (USB/COM) via PuTTY | VPN/OpenVPN flow is not supported on Windows in this release. |
+| Windows | OpenVPN, local network (SSH), or local serial (USB/COM) | SSH and serial open in PuTTY; the app sends commands to that real terminal and parses its session log for diagnostics. |
 
 ## Tech stack
 
