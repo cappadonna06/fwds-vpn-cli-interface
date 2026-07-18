@@ -36,8 +36,7 @@ The first update since April's 0.1.2: a new way to reach a controller, two new t
 
 ### Privacy & security
 
-- **Session logs stay private.** Session transcripts are kept in the console's own private storage instead of on your Desktop, so they no longer sync to iCloud. On Windows, PuTTY manages the session logs used for SSH/serial diagnostics; the Settings tab warns that app-side redaction cannot alter PuTTY's output. Logs older than two weeks clear out on their own.
-- **You decide whether to log.** A new Settings tab lets you turn session logging off entirely, and shows you exactly where the log files are kept.
+- **Session transcripts are never kept.** While you're connected, the console holds a temporary transcript of the session in its own private folder to fill in the diagnostic cards, then erases it the moment you disconnect or close the app. Nothing is stored between sessions, so anything you type during setup, including Wi-Fi passwords, does not stay on the computer. If you need a copy of a session, copy it from the terminal window while you're still connected.
 
 ## [0.1.2] — April 2026
 
