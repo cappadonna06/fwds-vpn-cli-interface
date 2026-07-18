@@ -63,5 +63,8 @@ We use [semantic versioning](https://semver.org): `MAJOR.MINOR.PATCH`.
 tagged retroactively; every release since goes through the process above.
 
 `0.2.0` was prepared in the repo (changelog entry and version bump) but never tagged or
-distributed. Its changes shipped for the first time in `v0.2.1`, which is why there is no
-`v0.2.0` tag and the changelog jumps from `0.1.2` straight to `0.2.1`.
+distributed. `v0.2.1` was tagged and a GitHub release was cut (Jul 14 2026), but it was
+superseded before any field use by `v0.2.2` — the Windows connection workflow was not yet
+working in it. `v0.2.2` is therefore the first distributed release after `v0.1.2`, which is
+why the changelog jumps from `0.1.2` straight to `0.2.2`: neither `0.2.0` nor `0.2.1` reached
+the field.

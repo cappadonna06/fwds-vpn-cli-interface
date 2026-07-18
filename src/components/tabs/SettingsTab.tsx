@@ -7,6 +7,9 @@ interface LogSettings {
   retention_days: number;
 }
 
+const isWindows =
+  typeof navigator !== "undefined" && /windows/i.test(navigator.userAgent);
+
 export default function SettingsTab() {
   const [settings, setSettings] = useState<LogSettings | null>(null);
   const [busy, setBusy] = useState(false);
@@ -35,7 +38,7 @@ export default function SettingsTab() {
   return (
     <div className="tab-content">
       <div className="card" style={{ maxWidth: 720 }}>
-        <div className="card-title">Session transcript logging</div>
+        <div className="card-title">App transcript logging</div>
 
         <div className="settings-row">
           <label className="settings-switch">
@@ -52,17 +55,16 @@ export default function SettingsTab() {
           </label>
           <span className={`settings-status ${enabled ? "on" : "off"}`}>
             {enabled
-              ? "Writing plaintext transcripts to disk"
-              : "No transcripts are written to disk"}
+              ? "Writing app-managed transcripts to disk"
+              : "App-managed transcripts are off"}
           </span>
         </div>
 
         <p className="settings-note">
-          Transcripts help support reconstruct a field session. They are kept in
-          this app&rsquo;s private folder (never the Desktop, which syncs to
-          iCloud); secret values such as Wi-Fi passwords are redacted before
-          writing; and files older than {retentionDays} days are removed
-          automatically on launch.
+          App-managed transcripts help support reconstruct a field session. They
+          are kept in this app&rsquo;s private folder; secret values such as Wi-Fi
+          passwords are redacted before writing; and files older than {retentionDays}
+          days are removed automatically on launch.
         </p>
 
         {settings && (
@@ -78,11 +80,13 @@ export default function SettingsTab() {
           </div>
         )}
 
-        <p className="settings-note settings-note-warn">
-          On Windows the console is PuTTY, which writes its own log that the app
-          cannot redact — while logging is on, typed Wi-Fi credentials may be
-          captured in it. Turn logging off to disable that entirely.
-        </p>
+        {isWindows && (
+          <p className="settings-note settings-note-warn">
+            PuTTY&rsquo;s SSH session log remains enabled on Windows because connection
+            status and diagnostic cards require it. PuTTY writes that log directly,
+            so typed credentials cannot be redacted by the app.
+          </p>
+        )}
       </div>
     </div>
   );

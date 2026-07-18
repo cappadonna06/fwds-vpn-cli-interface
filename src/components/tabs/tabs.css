@@ -530,6 +530,126 @@
   padding: 5px 12px;
 }
 
+.network-controller-state {
+  display: flex;
+  align-items: flex-start;
+  gap: 11px;
+  padding: 13px 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-2);
+}
+
+.network-controller-state.ok {
+  border-color: color-mix(in srgb, var(--success) 28%, var(--border));
+  background: color-mix(in srgb, var(--success) 7%, var(--bg-1));
+}
+
+.network-controller-state.warn {
+  border-color: color-mix(in srgb, var(--warning) 28%, var(--border));
+  background: color-mix(in srgb, var(--warning) 7%, var(--bg-1));
+}
+
+.network-controller-state.fail {
+  border-color: color-mix(in srgb, var(--danger) 24%, var(--border));
+  background: color-mix(in srgb, var(--danger) 6%, var(--bg-1));
+}
+
+.network-state-dot {
+  width: 9px;
+  height: 9px;
+  margin-top: 5px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--text-muted);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--text-muted) 12%, transparent);
+}
+
+.network-controller-state.ok .network-state-dot {
+  background: var(--success);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--success) 13%, transparent);
+}
+
+.network-controller-state.warn .network-state-dot {
+  background: var(--warning);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--warning) 13%, transparent);
+}
+
+.network-controller-state.fail .network-state-dot {
+  background: var(--danger);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--danger) 12%, transparent);
+}
+
+.network-controller-copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.network-controller-copy strong {
+  color: var(--text-primary);
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.network-controller-copy > span:last-child {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.network-controller-eyebrow {
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.network-controller-choices {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.network-primary-actions .btn {
+  min-width: 132px;
+}
+
+.network-fallback {
+  margin-top: 2px;
+  border-top: 1px solid var(--border-soft);
+  padding-top: 9px;
+}
+
+.network-fallback summary {
+  width: fit-content;
+  color: var(--text-muted);
+  font-size: 11px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.network-fallback[open] summary {
+  margin-bottom: 8px;
+}
+
+.network-fallback .flow-group-soft {
+  padding: 10px;
+}
+
+.network-fallback .net-requirement {
+  margin: 0 0 4px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+}
+
+.network-fallback-actions {
+  margin-top: 2px;
+}
+
 @media (max-width: 980px) {
   .connect-grid {
     grid-template-columns: 1fr;

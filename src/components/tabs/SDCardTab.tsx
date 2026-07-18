@@ -42,6 +42,8 @@ function fmtEta(sec: number): string {
 
 const isWindows =
   typeof navigator !== "undefined" && /windows/i.test(navigator.userAgent);
+const isMac =
+  typeof navigator !== "undefined" && /macintosh|mac os x/i.test(navigator.userAgent);
 
 export default function SDCardTab() {
   const [step, setStep] = useState<Step>("source");
@@ -181,6 +183,7 @@ export default function SDCardTab() {
   // Check the log lines too — the banner may carry a generic message while the
   // underlying "Operation not permitted" only appears in the writer's log.
   const permissionIssue =
+    isMac &&
     phase === "failed" &&
     (isPermissionError(poll?.detail) || (poll?.lines ?? []).some((l) => isPermissionError(l)));
   const percent = poll ? poll.percent : 0;
@@ -257,8 +260,8 @@ export default function SDCardTab() {
         <div className="card">
           <div className="card-title">Select the SD card</div>
           <p className="sd-lede">
-            Insert your microSD card, then pick it below. Only removable cards are
-            shown — your computer's own drive can't be selected.
+            Insert your microSD card, then choose it by size. Your computer's system
+            drive is hidden.
           </p>
 
           <div className="sd-firmware-row" style={{ marginBottom: 10 }}>
@@ -279,7 +282,7 @@ export default function SDCardTab() {
               {listing
                 ? "Looking for SD cards…"
                 : hasListed
-                ? "No removable SD card found. Insert one and click Refresh."
+                ? "No SD card found. Insert one and click Refresh."
                 : "Click Refresh to scan for SD cards."}
             </div>
           )}

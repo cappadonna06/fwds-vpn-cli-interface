@@ -11,18 +11,9 @@ The latest updates to the console, in plain terms for the people who use it in t
 
 ## [Unreleased]
 
-### Improved
+## [0.2.2] — July 2026
 
-- **Quick-select now names the system type.** In the Report tab, the "Configured zones" quick-select used to read "System configured: 4 zones". It now includes the system type read from the controller — "System configured: MP3 · 4 zones".
-
-### Fixed
-
-- **Report actions stay where you put them.** In the Report tab, an action you deleted from Recommended Actions or Actions Taken would come back on its own a second or two later, and editing one could leave you with a stray copy of the original next to your edit. Actions still fill in automatically from diagnostics, but once you delete or edit one, it stays that way for the rest of the session. Clear starts the report over from fresh diagnostics.
-- **No false wiring warning on an unpressurized system.** With no pressure in the lines, the source and distribution readings both hover near zero (the source often reads slightly negative), and the System Pressure card used to misread that as a P2/P3 sensor swap and tell you to check the wiring at the controller. It now flags a possible swap only when there's a genuine, non-zero reading showing distribution above source or supply — a truly dead source is still reported.
-
-## [0.2.1] — July 2026
-
-The first update since April's 0.1.2 — a new way to reach a controller, two new tools, a fresh look, clearer diagnostics, and stronger session-log privacy.
+The first update since April's 0.1.2: a new way to reach a controller, two new tools, a fresh look, clearer diagnostics, full Windows support, and stronger session-log privacy.
 
 ### New
 
@@ -34,14 +25,18 @@ The first update since April's 0.1.2 — a new way to reach a controller, two ne
 ### Improved
 
 - **A new look and feel.** The whole interface moved to the Frontline Wildfire Defense design system: updated logos, colors, typography, and layout.
+- **Quick-select now names the system type.** In the Report tab, the "Configured zones" quick-select used to read "System configured: 4 zones". It now includes the system type read from the controller: "System configured: MP3 · 4 zones".
 
 ### Fixed
 
+- **Windows: connecting to a controller now works end to end.** Commands you run reach the controller, and the diagnostic cards fill in, over both VPN and the local network. Finding a controller on the local network no longer needs extra software installed.
 - **Cellular diagnostics now read true.** The card separates three cases that used to blur together: no modem detected (a hardware fault), no service (the modem is fine but can't attach; check antenna, coverage, or SIM), and a modem that isn't responding. A healthy modem in a no-coverage area is no longer flagged as failed hardware.
+- **Report actions stay where you put them.** In the Report tab, an action you deleted from Recommended Actions or Actions Taken would come back on its own a second or two later, and editing one could leave you with a stray copy of the original next to your edit. Actions still fill in automatically from diagnostics, but once you delete or edit one, it stays that way for the rest of the session. Clear starts the report over from fresh diagnostics.
+- **No false wiring warning on an unpressurized system.** With no pressure in the lines, the source and distribution readings both hover near zero (the source often reads slightly negative), and the System Pressure card used to misread that as a P2/P3 sensor swap and tell you to check the wiring at the controller. It now flags a possible swap only when there's a genuine, non-zero reading showing distribution above source or supply. A truly dead source is still reported.
 
 ### Privacy & security
 
-- **Session logs stay private.** Session transcripts are now kept in the console's own private storage instead of on your Desktop, so they no longer sync to iCloud. Secrets like Wi-Fi passwords are hidden automatically before anything is written, and logs older than two weeks clear out on their own.
+- **Session logs stay private.** Session transcripts are kept in the console's own private storage instead of on your Desktop, so they no longer sync to iCloud. On Windows, PuTTY manages the session logs used for SSH/serial diagnostics; the Settings tab warns that app-side redaction cannot alter PuTTY's output. Logs older than two weeks clear out on their own.
 - **You decide whether to log.** A new Settings tab lets you turn session logging off entirely, and shows you exactly where the log files are kept.
 
 ## [0.1.2] — April 2026

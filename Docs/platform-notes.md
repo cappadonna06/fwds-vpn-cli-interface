@@ -51,10 +51,23 @@ is needed to bring up the VPN.
 - OpenVPN warnings can still be noisy. The clean long-term direction is a true
   privileged helper/daemon for VPN lifecycle management.
 
-## Windows — local serial
+## Windows — VPN, local SSH, and local serial
 
-Windows support is **local serial (USB/COM) only**. The VPN/OpenVPN flow is not
-supported on Windows in this release.
+Windows supports the VPN/OpenVPN path, local-network SSH, and local serial
+(USB/COM). SSH and serial both open in a real PuTTY terminal. The app sends
+commands to that PuTTY window and parses PuTTY's session log to populate the
+diagnostic cards.
+
+### Connect over VPN or the local network
+
+1. Load the VPN bundle once so the console can install the `station` SSH key.
+2. For VPN access, start the VPN and then connect to the controller. For local
+   access, choose **Local** mode, choose **Network (SSH)**, and enter or find
+   the controller address.
+3. The app silently converts the bundle's `station` key to PuTTY's PPK format,
+   then opens PuTTY as `root`. PuTTYgen is not invoked.
+4. Run commands and diagnostic blocks from the console; their output populates
+   the diagnostic cards directly.
 
 ### Connect on a Windows device
 

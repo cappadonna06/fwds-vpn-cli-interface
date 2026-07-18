@@ -1,12 +1,19 @@
 use serialport::SerialPort;
 #[cfg(target_os = "windows")]
 use serialport::SerialPortType;
+#[cfg(target_os = "windows")]
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
+use mdns_sd::{ServiceDaemon, ServiceEvent};
+#[cfg(target_os = "windows")]
+use rsa::pkcs1::DecodeRsaPrivateKey;
+#[cfg(target_os = "windows")]
+use ssh_key::{sha2::{Digest, Sha256}, Mpint, PrivateKey};
 use std::collections::HashMap;
 use std::fs;
 #[cfg(target_os = "windows")]
 use std::io::ErrorKind as IoErrorKind;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
-use std::net::{TcpStream, ToSocketAddrs};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -932,7 +939,7 @@ fn reveal_log_dir() -> Result<(), String> {
 
 #[cfg(target_os = "windows")]
 struct PuttyWindowSearch {
-    target_pid: Option<u32>,
+    target_pid: u32,
     found: Option<HWND>,
 }
 
@@ -950,14 +957,12 @@ unsafe extern "system" fn enum_putty_windows(hwnd: HWND, lparam: LPARAM) -> BOOL
         return TRUE;
     }
 
-    if let Some(target_pid) = search.target_pid {
-        let mut window_pid = 0u32;
-        unsafe {
-            GetWindowThreadProcessId(hwnd, &mut window_pid);
-        }
-        if window_pid != target_pid {
-            return TRUE;
-        }
+    let mut window_pid = 0u32;
+    unsafe {
+        GetWindowThreadProcessId(hwnd, &mut window_pid);
+    }
+    if window_pid != search.target_pid {
+        return TRUE;
     }
 
     search.found = Some(hwnd);
@@ -965,7 +970,10 @@ unsafe extern "system" fn enum_putty_windows(hwnd: HWND, lparam: LPARAM) -> BOOL
 }
 
 #[cfg(target_os = "windows")]
-fn find_putty_window(pid: Option<u32>) -> Option<HWND> {
+fn find_putty_window(pid: u32) -> Option<HWND> {
+    // Commands may change controller hardware state. Only target the PuTTY
+    // process launched for this session; another open PuTTY window is never a
+    // safe fallback while this terminal is still starting or has already closed.
     let mut search = PuttyWindowSearch {
         target_pid: pid,
         found: None,
@@ -976,38 +984,31 @@ fn find_putty_window(pid: Option<u32>) -> Option<HWND> {
             &mut search as *mut PuttyWindowSearch as LPARAM,
         );
     }
-    if search.found.is_some() || pid.is_none() {
-        return search.found;
-    }
-
-    let mut fallback = PuttyWindowSearch {
-        target_pid: None,
-        found: None,
-    };
-    unsafe {
-        EnumWindows(
-            Some(enum_putty_windows),
-            &mut fallback as *mut PuttyWindowSearch as LPARAM,
-        );
-    }
-    fallback.found
+    search.found
 }
 
 #[cfg(target_os = "windows")]
 fn send_text_to_putty_window(
-    pid: Option<u32>,
+    pid: u32,
     _device: Option<&str>,
     text: &str,
 ) -> Result<(), String> {
-    let hwnd = (0..20)
+    // On a controller's first connection, PuTTY displays its host-key Security
+    // Alert before it creates the terminal window. Keep looking long enough for
+    // the technician to accept that prompt instead of failing the diagnostic
+    // command after the old two-second window.
+    const PUTTY_WINDOW_RETRIES: u32 = 300;
+    let hwnd = (0..PUTTY_WINDOW_RETRIES)
         .find_map(|attempt| {
             let found = find_putty_window(pid);
-            if found.is_none() && attempt < 19 {
+            if found.is_none() && attempt + 1 < PUTTY_WINDOW_RETRIES {
                 thread::sleep(Duration::from_millis(100));
             }
             found
         })
-        .ok_or_else(|| "Failed to send command to PuTTY: PuTTY window not found".to_string())?;
+        .ok_or_else(|| {
+            "PuTTY's terminal window was not ready. If a PuTTY Security Alert is open, accept it and try the command again.".to_string()
+        })?;
 
     let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
     let payload = if normalized.is_empty() {
@@ -1052,81 +1053,222 @@ fn find_putty_executable() -> Option<PathBuf> {
     .find(|path| !path.as_os_str().is_empty() && path.exists())
 }
 
-/// Locate `puttygen.exe`, the PuTTY suite's key converter. Mirrors
-/// `find_putty_executable` — it ships in the same install directory, so the
-/// same PATH + standard-location search finds it.
 #[cfg(target_os = "windows")]
-fn find_puttygen_executable() -> Option<PathBuf> {
-    if let Some(paths) = std::env::var_os("PATH") {
-        for dir in std::env::split_paths(&paths) {
-            let candidate = dir.join("puttygen.exe");
-            if candidate.exists() {
-                return Some(candidate);
-            }
-        }
-    }
-
-    [
-        PathBuf::from(r"C:\Program Files\PuTTY\puttygen.exe"),
-        PathBuf::from(r"C:\Program Files (x86)\PuTTY\puttygen.exe"),
-        std::env::var_os("LOCALAPPDATA")
-            .map(PathBuf::from)
-            .map(|p| p.join(r"Programs\PuTTY\puttygen.exe"))
-            .unwrap_or_default(),
-    ]
-    .into_iter()
-    .find(|path| !path.as_os_str().is_empty() && path.exists())
+fn append_ssh_string(out: &mut Vec<u8>, value: &[u8]) -> Result<(), String> {
+    let len = u32::try_from(value.len()).map_err(|_| "SSH key component is too large".to_string())?;
+    out.extend_from_slice(&len.to_be_bytes());
+    out.extend_from_slice(value);
+    Ok(())
 }
 
-/// PuTTY can't read the OpenSSH-format `station` key its `-i` option wants a
-/// native `.ppk`. Convert `~/.ssh/station` → `~/.ssh/station.ppk` with puttygen
-/// so the Windows PuTTY sessions can authenticate with the same key macOS uses.
-/// The `station` key is passphraseless, so the conversion is non-interactive.
-/// Returns the `.ppk` path when it exists (freshly made or already present), or
-/// `None` if the key is missing or puttygen isn't installed — callers then fall
-/// back to the built-in OpenSSH client.
 #[cfg(target_os = "windows")]
-fn ensure_station_ppk() -> Option<PathBuf> {
+fn append_ssh_mpint(out: &mut Vec<u8>, value: &Mpint) -> Result<(), String> {
+    append_ssh_string(out, value.as_bytes())
+}
+
+#[cfg(target_os = "windows")]
+fn hmac_sha256(key: &[u8], message: &[u8]) -> [u8; 32] {
+    const BLOCK_SIZE: usize = 64;
+    let mut normalized_key = [0u8; BLOCK_SIZE];
+    if key.len() > BLOCK_SIZE {
+        normalized_key[..32].copy_from_slice(&Sha256::digest(key));
+    } else {
+        normalized_key[..key.len()].copy_from_slice(key);
+    }
+
+    let mut inner_pad = [0x36u8; BLOCK_SIZE];
+    let mut outer_pad = [0x5cu8; BLOCK_SIZE];
+    for i in 0..BLOCK_SIZE {
+        inner_pad[i] ^= normalized_key[i];
+        outer_pad[i] ^= normalized_key[i];
+    }
+
+    let mut inner = Sha256::new();
+    inner.update(inner_pad);
+    inner.update(message);
+    let inner_digest = inner.finalize();
+
+    let mut outer = Sha256::new();
+    outer.update(outer_pad);
+    outer.update(inner_digest);
+    outer.finalize().into()
+}
+
+#[cfg(target_os = "windows")]
+fn ppk_base64_lines(bytes: &[u8]) -> Vec<String> {
+    let encoded = BASE64_STANDARD.encode(bytes);
+    encoded
+        .as_bytes()
+        .chunks(64)
+        .map(|chunk| String::from_utf8_lossy(chunk).into_owned())
+        .collect()
+}
+
+/// Convert the bundle's passphraseless OpenSSH RSA key to an unencrypted PPK
+/// v3 file in-process. Windows PuTTYgen is a GUI application and does not
+/// support the Unix `-O private -o ...` conversion syntax; attempting it opens
+/// the modal "unrecognised option '-O'" error seen by technicians.
+#[cfg(target_os = "windows")]
+fn ensure_station_ppk() -> Result<PathBuf, String> {
     let station = home_ssh_dir().join("station");
     if !station.exists() {
-        return None;
+        return Err("SSH key not found at ~/.ssh/station. Load the VPN bundle once to install it.".into());
     }
     let ppk = home_ssh_dir().join("station.ppk");
 
-    // Regenerate when the ppk is missing or older than the source key.
+    let ppk_looks_valid = fs::read_to_string(&ppk)
+        .map(|contents| contents.starts_with("PuTTY-User-Key-File-3: "))
+        .unwrap_or(false);
     let up_to_date = match (fs::metadata(&ppk), fs::metadata(&station)) {
         (Ok(p), Ok(s)) => match (p.modified(), s.modified()) {
             (Ok(pm), Ok(sm)) => pm >= sm,
-            _ => true, // ppk exists; if we can't compare times, trust it
+            _ => true,
         },
         _ => false,
     };
-    if ppk.exists() && up_to_date {
-        return Some(ppk);
+    if ppk_looks_valid && up_to_date {
+        return Ok(ppk);
     }
 
-    let puttygen = find_puttygen_executable()?;
-    let out = Command::new(&puttygen)
-        .args([
-            station.as_os_str(),
-            std::ffi::OsStr::new("-O"),
-            std::ffi::OsStr::new("private"),
-            std::ffi::OsStr::new("-o"),
-            ppk.as_os_str(),
-        ])
-        .output()
-        .ok()?;
-    if out.status.success() && ppk.exists() {
-        Some(ppk)
+    let key_text = fs::read_to_string(&station)
+        .map_err(|e| format!("Could not read ~/.ssh/station: {e}"))?;
+    let (rsa, comment) = if key_text.contains("-----BEGIN RSA PRIVATE KEY-----") {
+        let pkcs1 = rsa::RsaPrivateKey::from_pkcs1_pem(&key_text)
+            .map_err(|e| format!("Could not read the bundle's PKCS#1 RSA station key: {e}"))?;
+        let keypair = ssh_key::private::RsaKeypair::try_from(&pkcs1)
+            .map_err(|e| format!("Could not convert the bundle's RSA station key: {e}"))?;
+        (keypair, "FWDS station key".to_string())
     } else {
-        None
+        let private_key = PrivateKey::from_openssh(&key_text)
+            .map_err(|e| format!("Could not read ~/.ssh/station as an OpenSSH private key: {e}"))?;
+        if private_key.is_encrypted() {
+            return Err("The station SSH key is passphrase-protected; automatic PuTTY conversion requires the bundle's passphraseless station key.".into());
+        }
+        let keypair = private_key
+            .key_data()
+            .rsa()
+            .cloned()
+            .ok_or_else(|| "The station SSH key is not RSA, so this PuTTY conversion cannot use it.".to_string())?;
+        let comment = private_key.comment().replace(['\r', '\n'], " ");
+        let comment = if comment.trim().is_empty() {
+            "FWDS station key".to_string()
+        } else {
+            comment
+        };
+        (keypair, comment)
+    };
+
+    let mut public_blob = Vec::new();
+    append_ssh_string(&mut public_blob, b"ssh-rsa")?;
+    append_ssh_mpint(&mut public_blob, &rsa.public.e)?;
+    append_ssh_mpint(&mut public_blob, &rsa.public.n)?;
+    let mut private_blob = Vec::new();
+    append_ssh_mpint(&mut private_blob, &rsa.private.d)?;
+    append_ssh_mpint(&mut private_blob, &rsa.private.p)?;
+    append_ssh_mpint(&mut private_blob, &rsa.private.q)?;
+    append_ssh_mpint(&mut private_blob, &rsa.private.iqmp)?;
+
+    let mut mac_data = Vec::new();
+    append_ssh_string(&mut mac_data, b"ssh-rsa")?;
+    append_ssh_string(&mut mac_data, b"none")?;
+    append_ssh_string(&mut mac_data, comment.as_bytes())?;
+    append_ssh_string(&mut mac_data, &public_blob)?;
+    append_ssh_string(&mut mac_data, &private_blob)?;
+    let mac = hmac_sha256(&[], &mac_data);
+
+    let public_lines = ppk_base64_lines(&public_blob);
+    let private_lines = ppk_base64_lines(&private_blob);
+    let mut output = format!(
+        "PuTTY-User-Key-File-3: ssh-rsa\nEncryption: none\nComment: {comment}\nPublic-Lines: {}\n",
+        public_lines.len()
+    );
+    for line in public_lines {
+        output.push_str(&line);
+        output.push('\n');
     }
+    output.push_str(&format!("Private-Lines: {}\n", private_lines.len()));
+    for line in private_lines {
+        output.push_str(&line);
+        output.push('\n');
+    }
+    output.push_str("Private-MAC: ");
+    for byte in mac {
+        output.push_str(&format!("{byte:02x}"));
+    }
+    output.push('\n');
+
+    fs::write(&ppk, output).map_err(|e| format!("Could not write {}: {e}", ppk.display()))?;
+    harden_windows_key_acl(&ppk);
+    Ok(ppk)
 }
 
-/// Win32 OpenSSH refuses a private key whose file ACL lets other users read it
-/// ("UNPROTECTED PRIVATE KEY FILE"). Restrict the key to the current user so the
-/// built-in `ssh.exe` fallback accepts it. Best-effort — mirrors the `#[cfg(unix)]`
-/// `chmod 0600` on the macOS side.
+#[cfg(target_os = "windows")]
+fn launch_windows_putty_ssh(host: &str, mode: &str, state: &AppState) -> Result<(), String> {
+    let putty_path = find_putty_executable()
+        .ok_or_else(|| "PuTTY not found. Install PuTTY from putty.org and try again.".to_string())?;
+    let ppk = ensure_station_ppk()?;
+    let log_path = if mode == "local" {
+        local_serial_log_file(host)
+    } else {
+        log_file_path(host)
+    };
+
+    {
+        let mut inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
+        kill_shell(&mut inner);
+        if let Some(mut child) = inner.windows_local_terminal_child.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        inner.connection_mode = mode.to_string();
+        inner.local_serial_device = (mode == "local").then(|| host.to_string());
+        inner.controller_ip = (mode == "vpn").then(|| host.to_string());
+        inner.shell_logs.clear();
+        inner.shell_log_cursor = 0;
+        inner.shell_phase = "connecting".into();
+        inner.shell_detail = format!("Opening PuTTY for root@{host}...");
+        inner.shell_logs.push(format!("[PuTTY opening] root@{host}"));
+    }
+
+    append_transcript(
+        &log_path,
+        &format!(
+            "\n===== {mode} putty session start ({}) =====\ncontroller: {host}\n",
+            chrono::Local::now().format("%Y-%m-%d %H:%M:%S")
+        ),
+    );
+
+    let ppk_str = ppk.to_string_lossy();
+    let log_str = log_path.to_string_lossy();
+    let child = Command::new(&putty_path)
+        .args([
+            "-ssh",
+            host,
+            "-l",
+            "root",
+            "-i",
+            ppk_str.as_ref(),
+            "-sessionlog",
+            log_str.as_ref(),
+            "-logoverwrite",
+        ])
+        .spawn()
+        .map_err(|e| format!("Failed to open PuTTY: {e}"))?;
+    {
+        let mut inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
+        inner.windows_local_terminal_child = Some(child);
+        inner.shell_detail = format!("PuTTY opened for root@{host}; waiting for controller shell...");
+        inner.shell_logs.push(format!("[PuTTY opened] root@{host}"));
+    }
+    start_log_watcher_internal(state, true)?;
+
+    // Do not block Connect while waiting for PuTTY's first-use host-key dialog.
+    // Command sends use the longer retry path in send_text_to_putty_window.
+    Ok(())
+}
+
+/// Restrict generated key files to the current Windows user. Best-effort
+/// equivalent of the `chmod 0600` used on Unix.
 #[cfg(target_os = "windows")]
 fn harden_windows_key_acl(path: &Path) {
     let user = std::env::var("USERNAME").unwrap_or_default();
@@ -1143,42 +1285,6 @@ fn harden_windows_key_acl(path: &Path) {
             grant.as_str(),
         ])
         .output();
-}
-
-/// Launch the Windows built-in OpenSSH client (`ssh.exe`) in its own console
-/// window, reusing `~/.ssh/station` exactly like the macOS Terminal path. Used
-/// when PuTTY isn't installed or its key can't be produced. `CREATE_NEW_CONSOLE`
-/// gives ssh its own window while we keep the Child handle for liveness/kill.
-#[cfg(target_os = "windows")]
-fn spawn_windows_ssh_console(host: &str, key: &Path) -> Result<Child, String> {
-    use std::os::windows::process::CommandExt;
-    const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
-    Command::new("ssh")
-        .args([
-            "-i",
-            &key.to_string_lossy(),
-            "-o",
-            "LogLevel=ERROR",
-            "-o",
-            "StrictHostKeyChecking=no",
-            "-o",
-            "UserKnownHostsFile=NUL",
-            "-o",
-            "ServerAliveInterval=5",
-            "-o",
-            "ServerAliveCountMax=3",
-            "-o",
-            "KexAlgorithms=ecdh-sha2-nistp521",
-            &format!("root@{host}"),
-        ])
-        .creation_flags(CREATE_NEW_CONSOLE)
-        .spawn()
-        .map_err(|e| {
-            format!(
-                "Neither PuTTY nor the Windows OpenSSH client could be started: {e}. \
-                 Install PuTTY, or enable the OpenSSH Client optional feature in Windows Settings."
-            )
-        })
 }
 
 #[cfg(target_os = "windows")]
@@ -1210,23 +1316,28 @@ fn sync_windows_terminal_child(inner: &mut InnerState) {
 }
 
 #[cfg(target_os = "windows")]
-fn sync_windows_vpn_shell_phase(inner: &mut InnerState) {
-    if inner.connection_mode != "vpn"
-        || !matches!(inner.shell_phase.as_str(), "connecting" | "connected")
-    {
+fn sync_windows_putty_shell_phase(inner: &mut InnerState) {
+    if !matches!(inner.shell_phase.as_str(), "connecting" | "connected") {
         return;
     }
-    let Some(ip) = inner.controller_ip.clone() else {
-        return;
+    let (target, log_path) = if inner.connection_mode == "vpn" {
+        let Some(ip) = inner.controller_ip.clone() else {
+            return;
+        };
+        (ip.clone(), log_file_path(&ip))
+    } else {
+        let Some(host) = inner.local_serial_device.clone() else {
+            return;
+        };
+        (host.clone(), local_serial_log_file(&host))
     };
-    let log_path = log_file_path(&ip);
     let Ok(raw) = fs::read_to_string(log_path) else {
         return;
     };
 
     if inner.shell_phase == "connecting" && vpn_session_has_shell_ready(&raw) {
         inner.shell_phase = "connected".into();
-        inner.shell_detail = format!("Controller shell ready in PuTTY ({ip})");
+        inner.shell_detail = format!("Controller shell ready in PuTTY ({target})");
         return;
     }
 
@@ -1624,9 +1735,10 @@ fn connect_controller(ip: String, state: State<'_, AppState>) -> Result<(), Stri
         );
     }
 
-    // Spawn SSH directly — no connect.bin, no verbose flags, UserKnownHostsFile=/dev/null
+    // Spawn SSH directly — no connect.bin, no verbose flags, and a fresh host-key
+    // check for each controller. -tt forces a PTY so prompts work and echo behaves
+    // like a normal terminal session.
     // avoids host-key conflicts when controllers are replaced.
-    // -tt forces PTY on remote so prompts work and echo behaves correctly.
     let mut child = Command::new("ssh")
         .args([
             "-tt",
@@ -1982,7 +2094,7 @@ fn poll_controller(state: State<'_, AppState>) -> Result<ControllerPoll, String>
     #[cfg(target_os = "windows")]
     {
         sync_windows_terminal_child(&mut inner);
-        sync_windows_vpn_shell_phase(&mut inner);
+        sync_windows_putty_shell_phase(&mut inner);
     }
     #[cfg(not(target_os = "windows"))]
     {
@@ -2210,7 +2322,6 @@ fn check_dependencies() -> Vec<DependencyStatus> {
     {
         let putty = find_putty_executable();
         let putty_installed = putty.is_some();
-        let ssh_installed = windows_command_exists("ssh");
         let openvpn = resolve_openvpn().ok();
         vec![
             DependencyStatus {
@@ -2222,14 +2333,12 @@ fn check_dependencies() -> Vec<DependencyStatus> {
                 found_path: putty.as_ref().map(|p| p.display().to_string()),
             },
             DependencyStatus {
-                id: "putty-or-ssh".into(),
-                label: "PuTTY or the OpenSSH client".into(),
+                id: "putty-network".into(),
+                label: "PuTTY".into(),
                 method: "network".into(),
-                installed: putty_installed || ssh_installed,
-                install_hint:
-                    "Install PuTTY, or enable the OpenSSH Client optional feature in Windows Settings"
-                        .into(),
-                found_path: None,
+                installed: putty_installed,
+                install_hint: "Install PuTTY from putty.org".into(),
+                found_path: putty.as_ref().map(|p| p.display().to_string()),
             },
             DependencyStatus {
                 id: "openvpn".into(),
@@ -2276,16 +2385,6 @@ fn check_dependencies() -> Vec<DependencyStatus> {
     }
 }
 
-/// Best-effort "is this command on PATH" check for Windows, via `where`.
-#[cfg(target_os = "windows")]
-fn windows_command_exists(name: &str) -> bool {
-    Command::new("where")
-        .arg(name)
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
-
 /// Open the active controller connection in Terminal.app for full interactive setup.
 /// SSH session is wrapped with `script` and logged to the app's controller log path
 /// so the diagnostics watcher tails the same visible Terminal session.
@@ -2313,62 +2412,8 @@ fn open_controller_terminal(state: State<'_, AppState>, ip: Option<String>) -> R
 
     #[cfg(target_os = "windows")]
     {
-        // Prefer PuTTY (keeps Send-to-window + session logging) with the station
-        // key converted to a .ppk; fall back to the built-in OpenSSH client when
-        // PuTTY or puttygen isn't installed. Either way auth is passwordless via
-        // the same station key macOS uses.
-        let ppk = ensure_station_ppk();
-        let putty = find_putty_executable();
-        let log_path = log_file_path(&ip);
-        {
-            let mut inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
-            kill_shell(&mut inner);
-            inner.connection_mode = "vpn".into();
-            inner.local_serial_device = None;
-            inner.controller_ip = Some(ip.clone());
-            inner.shell_logs.clear();
-            inner.shell_log_cursor = 0;
-            inner.shell_phase = "connecting".into();
-            inner.shell_detail = format!("Opening SSH session to root@{ip}...");
-            inner.shell_logs.push(format!("[connecting] root@{ip}"));
-        }
-        append_transcript(
-            &log_path,
-            &format!(
-                "\n===== vpn ssh session start ({}) =====\ncontroller: {ip}\n",
-                chrono::Local::now().format("%Y-%m-%d %H:%M:%S")
-            ),
-        );
-        let (child, via) = match (putty, ppk) {
-            (Some(putty_path), Some(ppk)) => {
-                let ppk_str = ppk.to_string_lossy();
-                let log_str = log_path.to_string_lossy();
-                let mut putty_args: Vec<&str> =
-                    vec!["-ssh", ip.as_str(), "-l", "root", "-i", ppk_str.as_ref()];
-                // Only write PuTTY's own session log when transcript logging is
-                // enabled. PuTTY writes the file itself, so app-side redaction
-                // can't reach it — the operator is warned of this in Settings.
-                if TRANSCRIPT_LOGGING.load(Ordering::Relaxed) {
-                    putty_args.extend(["-sessionlog", log_str.as_ref(), "-logoverwrite"]);
-                }
-                let child = Command::new(&putty_path)
-                    .args(&putty_args)
-                    .spawn()
-                    .map_err(|e| format!("Failed to open PuTTY: {e}"))?;
-                (child, "PuTTY")
-            }
-            _ => (spawn_windows_ssh_console(&ip, &station_key)?, "OpenSSH"),
-        };
+        return launch_windows_putty_ssh(&ip, "vpn", &state);
 
-        if let Ok(mut inner) = state.inner.lock() {
-            inner.windows_local_terminal_child = Some(child);
-            inner.shell_phase = "connecting".into();
-            inner.shell_detail =
-                format!("{via} opened for root@{ip}; waiting for controller shell...");
-            inner.external_terminal_window_id = None;
-            inner.shell_logs.push(format!("[{via} opened] root@{ip}"));
-        }
-        return Ok(());
     }
 
     #[cfg(not(target_os = "windows"))]
@@ -2624,7 +2669,7 @@ fn open_local_serial_terminal(device: String, state: State<'_, AppState>) -> Res
                 .push(format!("[PuTTY opened] {com_port} @ 115200"));
         }
 
-        let _ = send_text_to_putty_window(Some(putty_pid), Some(&com_port), "");
+        let _ = send_text_to_putty_window(putty_pid, Some(&com_port), "");
 
         return Ok(());
     }
@@ -2715,69 +2760,121 @@ fn open_local_serial_terminal(device: String, state: State<'_, AppState>) -> Res
 /// so the shared local-session UI and `disconnect_local_controller` teardown
 /// (which closes the terminal window and writes the session-end marker) apply.
 /// Browse mDNS for controllers on the local network. The controller's avahi
-/// advertises `_ssh._tcp` with the serial number as the instance name, so a
-/// short `dns-sd` browse window yields the list of reachable serials — works
-/// over a router or a direct Ethernet cable (link-local). Returns 8-digit
-/// serials; connect to any of them as `<serial>.local`.
+/// advertises `_ssh._tcp` with the serial number as the instance name. The
+/// in-process browser returns both the serial and resolved address, so Windows
+/// does not need Bonjour's `dns-sd.exe` or separate `.local` resolution.
 ///
-/// This is an `async` command whose blocking work (a ~2.5s browse window) is
+/// This is an `async` command whose blocking work (a ~3.5s browse window) is
 /// offloaded to `spawn_blocking`. A synchronous command would run on the main
 /// thread and freeze the whole UI for the duration of the scan.
 #[tauri::command]
-async fn discover_controllers() -> Result<Vec<String>, String> {
+async fn discover_controllers() -> Result<Vec<DiscoveredController>, String> {
     tokio::task::spawn_blocking(discover_controllers_blocking)
         .await
         .map_err(|e| format!("Controller scan task failed: {e}"))?
 }
 
-fn discover_controllers_blocking() -> Result<Vec<String>, String> {
-    let mut child = Command::new("dns-sd")
-        .args(["-B", "_ssh._tcp", "local."])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|e| format!("mDNS scan unavailable on this system: {e}"))?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| "mDNS scan produced no output".to_string())?;
-    let lines: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-    let lines_clone = lines.clone();
-    let reader = thread::spawn(move || {
-        use std::io::BufRead;
-        for line in std::io::BufReader::new(stdout)
-            .lines()
-            .map_while(Result::ok)
-        {
-            if let Ok(mut collected) = lines_clone.lock() {
-                collected.push(line);
-            }
-        }
-    });
-    // dns-sd browses until killed; 2.5s is plenty for link-local mDNS answers.
-    thread::sleep(Duration::from_millis(2500));
-    let _ = child.kill();
-    let _ = child.wait();
-    let _ = reader.join();
+#[derive(Clone, serde::Serialize)]
+struct DiscoveredController {
+    serial: String,
+    address: String,
+    hostname: String,
+}
 
-    let mut serials: Vec<String> = Vec::new();
-    if let Ok(collected) = lines.lock() {
-        for line in collected.iter() {
-            // e.g. "16:20:53.593  Add  2  28 local.  _ssh._tcp.  22611067"
-            if !line.contains(" Add ") {
-                continue;
-            }
-            if let Some(name) = line.split_whitespace().last() {
-                if name.len() == 8
-                    && name.chars().all(|c| c.is_ascii_digit())
-                    && !serials.iter().any(|s| s == name)
-                {
-                    serials.push(name.to_string());
+fn discover_controllers_blocking() -> Result<Vec<DiscoveredController>, String> {
+    const SERVICE_TYPE: &str = "_ssh._tcp.local.";
+    let mdns = ServiceDaemon::new()
+        .map_err(|e| format!("Could not start controller discovery: {e}"))?;
+    let receiver = mdns
+        .browse(SERVICE_TYPE)
+        .map_err(|e| format!("Could not browse for controllers: {e}"))?;
+    let deadline = std::time::Instant::now() + Duration::from_millis(3500);
+    let mut controllers = Vec::new();
+
+    while let Some(remaining) = deadline.checked_duration_since(std::time::Instant::now()) {
+        match receiver.recv_timeout(remaining) {
+            Ok(ServiceEvent::ServiceResolved(service)) => {
+                let serial = service
+                    .fullname
+                    .strip_suffix(SERVICE_TYPE)
+                    .unwrap_or(&service.fullname)
+                    .trim_end_matches('.')
+                    .to_string();
+                if serial.len() != 8 || !serial.chars().all(|c| c.is_ascii_digit()) {
+                    continue;
+                }
+                let hostname = service.host.trim_end_matches('.').to_string();
+                let addresses: Vec<String> = service
+                    .get_addresses_v4()
+                    .into_iter()
+                    .map(|ip| ip.to_string())
+                    .collect();
+                let addresses = if addresses.is_empty() {
+                    vec![hostname.clone()]
+                } else {
+                    addresses
+                };
+
+                for address in addresses {
+                    if !controllers.iter().any(|found: &DiscoveredController| {
+                        found.serial == serial && found.address == address
+                    }) {
+                        controllers.push(DiscoveredController {
+                            serial: serial.clone(),
+                            address,
+                            hostname: hostname.clone(),
+                        });
+                    }
                 }
             }
+            Ok(_) => {}
+            Err(_) => break,
         }
     }
-    Ok(serials)
+
+    let _ = mdns.stop_browse(SERVICE_TYPE);
+    let _ = mdns.shutdown();
+    let mut selected: HashMap<String, (u8, DiscoveredController)> = HashMap::new();
+    for controller in controllers {
+        let rank = controller_address_rank(&controller.address);
+        selected
+            .entry(controller.serial.clone())
+            .and_modify(|(selected_rank, selected_controller)| {
+                if rank > *selected_rank
+                    || (rank == *selected_rank
+                        && controller.address < selected_controller.address)
+                {
+                    *selected_rank = rank;
+                    *selected_controller = controller.clone();
+                }
+            })
+            .or_insert((rank, controller));
+    }
+
+    let mut controllers: Vec<DiscoveredController> = selected
+        .into_values()
+        .map(|(_, controller)| controller)
+        .collect();
+    controllers.sort_by(|a, b| a.serial.cmp(&b.serial));
+    Ok(controllers)
+}
+
+/// Prefer a reachable direct-Ethernet (link-local) address, then any other
+/// reachable address. This collapses one controller advertising the same SID
+/// through both Ethernet and the local LAN without choosing a dead route.
+fn controller_address_rank(address: &str) -> u8 {
+    let Ok(ip) = address.parse::<Ipv4Addr>() else {
+        return 0;
+    };
+    let socket = SocketAddr::new(IpAddr::V4(ip), 22);
+    let reachable = TcpStream::connect_timeout(&socket, Duration::from_millis(250)).is_ok();
+
+    match (reachable, ip.is_link_local()) {
+        (true, true) => 3,
+        (true, false) => 2,
+        (false, true) => 1,
+        (false, false) => 0,
+    }
 }
 
 #[tauri::command]
@@ -2798,65 +2895,8 @@ fn open_local_network_terminal(host: String, state: State<'_, AppState>) -> Resu
 
     #[cfg(target_os = "windows")]
     {
-        // Prefer PuTTY (keeps Send-to-window + session logging) with the station
-        // key converted to a .ppk — PuTTY's -i can't read the OpenSSH station key
-        // directly. Fall back to the built-in OpenSSH client when PuTTY or
-        // puttygen isn't installed. Same passwordless station key as macOS.
-        let ppk = ensure_station_ppk();
-        let putty = find_putty_executable();
-        let log_path = local_serial_log_file(&host);
-        {
-            let mut inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
-            kill_shell(&mut inner);
-            inner.connection_mode = "local".into();
-            inner.local_serial_device = Some(host.clone());
-            inner.controller_ip = None;
-            inner.shell_logs.clear();
-            inner.shell_log_cursor = 0;
-            inner.shell_phase = "connecting".into();
-            inner.shell_detail = format!("Opening SSH session to root@{host}...");
-            inner.external_terminal_window_id = None;
-            if let Some(mut child) = inner.windows_local_terminal_child.take() {
-                let _ = child.kill();
-                let _ = child.wait();
-            }
-            inner.shell_logs.push(format!("[connecting] root@{host}"));
-        }
-        append_transcript(
-            &log_path,
-            &format!(
-                "\n===== local network ssh session start ({}) =====\ncontroller: {host}\n",
-                chrono::Local::now().format("%Y-%m-%d %H:%M:%S")
-            ),
-        );
-        let (child, via) = match (putty, ppk) {
-            (Some(putty_path), Some(ppk)) => {
-                let ppk_str = ppk.to_string_lossy();
-                let log_str = log_path.to_string_lossy();
-                let mut putty_args: Vec<&str> =
-                    vec!["-ssh", host.as_str(), "-l", "root", "-i", ppk_str.as_ref()];
-                // See the VPN path above: PuTTY owns this log file, so it is
-                // only created when transcript logging is enabled.
-                if TRANSCRIPT_LOGGING.load(Ordering::Relaxed) {
-                    putty_args.extend(["-sessionlog", log_str.as_ref(), "-logoverwrite"]);
-                }
-                let child = Command::new(&putty_path)
-                    .args(&putty_args)
-                    .spawn()
-                    .map_err(|e| format!("Failed to open PuTTY: {e}"))?;
-                (child, "PuTTY")
-            }
-            _ => (spawn_windows_ssh_console(&host, &station_key)?, "OpenSSH"),
-        };
+        return launch_windows_putty_ssh(&host, "local", &state);
 
-        if let Ok(mut inner) = state.inner.lock() {
-            inner.windows_local_terminal_child = Some(child);
-            inner.shell_phase = "connecting".into();
-            inner.shell_detail =
-                format!("{via} opened for root@{host}; waiting for controller shell...");
-            inner.shell_logs.push(format!("[{via} opened] root@{host}"));
-        }
-        return Ok(());
     }
 
     #[cfg(not(target_os = "windows"))]
@@ -3014,7 +3054,7 @@ fn get_controller_status(state: State<'_, AppState>) -> Result<serde_json::Value
     #[cfg(target_os = "windows")]
     {
         sync_windows_terminal_child(&mut inner);
-        sync_windows_vpn_shell_phase(&mut inner);
+        sync_windows_putty_shell_phase(&mut inner);
     }
     #[cfg(not(target_os = "windows"))]
     {
@@ -3034,7 +3074,7 @@ fn get_app_state(state: State<'_, AppState>) -> Result<serde_json::Value, String
     #[cfg(target_os = "windows")]
     {
         sync_windows_terminal_child(&mut inner);
-        sync_windows_vpn_shell_phase(&mut inner);
+        sync_windows_putty_shell_phase(&mut inner);
     }
     #[cfg(not(target_os = "windows"))]
     {
@@ -3064,10 +3104,8 @@ fn send_external_input(text: String, state: State<'_, AppState>) -> Result<(), S
             let putty_pid = inner
                 .windows_local_terminal_child
                 .as_ref()
-                .map(|child| child.id());
-            if putty_pid.is_none() {
-                return Err("Session not open".into());
-            }
+                .map(|child| child.id())
+                .ok_or_else(|| "Session not open".to_string())?;
             drop(inner);
             return send_text_to_putty_window(putty_pid, None, &text);
         }
@@ -3106,11 +3144,10 @@ fn send_external_input(text: String, state: State<'_, AppState>) -> Result<(), S
                 .flush()
                 .map_err(|e| format!("Failed to flush command: {e}"))?;
             return Ok(());
-        } else if putty_pid.is_some() || local_device.is_some() {
-            return send_text_to_putty_window(putty_pid, local_device.as_deref(), &text);
-        } else {
-            return Err("Session not open".into());
         }
+
+        let putty_pid = putty_pid.ok_or_else(|| "Session not open".to_string())?;
+        send_text_to_putty_window(putty_pid, local_device.as_deref(), &text)
     }
 
     #[cfg(not(target_os = "windows"))]
@@ -3887,9 +3924,9 @@ fn stage_bundle(folder_path: &str) -> Result<PathBuf, String> {
             use std::os::unix::fs::PermissionsExt;
             let _ = fs::set_permissions(&station_dst, fs::Permissions::from_mode(0o600));
         }
-        // Windows equivalents of the 0600 chmod: tighten the key ACL so the
-        // built-in OpenSSH client accepts it, and pre-convert it to the .ppk
-        // PuTTY needs. Both are best-effort; the connect commands retry/fall back.
+        // Windows equivalent of chmod 0600, followed by the in-process PPK
+        // conversion PuTTY needs. Connect retries conversion and reports any
+        // actionable error, so bundle staging remains usable for VPN startup.
         #[cfg(target_os = "windows")]
         {
             harden_windows_key_acl(&station_dst);
@@ -4999,7 +5036,7 @@ fn parse_diskutil_info(text: &str) -> Option<SdTarget> {
             }
         }
     }
-    if id.is_empty() || internal || virtual_disk {
+    if id.is_empty() || size_bytes == 0 || internal || virtual_disk {
         return None;
     }
     let sd_like = bus.contains("Secure Digital") || bus.contains("USB") || removable;
@@ -5018,7 +5055,7 @@ fn parse_diskutil_info(text: &str) -> Option<SdTarget> {
 
 #[cfg(target_os = "windows")]
 fn list_sd_targets_impl() -> Result<Vec<SdTarget>, String> {
-    let ps = "Get-Disk | Where-Object { (-not $_.IsSystem) -and (-not $_.IsBoot) -and ($_.BusType -eq 'USB' -or $_.BusType -eq 'SD' -or $_.BusType -eq 'MMC') } | ForEach-Object { [PSCustomObject]@{ id = [string]$_.Number; name = $_.FriendlyName; size = [int64]$_.Size; bus = [string]$_.BusType } } | ConvertTo-Json -Compress";
+    let ps = "Get-Disk | Where-Object { (-not $_.IsSystem) -and (-not $_.IsBoot) -and ($_.Size -gt 0) -and ($_.BusType -eq 'USB' -or $_.BusType -eq 'SD' -or $_.BusType -eq 'MMC') } | ForEach-Object { [PSCustomObject]@{ id = [string]$_.Number; name = $_.FriendlyName; size = [int64]$_.Size; bus = [string]$_.BusType } } | ConvertTo-Json -Compress";
     let out = Command::new("powershell")
         .args(["-NoProfile", "-Command", ps])
         .output()
@@ -5051,6 +5088,9 @@ fn list_sd_targets_impl() -> Result<Vec<SdTarget>, String> {
             .trim()
             .to_string();
         let size = it.get("size").and_then(serde_json::Value::as_u64).unwrap_or(0);
+        if size == 0 {
+            continue;
+        }
         let bus = it
             .get("bus")
             .and_then(|v| v.as_str())
@@ -6120,4 +6160,5 @@ Done: Failure: -65554: Network technology is not connected
 ";
         assert!(parse_diskutil_info(text).is_none());
     }
+
 }
