@@ -11,7 +11,6 @@ import LedDecoderTab from "./components/tabs/LedDecoderTab";
 import ReportTab from "./components/tabs/ReportTab";
 import DiagnosticsTab from "./components/tabs/DiagnosticsTab";
 import SystemConfigurationTab from "./components/tabs/SystemConfigurationTab";
-import SettingsTab from "./components/tabs/SettingsTab";
 import Sidebar from "./components/shell/Sidebar";
 import SidebarHeader from "./components/shell/SidebarHeader";
 import SidebarNavItem from "./components/shell/SidebarNavItem";
@@ -27,8 +26,7 @@ type Tab =
   | "system-configuration"
   | "report"
   | "diagnostics"
-  | "led-decoder"
-  | "settings";
+  | "led-decoder";
 
 // Controller tabs — everything that talks to (or about) a connected controller.
 const TABS: { id: Tab; label: string; badge?: string }[] = [
@@ -44,7 +42,6 @@ const TABS: { id: Tab; label: string; badge?: string }[] = [
 const TOOL_TABS: { id: Tab; label: string; badge?: string }[] = [
   { id: "sd-card", label: "Create SD Card" },
   { id: "led-decoder", label: "LED Decoder" },
-  { id: "settings", label: "Settings" },
 ];
 
 let closeGuard = false;
@@ -330,9 +327,6 @@ export default function App() {
           </div>
           <div style={{ display: activeTab === "report" ? "contents" : "none" }}>
             <ReportTab />
-          </div>
-          <div style={{ display: activeTab === "settings" ? "contents" : "none" }}>
-            <SettingsTab />
           </div>
         </main>
       </div>

@@ -874,36 +874,6 @@ fn migrate_legacy_transcripts() {
     }
 }
 
-// ── App settings ────────────────────────────────────────────────────────────
-
-#[derive(serde::Serialize)]
-struct LogSettings {
-    log_dir: String,
-}
-
-#[tauri::command]
-fn get_log_settings() -> LogSettings {
-    LogSettings {
-        log_dir: controller_logs_dir().to_string_lossy().into_owned(),
-    }
-}
-
-#[tauri::command]
-fn reveal_log_dir() -> Result<(), String> {
-    let dir = controller_logs_dir();
-    #[cfg(target_os = "macos")]
-    let program = "open";
-    #[cfg(target_os = "windows")]
-    let program = "explorer";
-    #[cfg(all(unix, not(target_os = "macos")))]
-    let program = "xdg-open";
-    Command::new(program)
-        .arg(&dir)
-        .spawn()
-        .map(|_| ())
-        .map_err(|e| format!("Failed to open log folder: {e}"))
-}
-
 #[cfg(target_os = "windows")]
 struct PuttyWindowSearch {
     target_pid: u32,
@@ -5846,8 +5816,6 @@ pub fn run() {
             poll_sd_flash,
             cancel_sd_flash,
             open_fda_settings,
-            get_log_settings,
-            reveal_log_dir,
             quit_app,
         ])
         .setup(|app| {
