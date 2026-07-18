@@ -27,7 +27,7 @@ export default function SidebarHeader({
     <header className="app-top-header">
       <div className="top-header-brand">
         <img
-          src="/brand/logos/secondary-white.png"
+          src="/brand/logos/secondary-onnavy.png"
           alt="Frontline Wildfire Defense"
           className="top-header-logo"
         />
