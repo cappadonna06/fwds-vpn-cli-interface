@@ -17,12 +17,6 @@ const DEFAULTS: Record<string, unknown> = {
     local_serial_device: null,
   },
   get_diagnostic_state: { system: null },
-  get_log_settings: {
-    transcript_logging_enabled: true,
-    log_dir:
-      "~/Library/Application Support/com.frontlinewildfire.controller-console/logs",
-    retention_days: 14,
-  },
   // List commands must return arrays — the UI maps over them on render.
   list_serial_devices: [],
   discover_controllers: [],
