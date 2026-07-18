@@ -565,28 +565,27 @@ const REQUIRED_FILES: &[&str] = &[
     "connect-local.bin",
 ];
 
-// ── Session transcript logging ──────────────────────────────────────────────
+// ── Session transcript handling ─────────────────────────────────────────────
 //
-// Transcripts are stored in the app's *private* per-user data directory — never
-// the Desktop or Documents, which on macOS sync to iCloud. The directory is
-// created 0700 on Unix; on Windows we rely on the default per-user ACLs of
-// %LOCALAPPDATA%. Logging is opt-out (`TRANSCRIPT_LOGGING`), secret values are
-// redacted before they touch disk (`redact_secrets`), files roll over past a
-// size ceiling, and stale files are pruned on launch (`prune_old_transcripts`).
+// A session transcript is a scratch file, not a kept log. It exists only while a
+// controller session is live, where it feeds the diagnostic cards, and is
+// securely wiped the moment the session ends (`secure_delete_file` on
+// disconnect), when the app closes, and — as a crash catch-all — on the next
+// launch (`wipe_all_transcripts`). Nothing is retained. It lives in the app's
+// *private* per-user data directory (never the Desktop/Documents, which sync to
+// iCloud on macOS), created 0700 on Unix; on Windows we rely on the default
+// per-user ACLs of %LOCALAPPDATA%.
 
 /// Bundle identifier — matches `identifier` in tauri.conf.json. Scopes our
 /// files under the platform's per-user app-data directory.
 const APP_IDENTIFIER: &str = "com.frontlinewildfire.controller-console";
 
-/// Days a transcript is kept before it is pruned on the next launch.
-const TRANSCRIPT_RETENTION_DAYS: u64 = 14;
-
 /// Per-file size ceiling; the file rolls over to `<name>.1` once exceeded.
 const TRANSCRIPT_MAX_BYTES: u64 = 5 * 1024 * 1024;
 
-/// Whether plaintext session transcripts are written to disk. Mirrors the
-/// persisted `AppSettings::transcript_logging_enabled` so hot paths
-/// (`append_transcript`, the Windows PuTTY spawns) can check it lock-free.
+/// Always true: the transcript is required to populate the diagnostic cards, and
+/// is wiped as soon as the session ends. Kept as a flag so the write hot paths
+/// (`append_transcript`, serial `-sessionlog`) share one guard.
 static TRANSCRIPT_LOGGING: AtomicBool = AtomicBool::new(true);
 
 /// Cross-chunk redaction state. The macOS SSH reader streams stdout in chunks
@@ -793,29 +792,48 @@ fn mask_bracketed(s: &str) -> String {
     s.to_string()
 }
 
-// ── Transcript retention / migration ────────────────────────────────────────
+// ── Transcript wipe / migration ─────────────────────────────────────────────
 
-/// Remove transcripts older than the retention window. Called on launch so a
-/// laptop doesn't accumulate customer PII indefinitely.
-fn prune_old_transcripts() {
+/// Best-effort secure delete: overwrite the file's bytes with zeros before
+/// unlinking, so a plain undelete can't recover the plaintext. This is
+/// best-effort by nature — on SSDs and copy-on-write filesystems the original
+/// blocks may survive wear-levelling — but it beats a bare `remove_file`, which
+/// leaves the content fully intact until the sectors are reused.
+fn secure_delete_file(path: &Path) {
+    if let Ok(meta) = fs::metadata(path) {
+        let len = meta.len();
+        if len > 0 {
+            if let Ok(mut file) = fs::OpenOptions::new().write(true).open(path) {
+                let zeros = [0u8; 8192];
+                let mut remaining = len;
+                let _ = file.seek(SeekFrom::Start(0));
+                while remaining > 0 {
+                    let n = remaining.min(zeros.len() as u64) as usize;
+                    if file.write_all(&zeros[..n]).is_err() {
+                        break;
+                    }
+                    remaining -= n as u64;
+                }
+                let _ = file.flush();
+            }
+        }
+    }
+    let _ = fs::remove_file(path);
+}
+
+/// Securely wipe every file in the transcript directory. Transcripts are held
+/// only for the life of a session (they feed the live diagnostic cards) and are
+/// wiped on disconnect and app close; this catch-all runs on launch so anything
+/// a crash left behind is cleared before it can linger.
+fn wipe_all_transcripts() {
     let dir = controller_logs_dir();
     let Ok(entries) = fs::read_dir(&dir) else {
         return;
     };
-    let Some(cutoff) = std::time::SystemTime::now()
-        .checked_sub(Duration::from_secs(TRANSCRIPT_RETENTION_DAYS * 24 * 60 * 60))
-    else {
-        return;
-    };
     for entry in entries.flatten() {
         let path = entry.path();
-        if !path.is_file() {
-            continue;
-        }
-        if let Ok(modified) = entry.metadata().and_then(|m| m.modified()) {
-            if modified < cutoff {
-                let _ = fs::remove_file(&path);
-            }
+        if path.is_file() {
+            secure_delete_file(&path);
         }
     }
 }
@@ -858,67 +876,16 @@ fn migrate_legacy_transcripts() {
 
 // ── App settings ────────────────────────────────────────────────────────────
 
-#[derive(serde::Serialize, serde::Deserialize, Clone)]
-struct AppSettings {
-    #[serde(default = "default_true")]
-    transcript_logging_enabled: bool,
-}
-
-fn default_true() -> bool {
-    true
-}
-
-impl Default for AppSettings {
-    fn default() -> Self {
-        Self {
-            transcript_logging_enabled: true,
-        }
-    }
-}
-
-fn app_settings_path() -> PathBuf {
-    app_data_dir().join("settings.json")
-}
-
-fn load_app_settings() -> AppSettings {
-    match fs::read_to_string(app_settings_path()) {
-        Ok(raw) => serde_json::from_str(&raw).unwrap_or_default(),
-        Err(_) => AppSettings::default(),
-    }
-}
-
-fn save_app_settings(settings: &AppSettings) {
-    let dir = app_data_dir();
-    let _ = fs::create_dir_all(&dir);
-    harden_dir_permissions(&dir);
-    if let Ok(raw) = serde_json::to_string_pretty(settings) {
-        let _ = fs::write(app_settings_path(), raw);
-    }
-}
-
 #[derive(serde::Serialize)]
 struct LogSettings {
-    transcript_logging_enabled: bool,
     log_dir: String,
-    retention_days: u64,
 }
 
 #[tauri::command]
 fn get_log_settings() -> LogSettings {
     LogSettings {
-        transcript_logging_enabled: TRANSCRIPT_LOGGING.load(Ordering::Relaxed),
         log_dir: controller_logs_dir().to_string_lossy().into_owned(),
-        retention_days: TRANSCRIPT_RETENTION_DAYS,
     }
-}
-
-#[tauri::command]
-fn set_transcript_logging(enabled: bool) -> Result<(), String> {
-    TRANSCRIPT_LOGGING.store(enabled, Ordering::Relaxed);
-    save_app_settings(&AppSettings {
-        transcript_logging_enabled: enabled,
-    });
-    Ok(())
 }
 
 #[tauri::command]
@@ -2188,23 +2155,15 @@ fn send_input(text: String, state: State<'_, AppState>) -> Result<(), String> {
 /// Disconnect the active controller shell.
 #[tauri::command]
 fn disconnect_controller(state: State<'_, AppState>) -> Result<(), String> {
-    #[cfg(target_os = "windows")]
     let log_path = {
         let inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
-        if inner.connection_mode == "vpn" {
-            inner.controller_ip.clone().map(|ip| log_file_path(&ip))
-        } else {
-            None
-        }
+        inner.controller_ip.clone().map(|ip| log_file_path(&ip))
     };
 
     #[cfg(not(target_os = "windows"))]
-    let (log_path, window_id) = {
+    let window_id = {
         let inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
-        (
-            inner.controller_ip.clone().map(|ip| log_file_path(&ip)),
-            inner.external_terminal_window_id,
-        )
+        inner.external_terminal_window_id
     };
 
     {
@@ -2215,39 +2174,19 @@ fn disconnect_controller(state: State<'_, AppState>) -> Result<(), String> {
         inner.shell_logs.push("[Disconnected]".into());
     }
 
-    #[cfg(target_os = "windows")]
-    if let Some(path) = log_path {
-        append_transcript(
-            &path,
-            &format!(
-                "\n===== vpn ssh session end ({}) =====\n",
-                chrono::Local::now().format("%Y-%m-%d %H:%M:%S")
-            ),
-        );
-        stop_log_watcher_internal(&state)?;
-        if let Ok(mut diag) = state.diagnostic_state.lock() {
-            *diag = DiagnosticState::default();
-        }
+    #[cfg(not(target_os = "windows"))]
+    if let Some(window_id) = window_id {
+        let _ = close_terminal_window(window_id);
     }
 
-    #[cfg(not(target_os = "windows"))]
-    {
-        if let Some(window_id) = window_id {
-            let _ = close_terminal_window(window_id);
-        }
-        if let Some(path) = log_path {
-            append_transcript(
-                &path,
-                &format!(
-                    "\n===== vpn terminal session end ({}) =====\n",
-                    chrono::Local::now().format("%Y-%m-%d %H:%M:%S")
-                ),
-            );
-        }
-        stop_log_watcher_internal(&state)?;
-        if let Ok(mut diag) = state.diagnostic_state.lock() {
-            *diag = DiagnosticState::default();
-        }
+    stop_log_watcher_internal(&state)?;
+    // The transcript is a live-session scratch file; wipe it now the session is
+    // over so no controller output lingers on disk.
+    if let Some(path) = log_path {
+        secure_delete_file(&path);
+    }
+    if let Ok(mut diag) = state.diagnostic_state.lock() {
+        *diag = DiagnosticState::default();
     }
 
     Ok(())
@@ -2996,6 +2935,14 @@ fn open_local_network_terminal(host: String, state: State<'_, AppState>) -> Resu
 
 #[tauri::command]
 fn disconnect_local_controller(state: State<'_, AppState>) -> Result<(), String> {
+    let log_path = {
+        let inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
+        inner
+            .local_serial_device
+            .clone()
+            .map(|device| local_serial_log_file(&device))
+    };
+
     #[cfg(not(target_os = "windows"))]
     let window_id = {
         let inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
@@ -3004,23 +2951,6 @@ fn disconnect_local_controller(state: State<'_, AppState>) -> Result<(), String>
 
     {
         let mut inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
-        if let Some(device) = inner.local_serial_device.clone() {
-            if TRANSCRIPT_LOGGING.load(Ordering::Relaxed) {
-                let log_path = local_serial_log_file(&device);
-                if let Ok(mut f) = fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(log_path)
-                {
-                    let _ = writeln!(
-                        f,
-                        "\n===== local serial session end ({}) =====",
-                        chrono::Local::now().format("%Y-%m-%d %H:%M:%S")
-                    );
-                    let _ = f.flush();
-                }
-            }
-        }
         if let Some(kill) = inner.windows_local_serial_kill.take() {
             kill.store(true, Ordering::Relaxed);
         }
@@ -3041,6 +2971,10 @@ fn disconnect_local_controller(state: State<'_, AppState>) -> Result<(), String>
         let _ = close_terminal_window(window_id);
     }
     stop_log_watcher_internal(&state)?;
+    // Wipe the live-session scratch transcript now the session is over.
+    if let Some(path) = log_path {
+        secure_delete_file(&path);
+    }
     if let Ok(mut diag) = state.diagnostic_state.lock() {
         *diag = DiagnosticState::default();
     }
@@ -5913,7 +5847,6 @@ pub fn run() {
             cancel_sd_flash,
             open_fda_settings,
             get_log_settings,
-            set_transcript_logging,
             reveal_log_dir,
             quit_app,
         ])
@@ -5922,15 +5855,23 @@ pub fn run() {
             if let Ok(mut h) = state.app_handle.lock() {
                 *h = Some(app.handle().clone());
             }
-            // Apply the persisted logging preference, relocate any transcripts
-            // an older build left on the Desktop, then prune stale files.
-            TRANSCRIPT_LOGGING.store(
-                load_app_settings().transcript_logging_enabled,
-                Ordering::Relaxed,
-            );
+            // Sweep up any transcript a previous crash left behind (sessions
+            // normally wipe their own on disconnect/close), and relocate any
+            // legacy Desktop transcripts into the private dir so they are swept
+            // too. Nothing is retained across launches.
             migrate_legacy_transcripts();
-            prune_old_transcripts();
+            wipe_all_transcripts();
             Ok(())
+        })
+        .on_window_event(|_window, event| {
+            // Wipe session transcripts when the app window closes, so nothing is
+            // left on disk after the user quits.
+            if matches!(
+                event,
+                tauri::WindowEvent::CloseRequested { .. } | tauri::WindowEvent::Destroyed
+            ) {
+                wipe_all_transcripts();
+            }
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

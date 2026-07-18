@@ -2,17 +2,11 @@ import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
 interface LogSettings {
-  transcript_logging_enabled: boolean;
   log_dir: string;
-  retention_days: number;
 }
-
-const isWindows =
-  typeof navigator !== "undefined" && /windows/i.test(navigator.userAgent);
 
 export default function SettingsTab() {
   const [settings, setSettings] = useState<LogSettings | null>(null);
-  const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     invoke<LogSettings>("get_log_settings")
@@ -20,51 +14,23 @@ export default function SettingsTab() {
       .catch(() => setSettings(null));
   }, []);
 
-  async function toggleLogging(next: boolean) {
-    setBusy(true);
-    try {
-      await invoke("set_transcript_logging", { enabled: next });
-      setSettings((s) => (s ? { ...s, transcript_logging_enabled: next } : s));
-    } catch {
-      /* leave the previous state in place if the write failed */
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  const enabled = settings?.transcript_logging_enabled ?? false;
-  const retentionDays = settings?.retention_days ?? 14;
-
   return (
     <div className="tab-content">
       <div className="card" style={{ maxWidth: 720 }}>
-        <div className="card-title">App transcript logging</div>
-
-        <div className="settings-row">
-          <label className="settings-switch">
-            <input
-              type="checkbox"
-              checked={enabled}
-              disabled={busy || !settings}
-              onChange={(e) => toggleLogging(e.target.checked)}
-            />
-            <span className="settings-switch-track" aria-hidden="true">
-              <span className="settings-switch-thumb" />
-            </span>
-            <span className="settings-switch-label">{enabled ? "On" : "Off"}</span>
-          </label>
-          <span className={`settings-status ${enabled ? "on" : "off"}`}>
-            {enabled
-              ? "Writing app-managed transcripts to disk"
-              : "App-managed transcripts are off"}
-          </span>
-        </div>
+        <div className="card-title">Session privacy</div>
 
         <p className="settings-note">
-          App-managed transcripts help support reconstruct a field session. They
-          are kept in this app&rsquo;s private folder; secret values such as Wi-Fi
-          passwords are redacted before writing; and files older than {retentionDays}
-          days are removed automatically on launch.
+          While you&rsquo;re connected to a controller, the console keeps a
+          temporary transcript of the session so it can fill in the diagnostic
+          cards. That file lives in the app&rsquo;s private folder and is erased
+          the moment you disconnect or close the app. Nothing is kept between
+          sessions, so anything you type during setup, including Wi-Fi
+          passwords, is not stored on this computer.
+        </p>
+
+        <p className="settings-note">
+          Need a copy of a session? Copy it from the terminal window while
+          you&rsquo;re still connected.
         </p>
 
         {settings && (
@@ -78,14 +44,6 @@ export default function SettingsTab() {
               Reveal folder
             </button>
           </div>
-        )}
-
-        {isWindows && (
-          <p className="settings-note settings-note-warn">
-            PuTTY&rsquo;s SSH session log remains enabled on Windows because connection
-            status and diagnostic cards require it. PuTTY writes that log directly,
-            so typed credentials cannot be redacted by the app.
-          </p>
         )}
       </div>
     </div>
